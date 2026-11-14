@@ -185,3 +185,17 @@ def test_service_send_plan_uses_the_plan_tab_path():
         None,
     )
     assert calls[1][4:] == ("auto", "grstaps") and calls[1][3]
+
+
+def test_drawn_area_goal_is_sent_spelled_as_places():
+    """A goal naming a drawn area (area1) goes to the robots as the place-spelled
+    goal planned with it (pddl_places); without one it still falls back."""
+    area = {"symbol": "area1", "name": "staging", "polygon": [[0, 0], [4, 0], [4, 4]]}
+    goal = {"pddl": "(visited-region-by spot2 area1)", "areas": [area],
+            "pddl_places": "(or (visited-place-by spot2 p3) (visited-place-by spot2 p4))"}  # fmt: skip
+    m = _m([dict(id="t1", agent="spot2", type="goto", target="P(3)")], planner="omniplanner", goal=goal)
+    p = mission_plan(m)
+    assert p["pddl"] == "(or (visited-place-by hamilton p3) (visited-place-by hamilton p4))"
+    old = _m([dict(id="t1", agent="spot2", type="goto", target="P(3)")], planner="omniplanner",
+             goal={k: v for k, v in goal.items() if k != "pddl_places"})  # fmt: skip
+    assert "plan it again" in mission_plan(old)["fallback"]
