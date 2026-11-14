@@ -567,6 +567,14 @@ class ChatService:
                 "omniplanner": ok,
                 "grstaps": ok and self._grstaps_ok(),
             }
+            if mission_ctx.get("planted"):
+                # mock objects: object symbols after the map's real ones, fixed before the
+                # model sees them (a real object may have taken one since it was planted)
+                mission_ctx["planted"] = [dict(p) for p in mission_ctx["planted"] if isinstance(p, dict)]
+                try:
+                    self.missions.fix_mock_symbols(mission_ctx["planted"], mission_ctx.get("src") or src)
+                except Exception:  # noqa: BLE001
+                    log.exception("mock object symbols")
         history = clean_history(history)
         engine = engine if engine in GOAL_ENGINES else None
         grstaps = None
