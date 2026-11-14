@@ -351,3 +351,71 @@ def test_success_reports_the_search(svc):
     _, service = svc
     _, planned = omni.plan_pddl("(visited-object o0)", [SPOT1], None, service)
     assert "solution found" in planned["fast_downward"]["digest"]
+
+
+AREA = {"name": "staging", "polygon": [[2.5, 2.5], [6.5, 2.5], [6.5, 6.5], [2.5, 6.5]]}
+
+
+def _inside(service, task, poly):
+    import re
+
+    import spark_dsg as dsg
+
+    from adt4_console.mission.paths import point_in_polygon
+
+    k, n = re.fullmatch(r"([A-Za-z])\((\d+)\)", task.target).groups()
+    node = _G(service).get_node(dsg.NodeSymbol(k, int(n)))
+    return point_in_polygon(node.attributes.position[:2], poly)
+
+
+def test_fast_downward_plans_a_drawn_area_as_its_places(svc, monkeypatch):
+    """A drawn mission area (area1) is planned with Fast Downward: the goal is spelled
+    as places inside it, kept for the robots' planner (pddl_places)."""
+    _, service = svc
+    m, planned = omni.plan_pddl("(visited-region-by spot1 area1)", [SPOT1, SPOT2], None, service,
+                                areas=[AREA])  # fmt: skip
+    assert planned["engine"] == "fast_downward"
+    assert [t.agent for t in m.tasks] == ["spot1"]
+    assert _inside(service, m.tasks[-1], AREA["polygon"])
+    assert m.goal["pddl"] == "(visited-region-by spot1 area1)"
+    places = m.goal["pddl_places"]
+    assert places.startswith("(or (visited-place-by spot1 ") and "area1" not in places
+
+    # a 4 x 4 m area is one look at 8 m spacing; at 2 m it takes several
+    monkeypatch.setattr(omni, "AREA_COVER_SPACING_M", 2.0)
+    m, _ = omni.plan_pddl("(explored-region area1)", [SPOT1], None, service, areas=[AREA])
+    assert len(m.tasks) >= 2 and all(_inside(service, t, AREA["polygon"]) for t in m.tasks)
+    assert m.goal["pddl_places"].startswith("(and (visited-place ")
+
+    m, _ = omni.plan_pddl("(in-region spot2 area1)", [SPOT1, SPOT2], None, service, areas=[AREA])
+    assert m.tasks[-1].agent == "spot2" and _inside(service, m.tasks[-1], AREA["polygon"])
+
+
+def test_a_drawn_area_with_no_reachable_place_is_explained(svc):
+    _, service = svc
+    far = {"name": "lake", "polygon": [[100, 100], [101, 100], [101, 101]]}
+    with pytest.raises(ValueError, match="no place the robots can reach"):
+        omni.plan_pddl("(visited-region area1)", [SPOT1], None, service, areas=[far])
+    with pytest.raises(ValueError, match="visited, explored or ended in"):
+        omni.plan_pddl("(visited-object area1)", [SPOT1], None, service, areas=[AREA])
+
+
+def test_expand_areas_spells_each_form():
+    import numpy as np
+
+    class _Fake:  # expand_areas only needs the mesh places
+        pass
+
+    named = {"area1": AREA}
+    syms = [f"p{i}" for i in range(9)]
+    xy = np.array([[x, y] for x in (3, 4.5, 6) for y in (3, 4.5, 6)], float)
+    comp = np.zeros(9, int)
+    orig = omni._mesh_places
+    omni._mesh_places = lambda G: (syms, xy, comp)
+    try:
+        g, used = omni.expand_areas("(and (visited-region area1) (in-region spot1 area1))", named, _Fake(),
+                                    {"spot1": [0, 0]})  # fmt: skip
+    finally:
+        omni._mesh_places = orig
+    assert "area1" not in g and "(or (visited-place p" in g and "(or (at-place spot1 p" in g
+    assert set(used["area1"]) <= set(syms)

@@ -179,7 +179,9 @@ does it. Use the -by forms whenever the operator says which robot does a task.
 - (at-object spot1 o12), (at-place spot1 t40): spot1 ends there.
 - (visited-region r3): some robot enters region r3 (its core, not a stray edge); (explored-region r3): every \
 place of r3 is visited (small regions only; use GRSTAPS-X to cover a big one). (visited-region-by spot1 r3), \
-(explored-region-by spot1 r3): that robot does it; (in-region spot1 r3): spot1 ends inside r3 (hold / block it).
+(explored-region-by spot1 r3): that robot does it; (in-region spot1 r3): spot1 ends inside r3 (hold / block it). \
+A mission area the operator drew is a region here too, by its symbol (area1, area2, ... in the Named areas list): \
+(visited-region area1), (explored-region area1) (visits about 8 m apart over it), (in-region spot1 area1) and the -by forms.
 - (object-in-place o4 t598): a robot with an arm picks o4 up, carries it and puts it down at mesh place \
 t598. Heavy objects (bags, sandbags, boxes, trash cans) are DRAGGED instead of carried; the planner \
 decides that from the object's class, so "drag the bag to X" and "bring the bag to X" are the same goal. \
@@ -204,8 +206,7 @@ it needs (a robot is not limited to one route); a husky takes part as a robot wi
 - regions: (visited-region r3) = one robot goes into r3's core; (explored-region r3) = robots \
 cover r3 at waypoints about 8 m apart (the planner splits them between robots); the -by forms pin \
 them to that robot. A mission area the operator drew is a region too, named by its symbol \
-(area1, area2, ... in the Named areas list): (explored-region area1). Only GRSTAPS-X plans drawn \
-areas. before works with regions: ['r3', 'o8'] = all of r3 first.
+(area1, area2, ... in the Named areas list): (explored-region area1). before works with regions: ['r3', 'o8'] = all of r3 first.
 - relocation: (object-in-place o4 t598) = pick o4 up, carry it, put it down at place t598 (the Spots \
 have arms; heavy objects -- bags, sandbags, boxes, trash cans -- are dragged instead, automatically). \
 Use it for "move X out of the way" / "put X at Y" / "drag X to Y" (pick a clear place you looked up). \
@@ -218,6 +219,16 @@ console's executor.
 
 PLAN_GRSTAPS_FORCED = """\
 The operator chose the GRSTAPS-X engine: call plan_ground_mission with engine 'grstaps'.
+"""
+
+PLAN_GROUND_FIRST = """\
+This is the mission planner: ground robots (spot, husky) are ALWAYS planned with plan_ground_mission, as \
+one PDDL goal, so the mission deploys to the robots' planner (plan repair's goal manager) as that goal and \
+is repaired there. Use propose_mission only when the mission gives the quad something to do (its \
+search legs); ground robots in such a mission still only visit, inspect and end somewhere. If the \
+operator asks a ground robot for something no goal can say (wait for, hand off, hold for a time), say \
+so in one line and plan the closest goal (e.g. end inside the region with in-region), listing it in \
+`assumptions`.
 """
 
 PLAN_FORCED = """\
@@ -452,6 +463,8 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
         parts.append(PLAN_PROMPT)
         if ctx.get("grstaps"):  # and GRSTAPS-X too
             parts.append(PLAN_GRSTAPS)
+        if ground_first(ctx):
+            parts.append(PLAN_GROUND_FIRST)
         if ctx.get("planner") == "omniplanner":
             parts.append(PLAN_FORCED)
             if ctx.get("engine") == "grstaps":
@@ -475,8 +488,8 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
                     + (
                         ": an end pose (at-place / in-region) or an or needs Fast Downward."
                         if ctx["engine"] == "grstaps"
-                        else ": ordering (before), a joint inspection, covering a big region or a drawn mission "
-                        "area (area1, ...) needs GRSTAPS-X. Fast Downward does plan moving and dragging "
+                        else ": ordering (before), a joint inspection or covering a big region "
+                        "needs GRSTAPS-X. Fast Downward does plan moving and dragging "
                         "objects (object-in-place)."
                     )  # fmt: skip
                 )
@@ -500,7 +513,7 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
             "Named areas (scope map: a Room node in the scene graph, MATCH (r:Room {name: ..})-[:CONTAINS]->(x) "
             "gives its places/objects, and its symbol works as a goto/inspect target = its centre; scope "
             "mission: drawn by the operator for this mission only; its symbol area1, area2, ... is a region "
-            "for GRSTAPS-X goals only). Use an area's name (or symbol) as an explore_area `area`: "
+            "in plan_ground_mission goals: visited-region, explored-region, in-region and their -by forms). Use an area's name (or symbol) as an explore_area `area`: "
             + json.dumps(areas, separators=(",", ":"))
         )
     else:
@@ -543,6 +556,14 @@ def request_text(history, message: str) -> str:
     return users[0] if users else message
 
 
+def ground_first(ctx: dict | None) -> bool:
+    """The mission planner with omniplanner available: ground robots are planned
+    with plan_ground_mission (PDDL) only; propose_mission is for missions with
+    quad work."""
+    ctx = ctx or {}
+    return bool(ctx.get("sim_only") and ctx.get("omniplanner"))
+
+
 def run_tool(
     args: dict,
     ctx: dict | None,
@@ -555,6 +576,13 @@ def run_tool(
     """(events, result for the model).  ``history``: the earlier turns (the
     mission's ``text`` is the request they started with, see :func:`request_text`)."""
     ctx = ctx or {}
+    if ground_first(ctx):
+        kinds = {str(a.get("id")): a.get("kind") for a in [*(ctx.get("roster") or []), *(args.get("agents") or [])]
+                 if isinstance(a, dict)}  # fmt: skip
+        if not any(kinds.get(str(t.get("agent"))) == "quad" for t in args.get("tasks") or [] if isinstance(t, dict)):
+            return [], {"error": "In the mission planner, ground robots are planned with plan_ground_mission "
+                                 "(one PDDL goal the robots' goal manager can take and repair). Plan this with "
+                                 "plan_ground_mission; propose_mission is only for missions with quad tasks."}  # fmt: skip
     lookup = _area_lookup(regions, ctx)
     for t in args.get("tasks") or []:  # an area named as `area` becomes its polygon
         if isinstance(t, dict) and isinstance(t.get("area"), str):

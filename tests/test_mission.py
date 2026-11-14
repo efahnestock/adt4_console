@@ -1259,3 +1259,32 @@ def test_export_all_then_import_all(mission_settings):
         assert client.post("/api/missions/import_all", json={"x": 1}).status_code == 400
         saved = [m for m in client.get("/api/missions").json()["missions"] if m["saved"]]
         assert len(saved) == 5
+
+
+def test_mission_planner_plans_ground_robots_with_pddl(mission_settings):
+    """On /mission (sim_only, omniplanner available) ground robots are planned with
+    plan_ground_mission: the prompt says so and a ground-only propose_mission is
+    refused; a mission with quad work still goes through propose_mission."""
+    from adt4_console.mission import llm_planner
+
+    client, svc = make_client(mission_settings)
+    roster = [{"id": "quad1", "kind": "quad", "start": [0, 0]}, {"id": "spot1", "kind": "spot", "start": [0, 2]}]
+    ctx = {"roster": roster, "sim_only": True, "omniplanner": True}
+    assert llm_planner.ground_first(ctx) and not llm_planner.ground_first({**ctx, "sim_only": False})
+    assert "ALWAYS planned with plan_ground_mission" in llm_planner.context_text(ctx)
+    assert "ALWAYS planned" not in llm_planner.context_text({**ctx, "sim_only": False})
+    svc.chat.turn = ChatTurn(mission=ctx)
+    ground = {"name": "g", "agents": [{"id": "spot1", "kind": "spot"}],
+              "tasks": [{"id": "a", "agent": "spot1", "type": "goto", "target": [3, 3]}], "assumptions": []}  # fmt: skip
+    _, out = svc.chat._run_tool("propose_mission", ground, "spot1 go there", None, "file:grid", None,
+                                turn=svc.chat.turn)  # fmt: skip
+    assert "plan_ground_mission" in out["error"]
+    with_quad = {**ground, "agents": [*ground["agents"], {"id": "quad1", "kind": "quad"}],
+                 "tasks": [*ground["tasks"], {"id": "s", "agent": "quad1", "type": "goto", "target": [5, 5]}]}  # fmt: skip
+    _, out = svc.chat._run_tool("propose_mission", with_quad, "both", None, "file:grid", None, turn=svc.chat.turn)
+    assert "error" not in out, out
+    # the Robot view's chat (no sim_only) is unchanged
+    svc.chat.turn = ChatTurn(mission={**ctx, "sim_only": False})
+    _, out = svc.chat._run_tool("propose_mission", ground, "spot1 go there", None, "file:grid", None,
+                                turn=svc.chat.turn)  # fmt: skip
+    assert "error" not in out, out
