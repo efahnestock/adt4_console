@@ -277,7 +277,45 @@ class MissionService:
         giant = max(nx.connected_components(pg.nx), key=len)
         hint = pg.node_xy(pg.nearest((lo + hi) / 2, giant))
         return {"src": src_id, "bounds": [float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1])],
-                "start_hint": hint, "objects": len(pg.objects)}  # fmt: skip
+                "start_hint": hint, "objects": len(pg.objects),
+                "next_object": self.next_object(src_id)}  # fmt: skip
+
+    # ------------------------------------------------------------ mock objects
+    def _real_objects(self, src_id) -> dict:
+        """{symbol: {pos, ...}} of the map's objects (empty without a graph)."""
+        try:
+            pg = self.place_graph(src_id or self._default_src())
+        except Exception:  # noqa: BLE001
+            return {}
+        return dict(pg.objects) if pg is not None else {}
+
+    def next_object(self, src_id) -> int:
+        """The first object index after the map's real objects (mock objects
+        are numbered from here: O(700) on a map ending at O(699))."""
+        from . import mocks
+
+        return mocks.max_real(self._real_objects(src_id)) + 1
+
+    def fix_mock_symbols(self, planted, src_id) -> dict[str, str]:
+        """Give planted mock objects without a symbol the next free ones, and move
+        any whose symbol a real object took since (not the mock itself, staged
+        where it was planted); returns {old pddl: new pddl}."""
+        from . import mocks
+
+        if not planted:
+            return {}
+        real = self._real_objects(src_id)
+        nxt = mocks.max_real(real) + 1
+        mocks.fill_symbols(planted, nxt)
+        taken = set()
+        for i, (_, xy) in mocks.by_index(planted).items():
+            o = real.get(f"O({i})")
+            if o is None:
+                continue
+            p = o.get("pos") or [1e9, 1e9]
+            if ((p[0] - xy[0]) ** 2 + (p[1] - xy[1]) ** 2) ** 0.5 > mocks.STAGED_M:
+                taken.add(i)
+        return mocks.renumber(planted, taken, nxt)
 
     def robot_pose(self, robot: str):
         if self.live is None:
@@ -522,7 +560,7 @@ class MissionService:
         world = self.world(m)
         plan = mission_plan(m, self._no_go_constraints(m, world))
         if plan and plan.get("pddl"):
-            self._stage_mocks(m, world, plan["pddl"])
+            plan["pddl"] = self._stage_mocks(m, world, plan["pddl"])
         if plan and "fallback" in plan:
             log.info("mission %s: sending a goto per task (%s)", mid, plan["fallback"])
         with self._lock:
@@ -539,25 +577,51 @@ class MissionService:
             self.runs[mid] = run
         return run.control("play")
 
-    def _stage_mocks(self, m, world, pddl: str) -> None:
+    def _stage_mocks(self, m, world, pddl: str) -> str:
         """Mock objects the goal names go into the map under their own symbols
         (O(900001), ...) before it is sent: the operator has staged the real
         objects there, and the robots' planner must know them."""
         from . import mocks
 
+        moved = self.fix_mock_symbols(m.planted, m.src)
+        if moved:  # a real object took a mock's symbol since planning
+            pddl = mocks.rewrite(pddl, moved)
+            log.info("mission %s: mock objects renumbered %s", m.id, moved)
         objects = mocks.named(pddl, m.planted)
         if not objects:
-            return
+            return pddl
         sid = self._edit_src(m.src)
         if sid is None:
             raise ValueError("the goal names mock objects, which can only be staged in a Neo4j map")
         have = (lambda sym: world.graph.symbol_pos(sym) is not None) if world.graph is not None else (lambda s: False)
         ops = mocks.create_ops(objects, have)
         if not ops:
-            return
-        self.edits.apply(sid, ops, author={"via": "mission execute", "mission": m.id}, stage=False,
-                         summary="stage mock objects: " + ", ".join(o["symbol"] for o in ops))  # fmt: skip
+            return pddl
+        out = self.edits.apply(sid, ops, author={"via": "mission execute", "mission": m.id}, stage=False,
+                               summary="stage mock objects: " + ", ".join(o["symbol"] for o in ops))  # fmt: skip
         log.info("mission %s: staged mock objects %s in %s", m.id, [o["symbol"] for o in ops], sid)
+        self._await_planner_map((out or {}).get("map_version"))
+        return pddl
+
+    MAP_WAIT_S = 20.0
+
+    def _await_planner_map(self, version) -> None:
+        """The goal goes out only once the robots' planner has the map version the
+        staged objects are in (it plans on its own copy of the map): sequential,
+        not raced. No ROS or no version: nothing to wait for."""
+        ros = self.ros
+        if version is None or ros is None or not getattr(ros, "available", False):
+            return
+        import time
+
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < self.MAP_WAIT_S:
+            have = (ros.planner_view() or {}).get("map_version")
+            if have is not None and int(have) >= int(version):
+                return
+            time.sleep(0.2)
+        raise ValueError(f"the mock objects are in the map (version {version}) but the robots' planner has not "
+                         f"received it after {self.MAP_WAIT_S:.0f} s: check the heracles publisher, then Execute again")  # fmt: skip
 
     def _send_plan(self, robot, pddl, constraints, engine):
         """The mission's PDDL goal, through the robot's planner as the Plan tab sends it

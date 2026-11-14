@@ -425,36 +425,36 @@ CRATE = {"label": "crate", "pos": [5.0, 5.0]}
 
 
 def test_mock_objects_are_objects_to_the_planner(svc):
-    """A planted mock object is O(900001) in a copy of the planner's object layer:
-    a ground goal inspects or moves it; the shared graph is not changed."""
+    """A planted mock object gets the next object symbol after the map's (the grid
+    ends at O(1): O(2)) in a copy of the planner's object layer: a ground goal
+    inspects or moves it; the shared graph is not changed."""
     import spark_dsg as dsg
 
     _, service = svc
     G = _G(service)
-    m, _ = omni.plan_pddl("(inspected-by spot1 o900001)", [SPOT1, SPOT2], None, service, planted=[CRATE])
-    assert [(t.agent, t.type, t.target) for t in m.tasks] == [("spot1", "inspect", "O(900001)")]
-    assert m.planted[0].sym == "O(900001)"
-    assert not G.has_node(dsg.NodeSymbol("O", 900001))  # only the planning copy has it
-    m, _ = omni.plan_pddl(f"(object-in-place o900001 {_place(G, 0, 0)})", [SPOT1], None, service,
-                          planted=[CRATE])  # fmt: skip
+    assert service.next_object(service._default_src()) == 2
+    m, _ = omni.plan_pddl("(inspected-by spot1 o2)", [SPOT1, SPOT2], None, service, planted=[dict(CRATE)])
+    assert [(t.agent, t.type, t.target) for t in m.tasks] == [("spot1", "inspect", "O(2)")]
+    assert m.planted[0].sym == "O(2)"
+    assert not G.has_node(dsg.NodeSymbol("O", 2))  # only the planning copy has it
+    m, _ = omni.plan_pddl(f"(object-in-place o2 {_place(G, 0, 0)})", [SPOT1], None, service,
+                          planted=[dict(CRATE)])  # fmt: skip
     assert {t.type for t in m.tasks} >= {"pick", "place"}
-    with pytest.raises(ValueError, match="o900002 is not a mock object"):
-        omni.plan_pddl("(visited-object o900002)", [SPOT1], None, service, planted=[CRATE])
+    # a mock's symbol that is a real object elsewhere: refused, re-plan renumbers it
+    with pytest.raises(ValueError, match="real object"):
+        omni.plan_pddl("(visited-object o0)", [SPOT1], None, service, planted=[{**CRATE, "sym": "O(0)"}])
+    moved = service.fix_mock_symbols(planted := [{**CRATE, "sym": "O(0)"}], service._default_src())
+    assert moved == {"o0": "o2"} and planted[0]["sym"] == "O(2)"
 
 
 def test_mock_object_targets_simulate_and_stage_on_execute(svc):
     """The simulator finds a mock target where it was planted (no missing-target
     error), and Execute stages the mock objects the goal names in the map first."""
-    from adt4_console.mission import mocks
-
     _, service = svc
-    m, _ = omni.plan_pddl("(visited-object-by spot1 o900001)", [SPOT1], None, service, planted=[CRATE])
+    m, _ = omni.plan_pddl("(visited-object-by spot1 o2)", [SPOT1], None, service, planted=[dict(CRATE)])
     pv = service.preview(m)
     assert not [i for i in pv["issues"] if i["level"] == "error"], pv["issues"]
     assert not [i for i in pv["issues"] if i.get("code") == "planted_unmatched"]
-    ops = mocks.create_ops(mocks.named("(visited-object-by spot1 o900001)", m.planted))
-    assert ops == [{"op": "create_node", "layer": "Object", "symbol": "O900001", "class": "crate",
-                    "name": "crate", "pos": [5.0, 5.0]}]  # fmt: skip
     applied = []
 
     class _Edits:
@@ -463,8 +463,27 @@ def test_mock_object_targets_simulate_and_stage_on_execute(svc):
 
     service.edits, src = _Edits(), m.src
     m.src = "neo4j:test"
-    service._stage_mocks(m, service.world(m), "(visited-object-by euclid o900001)")
-    assert applied and applied[0][0] == "neo4j:test" and applied[0][1][0]["symbol"] == "O900001"
+    assert service._stage_mocks(m, service.world(m), "(visited-object-by euclid o2)") == "(visited-object-by euclid o2)"
+    assert applied == [("neo4j:test", [{"op": "create_node", "layer": "Object", "symbol": "O2", "class": "crate",
+                                        "name": "crate", "pos": [5.0, 5.0]}])]  # fmt: skip
     m.src = src
     with pytest.raises(ValueError, match="Neo4j map"):
-        service._stage_mocks(m, service.world(m), "(visited-object-by euclid o900001)")
+        service._stage_mocks(m, service.world(m), "(visited-object-by euclid o2)")
+
+
+def test_execute_waits_for_the_planner_to_have_the_staged_map(svc, monkeypatch):
+    _, service = svc
+    seen = iter([{"map_version": 4}, {"map_version": 5}])
+
+    class _Ros:
+        available = True
+
+        def planner_view(self):
+            return next(seen, {"map_version": 5})
+
+    service.ros = _Ros()
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    service._await_planner_map(5)  # returns once the planner reports version 5
+    service.MAP_WAIT_S = 0.0
+    with pytest.raises(ValueError, match="has not received"):
+        service._await_planner_map(9)

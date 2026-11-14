@@ -539,6 +539,10 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
     if world.graph is None or world.graph.G is None:
         raise ValueError("no scene graph to plan on")
     G = world.graph.G
+    if m0.planted and hasattr(service, "next_object"):
+        from . import mocks
+
+        mocks.fill_symbols(m0.planted, service.next_object(src))
     starts, back = {}, {}
     for a in ground:
         s = start_of(m0, world, a.id)

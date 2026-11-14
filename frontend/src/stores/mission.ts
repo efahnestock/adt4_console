@@ -50,19 +50,18 @@ export interface Planted {
   label: string;
   pos: number[];
   size_m?: number;
-  /** its object symbol, O(900001), ...: a ground goal names it like any object */
+  /** its object symbol, the next free one after the map's objects (O(700) on a map
+   *  ending at O(699)): a ground goal names it like any object (o700) */
   sym?: string;
 }
 
-/** Mock objects are objects O(900001), O(900002), ... (far above real ones). */
-export const MOCK_BASE = 900000;
-
-/** The next free mock-object symbol. */
-export function nextMockSym(planted: readonly Planted[]): string {
-  const used = new Set(planted.map(p => Number(/\d+/.exec(p.sym ?? "")?.[0])).filter(n => n > MOCK_BASE));
-  let n = MOCK_BASE + 1;
-  while (used.has(n)) n++;
-  return `O(${n})`;
+/** The next free mock-object symbol: after the map's real objects (`nextObject`,
+ *  from api/missions/world) and the mission's other mock objects. The server
+ *  renumbers one a real object takes later. */
+export function nextMockSym(planted: readonly Planted[], nextObject?: number): string | undefined {
+  if (nextObject === undefined) return undefined; // the server numbers it
+  const used = planted.map(p => Number(/\d+/.exec(p.sym ?? "")?.[0])).filter(n => Number.isFinite(n));
+  return `O(${Math.max(nextObject, ...used.map(n => n + 1))})`;
 }
 
 export interface Mission {
@@ -233,7 +232,7 @@ interface MissionStore {
   layers: TileLayer[];
   satellite: boolean;
   satOpacity: number;
-  world: {src: string | null; bounds: number[] | null; start_hint: number[] | null} | null;
+  world: {src: string | null; bounds: number[] | null; start_hint: number[] | null; next_object?: number} | null;
   // operator inputs
   roster: Agent[];
   areas: Area[];
@@ -314,7 +313,7 @@ export async function loadGeo(src: string | null): Promise<void> {
   try {
     const layers = await getJSON<{layers: TileLayer[]}>("api/geo/layers");
     st().set({layers: layers.layers});
-    const world = await getJSON<{src: string | null; bounds: number[] | null; start_hint: number[] | null}>(`api/missions/world${src ? `?src=${enc(src)}` : ""}`).catch(() => null);
+    const world = await getJSON<{src: string | null; bounds: number[] | null; start_hint: number[] | null; next_object?: number}>(`api/missions/world${src ? `?src=${enc(src)}` : ""}`).catch(() => null);
     st().set({world});
     const s = src ?? world?.src ?? null;
     if (!s) return;
@@ -744,7 +743,7 @@ export function onMapClick(p: number[], sym: string | null = null): boolean {
       void moveStart(t.agent, xy);
       return true;
     case "plant":
-      s.set({planted: [...s.planted, {label: t.label, pos: xy, size_m: 1.5, sym: nextMockSym(s.planted)}]});
+      s.set({planted: [...s.planted, {label: t.label, pos: xy, size_m: 1.5, sym: nextMockSym(s.planted, s.world?.next_object)}]});
       return true;
     case "area":
       s.set({draft: [...s.draft, xy]});

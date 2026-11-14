@@ -524,15 +524,13 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
         parts.append("No-go zones (applied to the mission automatically): "
                      + json.dumps([{"id": z["id"], "polygon": z["polygon"]} for z in zones], separators=(",", ":")))  # fmt: skip
     if ctx.get("planted"):
-        from .mocks import fill_symbols
-
-        mock = fill_symbols([dict(p) for p in ctx["planted"] if isinstance(p, dict)])
+        mock = [p for p in ctx["planted"] if isinstance(p, dict)]
         parts.append("Mock objects the operator planted for this mission (objects like any other: a "
                      "plan_ground_mission goal names one by its symbol in lower case, e.g. (inspected-by spot1 "
-                     "o900001) or (object-in-place o900001 t42); they are staged for real before the mission "
+                     "o700) or (object-in-place o700 t42); they are staged for real before the mission "
                      "runs on robots; the simulated quad camera also finds one when a search query matches "
                      "its label): "
-                     + json.dumps([{"symbol": p["sym"], "label": p["label"], "pos": p["pos"]} for p in mock],
+                     + json.dumps([{"symbol": p.get("sym"), "label": p.get("label"), "pos": p.get("pos")} for p in mock],
                                   separators=(",", ":")))  # fmt: skip
     cur = ctx.get("mission")
     if cur:
