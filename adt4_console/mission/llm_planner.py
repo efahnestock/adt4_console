@@ -352,7 +352,8 @@ def run_plan_tool(
         m, planned = omni_planner.plan_pddl(goal, agents, src, service, args.get("constraints"), geofences,
                                             text=text, name=str(args.get("name") or ""), engine=engine,
                                             areas=(cur.get("goal") or {}).get("areas") if revising and not ctx.get("areas")
-                                            else ctx.get("areas"))  # fmt: skip
+                                            else ctx.get("areas"),
+                                            planted=ctx.get("planted") or (cur.get("planted") if revising else None))  # fmt: skip
     except omni_planner.OmniUnavailable as e:
         return [], {
             "error": f"omniplanner is not available here ({e}); use propose_mission"
@@ -523,9 +524,16 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
         parts.append("No-go zones (applied to the mission automatically): "
                      + json.dumps([{"id": z["id"], "polygon": z["polygon"]} for z in zones], separators=(",", ":")))  # fmt: skip
     if ctx.get("planted"):
-        parts.append("Rehearsal: mock objects are planted for the simulated quad camera "
-                     "(labels only; a search finds one only when its query matches the label): "
-                     + ", ".join(sorted({p["label"] for p in ctx["planted"]})))  # fmt: skip
+        from .mocks import fill_symbols
+
+        mock = fill_symbols([dict(p) for p in ctx["planted"] if isinstance(p, dict)])
+        parts.append("Mock objects the operator planted for this mission (objects like any other: a "
+                     "plan_ground_mission goal names one by its symbol in lower case, e.g. (inspected-by spot1 "
+                     "o900001) or (object-in-place o900001 t42); they are staged for real before the mission "
+                     "runs on robots; the simulated quad camera also finds one when a search query matches "
+                     "its label): "
+                     + json.dumps([{"symbol": p["sym"], "label": p["label"], "pos": p["pos"]} for p in mock],
+                                  separators=(",", ":")))  # fmt: skip
     cur = ctx.get("mission")
     if cur:
         slim = {k: cur.get(k) for k in ("id", "name", "agents", "tasks", "geofences")}

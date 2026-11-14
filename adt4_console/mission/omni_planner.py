@@ -413,6 +413,7 @@ def solve(
     engine: str = DEFAULT_ENGINE,
     kinds: dict | None = None,
     areas=None,
+    planted=None,
 ) -> dict:
     """Plan ``goal`` for robots at ``starts`` ({pddl robot name: [x, y]}).
 
@@ -423,6 +424,10 @@ def solve(
     :func:`area_symbols`), which a GRSTAPS-X goal may name as regions.
     Raises ValueError for a goal that cannot be planned (the reason in words).
     """
+    from . import mocks
+
+    # mock objects the goal names join a copy of the graph's object layer
+    G = mocks.graph_with(G, mocks.named(goal, planted))
     named = goal_areas(goal, areas)
     if check_engine(engine) == "grstaps":
         return _solve_grstaps(goal, starts, G, constraints, geofences, kinds, named)
@@ -513,7 +518,7 @@ def _grstaps_tasks(steps, back) -> list[Task]:
 
 def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constraints=None,
               geofences=None, text: str = "", name: str = "",
-              engine: str = DEFAULT_ENGINE, areas=None) -> tuple[Mission, dict]:  # fmt: skip
+              engine: str = DEFAULT_ENGINE, areas=None, planted=None) -> tuple[Mission, dict]:  # fmt: skip
     """A mission for the ground agents that achieves ``goal`` (see :func:`solve`).
     The drawn ``areas`` the goal names are kept with it (``goal.areas``), so a
     replan plans the same polygons."""
@@ -522,7 +527,7 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
     engine = check_engine(engine)
     src = src or service._default_src()
     m0 = Mission(text=text or goal, name=name, src=src, agents=agents, planner="omniplanner",
-                 geofences=geofences or [],
+                 geofences=geofences or [], planted=[p if isinstance(p, dict) else p.model_dump() for p in planted or []],
                  goal={"pddl": goal, "constraints": list(constraints or []), "engine": engine})  # fmt: skip
     named = goal_areas(goal, areas)
     if named:
@@ -553,7 +558,11 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
         engine=engine,
         kinds=kinds,
         areas=m0.goal.get("areas"),
+        planted=m0.planted,
     )
+    from . import mocks
+
+    G = mocks.graph_with(G, mocks.named(goal, m0.planted))  # to_node sees them too
     if engine == "grstaps":
         m0.tasks = _grstaps_tasks(out["steps"], back)
         if not m0.tasks:

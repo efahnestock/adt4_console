@@ -50,6 +50,19 @@ export interface Planted {
   label: string;
   pos: number[];
   size_m?: number;
+  /** its object symbol, O(900001), ...: a ground goal names it like any object */
+  sym?: string;
+}
+
+/** Mock objects are objects O(900001), O(900002), ... (far above real ones). */
+export const MOCK_BASE = 900000;
+
+/** The next free mock-object symbol. */
+export function nextMockSym(planted: readonly Planted[]): string {
+  const used = new Set(planted.map(p => Number(/\d+/.exec(p.sym ?? "")?.[0])).filter(n => n > MOCK_BASE));
+  let n = MOCK_BASE + 1;
+  while (used.has(n)) n++;
+  return `O(${n})`;
 }
 
 export interface Mission {
@@ -731,7 +744,7 @@ export function onMapClick(p: number[], sym: string | null = null): boolean {
       void moveStart(t.agent, xy);
       return true;
     case "plant":
-      s.set({planted: [...s.planted, {label: t.label, pos: xy, size_m: 1.5}]});
+      s.set({planted: [...s.planted, {label: t.label, pos: xy, size_m: 1.5, sym: nextMockSym(s.planted)}]});
       return true;
     case "area":
       s.set({draft: [...s.draft, xy]});

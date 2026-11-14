@@ -215,7 +215,7 @@ export function MockObjects() {
         <button
           className={`btn btn-xs ${tool.kind === "plant" ? "on" : ""}`}
           onClick={() => armMissionTool(tool.kind === "plant" ? {kind: "none"} : {kind: "plant", label: label.trim() || "object"})}
-          title="Place mock objects only the simulated quad camera sees (rehearsals); a search finds one when its query matches the label"
+          title="Place mock objects for this mission: objects the planner can use (inspect, move) and the simulated quad camera can find; staged for real before the mission runs on robots"
         >
           Plant mock
         </button>
@@ -223,8 +223,9 @@ export function MockObjects() {
       {planted.length > 0 && (
         <ul className="mission-chips">
           {planted.map((p, i) => (
-            <li key={`p-${i}`} className="chip chip-plant">
+            <li key={`p-${i}`} className="chip chip-plant" title={p.sym ? `${p.sym}: a goal names it ${p.sym.replace(/[()]/g, "").toLowerCase()}` : undefined}>
               mock {p.label}
+              {p.sym && <span className="mono muted"> {p.sym}</span>}
               <button aria-label={`Remove mock ${p.label}`} onClick={() => set({planted: planted.filter((_, k) => k !== i)})}>
                 ×
               </button>
