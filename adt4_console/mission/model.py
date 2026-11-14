@@ -105,6 +105,8 @@ class PlantedObject(BaseModel):
     label: str
     pos: list[float]  # map [x, y]
     size_m: float = 1.5
+    # its object symbol, O(900001), ... (mocks.MOCK_BASE + n): a PDDL goal names it as o900001
+    sym: str | None = None
 
 
 class Mission(BaseModel):
@@ -137,6 +139,9 @@ class Mission(BaseModel):
 
     @model_validator(mode="after")
     def _consistent(self):
+        from .mocks import fill_symbols
+
+        fill_symbols(self.planted)
         if len(self.agents) > MAX_AGENTS:
             raise ValueError(f"at most {MAX_AGENTS} agents, got {len(self.agents)}")
         ids = [a.id for a in self.agents]

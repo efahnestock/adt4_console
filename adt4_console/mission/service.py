@@ -521,6 +521,8 @@ class MissionService:
         )
         world = self.world(m)
         plan = mission_plan(m, self._no_go_constraints(m, world))
+        if plan and plan.get("pddl"):
+            self._stage_mocks(m, world, plan["pddl"])
         if plan and "fallback" in plan:
             log.info("mission %s: sending a goto per task (%s)", mid, plan["fallback"])
         with self._lock:
@@ -536,6 +538,26 @@ class MissionService:
             )
             self.runs[mid] = run
         return run.control("play")
+
+    def _stage_mocks(self, m, world, pddl: str) -> None:
+        """Mock objects the goal names go into the map under their own symbols
+        (O(900001), ...) before it is sent: the operator has staged the real
+        objects there, and the robots' planner must know them."""
+        from . import mocks
+
+        objects = mocks.named(pddl, m.planted)
+        if not objects:
+            return
+        sid = self._edit_src(m.src)
+        if sid is None:
+            raise ValueError("the goal names mock objects, which can only be staged in a Neo4j map")
+        have = (lambda sym: world.graph.symbol_pos(sym) is not None) if world.graph is not None else (lambda s: False)
+        ops = mocks.create_ops(objects, have)
+        if not ops:
+            return
+        self.edits.apply(sid, ops, author={"via": "mission execute", "mission": m.id}, stage=False,
+                         summary="stage mock objects: " + ", ".join(o["symbol"] for o in ops))  # fmt: skip
+        log.info("mission %s: staged mock objects %s in %s", m.id, [o["symbol"] for o in ops], sid)
 
     def _send_plan(self, robot, pddl, constraints, engine):
         """The mission's PDDL goal, through the robot's planner as the Plan tab sends it

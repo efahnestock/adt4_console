@@ -419,3 +419,52 @@ def test_expand_areas_spells_each_form():
         omni._mesh_places = orig
     assert "area1" not in g and "(or (visited-place p" in g and "(or (at-place spot1 p" in g
     assert set(used["area1"]) <= set(syms)
+
+
+CRATE = {"label": "crate", "pos": [5.0, 5.0]}
+
+
+def test_mock_objects_are_objects_to_the_planner(svc):
+    """A planted mock object is O(900001) in a copy of the planner's object layer:
+    a ground goal inspects or moves it; the shared graph is not changed."""
+    import spark_dsg as dsg
+
+    _, service = svc
+    G = _G(service)
+    m, _ = omni.plan_pddl("(inspected-by spot1 o900001)", [SPOT1, SPOT2], None, service, planted=[CRATE])
+    assert [(t.agent, t.type, t.target) for t in m.tasks] == [("spot1", "inspect", "O(900001)")]
+    assert m.planted[0].sym == "O(900001)"
+    assert not G.has_node(dsg.NodeSymbol("O", 900001))  # only the planning copy has it
+    m, _ = omni.plan_pddl(f"(object-in-place o900001 {_place(G, 0, 0)})", [SPOT1], None, service,
+                          planted=[CRATE])  # fmt: skip
+    assert {t.type for t in m.tasks} >= {"pick", "place"}
+    with pytest.raises(ValueError, match="o900002 is not a mock object"):
+        omni.plan_pddl("(visited-object o900002)", [SPOT1], None, service, planted=[CRATE])
+
+
+def test_mock_object_targets_simulate_and_stage_on_execute(svc):
+    """The simulator finds a mock target where it was planted (no missing-target
+    error), and Execute stages the mock objects the goal names in the map first."""
+    from adt4_console.mission import mocks
+
+    _, service = svc
+    m, _ = omni.plan_pddl("(visited-object-by spot1 o900001)", [SPOT1], None, service, planted=[CRATE])
+    pv = service.preview(m)
+    assert not [i for i in pv["issues"] if i["level"] == "error"], pv["issues"]
+    assert not [i for i in pv["issues"] if i.get("code") == "planted_unmatched"]
+    ops = mocks.create_ops(mocks.named("(visited-object-by spot1 o900001)", m.planted))
+    assert ops == [{"op": "create_node", "layer": "Object", "symbol": "O900001", "class": "crate",
+                    "name": "crate", "pos": [5.0, 5.0]}]  # fmt: skip
+    applied = []
+
+    class _Edits:
+        def apply(self, sid, ops, **kw):
+            applied.append((sid, ops))
+
+    service.edits, src = _Edits(), m.src
+    m.src = "neo4j:test"
+    service._stage_mocks(m, service.world(m), "(visited-object-by euclid o900001)")
+    assert applied and applied[0][0] == "neo4j:test" and applied[0][1][0]["symbol"] == "O900001"
+    m.src = src
+    with pytest.raises(ValueError, match="Neo4j map"):
+        service._stage_mocks(m, service.world(m), "(visited-object-by euclid o900001)")

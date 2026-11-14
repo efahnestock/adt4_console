@@ -196,6 +196,8 @@ class OmniBody(BaseModel):
     areas: list[dict] | None = None
     # which omniplanner engine plans it: fast_downward (default) or grstaps (GRSTAPS-X)
     engine: str | None = None
+    # the mission's mock objects [{label, pos, sym?}]: a goal may name them (o900001)
+    planted: list[dict] | None = None
 
 
 def _engine_or_503(omni_planner, engine):
@@ -228,7 +230,8 @@ def plan_omniplanner(body: OmniBody, request: Request):
     if body.pddl_goal:
         try:
             m, planned = omni_planner.plan_pddl(body.pddl_goal, body.agents, src, svc, body.constraints,
-                                                text=body.text, engine=engine, areas=body.areas)  # fmt: skip
+                                                text=body.text, engine=engine, areas=body.areas,
+                                                planted=body.planted)  # fmt: skip
         except ValueError as e:
             return _planning_failed(e)
         out = svc.put(m)
@@ -332,7 +335,7 @@ def replan(mid: str, body: ReplanBody, request: Request):
     try:
         new, planned = omni_planner.plan_pddl(goal, agents, m.src, svc, m.goal.get("constraints"), m.geofences,
                                               text=m.text, name=m.name, engine=engine,
-                                              areas=m.goal.get("areas"))  # fmt: skip
+                                              areas=m.goal.get("areas"), planted=m.planted)  # fmt: skip
     except ValueError as e:
         return _planning_failed(e)
     new = new.model_copy(
