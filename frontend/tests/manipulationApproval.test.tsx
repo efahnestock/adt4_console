@@ -277,49 +277,26 @@ describe("manipulation approval dialog", () => {
     expect(container.querySelector('[data-testid="depth-overlay"]')).toBeNull();
   });
 
-  it("shows response failures and clearly identifies simulation", async () => {
-    const request = {...fixture(), simulated: true};
-    render(request, vi.fn().mockRejectedValue(new Error("Request was superseded")));
+  it("shows response failures", async () => {
+    render(fixture(), vi.fn().mockRejectedValue(new Error("Request was superseded")));
     imageLoaded();
-    expect(container.textContent).toContain("SIMULATION — no robot response");
     expect(container.textContent).toContain("including pick or drag");
     await act(async () => button("Approve selected").click());
     expect(container.querySelector('[role="alert"]')!.textContent).toBe("Request was superseded");
   });
 });
 
-describe("simulated manipulation request", () => {
-  it("hides the test button unless the console URL has ?manipulation-demo", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({available: true, error: null, requests: []}), {status: 200})));
-    window.history.replaceState(null, "", "/");
+describe("manipulation approval host", () => {
+  it("offers no test dialog when nothing is pending", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      JSON.stringify({available: true, error: null, requests: []}), {status: 200})));
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    await act(async () => root!.render(<ManipulationApprovalHost />));
-    expect(container.textContent).not.toContain("Test manipulation dialog");
-  });
-
-  it("opens the test dialog without a robot connection or any automatic response", async () => {
-    const request = {...fixture(), simulated: true};
-    let demo = false;
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "api/manipulation/demo") demo = true;
-      return new Response(JSON.stringify(url.endsWith("pending")
-        ? {available: false, error: "ROS unavailable", requests: demo ? [request] : []}
-        : {id: request.id}), {status: 200});
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
+    // not even with the flag that used to show it
     window.history.replaceState(null, "", "/?manipulation-demo");
     await act(async () => root!.render(<ManipulationApprovalHost />));
-    await act(async () => button("Test manipulation dialog").click());
     window.history.replaceState(null, "", "/");
-    expect(container.textContent).toContain("SIMULATION — no robot response");
-    expect(container.textContent).not.toContain("ROS unavailable");
-    imageLoaded();
-    expect(button("Approve selected").disabled).toBe(false);
-    expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/respond"))).toBe(false);
+    expect(container.querySelector("button")).toBeNull();
   });
 });

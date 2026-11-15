@@ -185,7 +185,6 @@ def build_services(
         hub,
         available=lambda: svc.ros.available,
         error=lambda: svc.ros.error,
-        default_robot=lambda: (settings.robots or fleet.robots() or ["euclid"])[0],
     )
     ros.manipulation = svc.manipulation
     from .planner_state import PlannerState
