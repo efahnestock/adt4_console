@@ -1709,6 +1709,58 @@ confirm with **Confirm** / **Cancel**. Above the table are the map and planner v
 epochs (flagged when the epochs differ), and the last plan error. The Chat panel shows the
 same view folded under one line (`Planner believes: euclid holds O11 · hamilton —`).
 
+## 22. USB bag drives (`drives.py`, `routes/drives.py`)
+
+Robots run the `bag-drive` helper: a udev rule and a systemd unit mount any USB
+drive at `/mnt/bag_drives/<label or UUID>`. The console only talks to it over the
+fleet's ssh. A copy runs `rsync` on the robot itself, from its output root
+straight onto the drive, so bag data never crosses the radio.
+
+* `GET /api/drives` → `{updated, machines: [{name, role, online, installed,
+  drives, error}]}`. One ssh `bag-drive status --json` per online machine, in
+  parallel. `installed: false` = the helper is not on that machine. Each drive:
+  `{name, label, uuid, fstype, mountpoint, write_dir, mounted, managed,
+  size_bytes, free_bytes, usb_speed_mbps, slow_link, error, copy_job}`.
+  `write_dir` is where the machine's user can write (the drive root, or its
+  `bags/` folder on a drive whose root is root-owned; `""` = read-only).
+  `slow_link` = a USB 2.0 link (under 5000 Mbit/s): wrong port or cable.
+  `copy_job` = the copy job writing to the drive now, else null.
+* `POST /api/drives/eject` `{machine, drive}` → `{ok, message}`. Runs
+  `sudo -n bag-drive eject` (sync, unmount, power down). 409 while a copy to
+  that drive is running; 502 with the helper's message when it fails (drive busy).
+* `GET /api/drives/bags?machine=&drive=` → `{machine, drive, root, runs: [{name,
+  mtime, bytes, dest_bytes, recording, on_drive, bags: [{name, bytes, files,
+  metadata, recording, dest_bytes, on_drive}]}]}`, newest first. A bag is a
+  directory with `*.mcap` / `*.db3` files directly inside a run of the output
+  root (`drives.BAG_SCAN`: the one place that decides what a bag is).
+  `recording` = a bag file changed in the last minute (still being written); a
+  copy of such a run is refused with 409. With `drive`, `on_drive` says what of
+  the run is already there: `"verified"` (every byte, and the hash manifest of a
+  finished check), `"copied"` (every byte, not hashed), `"partial"` (an
+  interrupted copy, `dest_bytes` of `bytes`), `""` (nothing).
+* `POST /api/drives/copy` `{machine, drive, runs, remove_source=false}` →
+  `{job_id, bytes, to_copy}`; job kind `drive_copy`. Each bag goes to
+  `<write_dir>/<machine>/<run>/<bag>/`. 400 bad names / no runs, 404 unknown
+  drive or run, 409 not mounted, read-only, a run still recording, not enough
+  free space for what is not on the drive yet, or a copy already running to
+  that drive.
+  * Copy: `rsync --append` on the machine. Progress key `<machine> copy`, by
+    bytes over all selected bags.
+  * Verify: straight after each bag, the SHA-256 of every file is computed on
+    the machine for the original and for the copy at the same time (the copy is
+    dropped from the page cache first, so the drive itself is read). It takes one
+    read of the drive, about 2 minutes per 100 GB on a 10 Gbit/s link; the hash
+    is not the limit. Progress key `<machine> verify`. On success the hashes are
+    written beside the copy as `<bag>.sha256` (`sha256sum -c` format), which is
+    what marks the bag `verified`. A file whose hash differs is removed from the
+    drive and the job fails; copy again to rewrite it.
+  * Interrupt and resume: `POST /api/jobs/{id}/cancel` stops the rsync and keeps
+    what is on the drive (state `cancelled`); the drive can be ejected. The same
+    copy request later, on any machine-and-drive pair holding that data,
+    continues each file where it stopped and skips bags that are `verified`.
+  * With `remove_source`, once every selected bag is verified the job asks
+    (typed `delete`), and only on a yes are the bags removed from the machine.
+
 ## Deviations
 
 ### fleetlink (§8)

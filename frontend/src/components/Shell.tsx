@@ -16,6 +16,7 @@ const P = {
   viewer: "M12 2l9 5v10l-9 5-9-5V7zM12 12l9-5M12 12v10M12 12L3 7",
   mission: "M12 21s-6-5.6-6-10a6 6 0 0112 0c0 4.4-6 10-6 10zM12 13a2 2 0 100-4 2 2 0 000 4zM3 21h18",
   network: "M12 20a2 2 0 100-4 2 2 0 000 4zM7.5 13.5a6.5 6.5 0 019 0M4.5 10.5a11 11 0 0115 0M1.5 7.5a15.5 15.5 0 0121 0",
+  drives: "M4 14h16v6H4zM4 14l3-9h10l3 9M7.5 17h.01M11 17h6",
   config: "M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M14 4v4M8 10v4M16 16v4",
   jobs: "M4 5h16M4 10h16M4 15h10M4 20h7",
   layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5",
@@ -45,6 +46,8 @@ const ALL_NAV: NavItem[] = [
   {to: "/viewer", label: "Robot viewer", short: "Viewer", icon: "viewer"},
   {to: "/mission", label: "Mission planner", short: "Mission", icon: "mission"},
   {to: "/network", label: "Network", icon: "network", feature: "fleet_core"},
+  // bag drives are reached over the fleet core's ssh
+  {to: "/drives", label: "Drives", icon: "drives", feature: "fleet_core"},
   {to: "/config", label: "Config", icon: "config"},
 ];
 
