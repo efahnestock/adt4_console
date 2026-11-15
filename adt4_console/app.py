@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import html
 import logging
+import os
 import pathlib
 from dataclasses import dataclass, field
 
@@ -215,11 +216,45 @@ def build_services(
     from .trials import TrialService
 
     svc.trials = TrialService(settings, fleet, lambda: svc.helpers, hub)
+    svc.trials.context = lambda: trial_context(svc)
     try:
         svc.trials.restore()  # a trial still recording when the console last exited
     except Exception:  # noqa: BLE001
         log.exception("restoring the active trial")
     return svc
+
+
+def trial_context(svc) -> dict:
+    """What the console is working with, for a trial's record: the active
+    launch (experiment, robots, prior map), the live map with the hash of its
+    scene graph file, and the missions.  Each part fails on its own."""
+    import hashlib
+
+    out: dict = {}
+
+    def put(key, fn):
+        try:
+            out[key] = fn()
+        except Exception as e:  # noqa: BLE001
+            out[key] = {"error": f"{type(e).__name__}: {e}"}
+
+    def live_map():
+        st = svc.maps.status()
+        keep = {k: st.get(k) for k in ("target", "uri", "run", "name", "dsg", "nodes", "ready")}
+        dsg = keep.get("dsg")
+        if dsg and os.path.isfile(str(dsg)) and os.path.getsize(str(dsg)) < 4 * 10**9:
+            h = hashlib.sha256()
+            with open(str(dsg), "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            keep["dsg_sha256"] = h.hexdigest()
+        return keep
+
+    put("launch", lambda: svc.launch_state.get() if svc.launch_state else None)
+    put("map", live_map)
+    put("missions", lambda: svc.missions.list()[:30] if svc.missions else [])
+    put("ros", lambda: bool(svc.settings.ros))
+    return out
 
 
 def _live_target(svc):

@@ -560,6 +560,117 @@ def test_preflight_reports_missing_helper_and_running_recorder(rig):
     )  # no rate known yet
 
 
+def test_this_machine_is_always_recorded_and_gets_every_robots_plan(rig):
+    with rig.svc.fleet.lock:
+        rig.svc.fleet.runtime_config["willow"]["local"] = True
+    # this machine's helper runs locally, not over ssh
+    rig.t._run_local = lambda cmd, timeout: rig.fake.ssh_cmd(
+        "me", "local", cmd, timeout=int(timeout)
+    )
+    a = start(rig, machines=["euclid"]).json()["active"]  # the base was not picked
+    assert sorted(a["machines"]) == ["euclid", "willow"]
+    args = next(x for ip, x in rig.fake.calls if x[0] == "start" and "willow" in x)
+    assert args[args.index("--topic-set") + 1] == "base_station"
+    robots = args[args.index("--robots") + 1].split(",")
+    assert {"euclid", "hamilton", "gauss"} <= set(robots) and "willow" not in robots
+    pre = rig.c.get("/api/trials/preflight").json()
+    assert pre["base_station"] == "willow" and pre["base_note"] is None
+    assert next(m for m in pre["machines"] if m["name"] == "willow")["required"] is True
+
+
+def test_preflight_says_when_there_is_no_base_station_bag(rig):
+    pre = rig.c.get("/api/trials/preflight").json()
+    assert pre["base_station"] is None and "no base-station bag" in pre["base_note"]
+
+
+def test_context_is_saved_at_start_and_stop(rig):
+    state = {
+        "map": {"name": "b45_v3", "dsg_sha256": "aa"},
+        "launch": {"experiment": "nov15"},
+    }
+    rig.t.context = lambda: json.loads(json.dumps(state))
+    a = start(rig).json()["active"]
+    assert a["context_start"]["map"]["name"] == "b45_v3"
+    state["map"] = {
+        "name": "b45_v4",
+        "dsg_sha256": "bb",
+    }  # the map was switched mid-trial
+    last = rig.c.post("/api/trials/stop").json()["last"]
+    assert last["context_start"]["map"]["dsg_sha256"] == "aa"
+    assert last["context_stop"]["map"]["dsg_sha256"] == "bb"
+    ctx = [e for e in events(rig, a["trial_id"]) if e["type"] == "context"]
+    assert [e["when"] for e in ctx] == ["start", "stop"]
+
+
+def test_a_failing_context_does_not_stop_the_trial(rig):
+    def boom():
+        raise RuntimeError("neo4j is down")
+
+    rig.t.context = boom
+    a = start(rig).json()["active"]
+    assert a["state"] == "recording" and "neo4j is down" in a["context_start"]["error"]
+
+
+def test_default_console_context_parts_fail_on_their_own(rig):
+    from adt4_console.app import trial_context
+
+    ctx = trial_context(rig.svc)
+    assert set(ctx) == {"launch", "map", "missions", "ros"}
+    assert ctx["launch"] is None and ctx["ros"] is False
+
+
+def test_hub_state_is_logged_while_recording_deduped(rig):
+    rig.svc.hub.publish("manipulation/pending", [{"id": "before"}])  # no trial: nothing
+    a = start(rig).json()["active"]
+    rig.svc.hub.publish(
+        "manipulation/pending", [{"id": "r1", "robot": "euclid", "kind": "pick"}]
+    )
+    rig.now[0] += 1
+    rig.svc.hub.publish(
+        "manipulation/pending", [{"id": "r1", "robot": "euclid", "kind": "pick"}]
+    )  # same
+    rig.svc.hub.publish("robot/euclid/state", {"x": 1})  # not a logged topic
+    rig.now[0] += 1
+    rig.svc.hub.publish("manipulation/pending", [])
+    rig.svc.hub.publish("mission/m1", {"plan": ["x" * 50_000]})  # cut, not dropped
+    rig.t._drain_hub()
+    hub = [e for e in events(rig, a["trial_id"]) if e["type"] == "hub"]
+    assert [(e["topic"], e["data"]) for e in hub[:2]] == [
+        ("manipulation/pending", [{"id": "r1", "robot": "euclid", "kind": "pick"}]),
+        ("manipulation/pending", []),
+    ]
+    assert hub[2]["topic"] == "mission/m1" and hub[2]["data"]["_chars"] > 50_000
+
+
+def test_ui_events_are_logged_only_while_recording(rig):
+    body = {"events": [{"kind": "click", "label": "Approve", "detail": "in dialog: Approve pick?",
+                        "page": "/viewer", "t_client": 1.5, "evil": {"x": 1}},
+                       {"label": "no kind"}, "junk"]}  # fmt: skip
+    assert rig.c.post("/api/trials/ui", json=body).json() == {"logged": 0}
+    a = start(rig).json()["active"]
+    assert rig.c.post("/api/trials/ui", json=body).json() == {"logged": 1}
+    ui = [e for e in events(rig, a["trial_id"]) if e["type"] == "ui"]
+    assert len(ui) == 1 and ui[0]["label"] == "Approve" and ui[0]["page"] == "/viewer"
+    assert ui[0]["action"] == "click"
+    assert "evil" not in ui[0]
+    # and the ui post itself is not logged again as a request
+    assert not [e for e in events(rig, a["trial_id"]) if e["type"] == "request"]
+
+
+def test_plan_requests_keep_their_response_and_previews_are_logged(rig):
+    a = start(rig).json()["active"]
+    r = rig.c.post("/api/mission/plan/preview_pddl", json={"goal": "(and)"})
+    reqs = [e for e in events(rig, a["trial_id"]) if e["type"] == "request"]
+    assert [(e["path"], e["status"]) for e in reqs] == [
+        ("/api/mission/plan/preview_pddl", r.status_code)
+    ]
+    assert reqs[0]["body"] == {"goal": "(and)"} and "response" in reqs[0]
+    assert tr.wants_response("/api/robots/euclid/goal/pddl") and tr.wants_response(
+        "/api/edit/live/nodes"
+    )
+    assert not tr.wants_response("/api/fleet/status/refresh")
+
+
 # ------------------------------------------------------------ request log
 def test_operator_requests_are_logged_only_while_recording(rig):
     rig.c.post("/api/fleet/status/refresh")  # before: not logged anywhere

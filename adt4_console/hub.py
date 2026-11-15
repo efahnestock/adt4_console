@@ -225,6 +225,12 @@ class Hub:
                     client.push_video(topic, frame, key)
 
     def publish(self, topic: str, data) -> int:
+        tap = getattr(self, "tap", None)  # trials.py: logs some topics during a trial
+        if tap is not None:
+            try:
+                tap(topic, data)
+            except Exception:  # noqa: BLE001
+                pass
         with self._lock:
             self._seq[topic] += 1
             seq = self._seq[topic]

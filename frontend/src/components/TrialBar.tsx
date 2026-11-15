@@ -101,15 +101,17 @@ function StartDialog({onClose}: {onClose: () => void}) {
   const [desc, setDesc] = useState("");
   const [pre, setPre] = useState<PreflightMachine[] | null>(null);
   const [preError, setPreError] = useState<unknown>(null);
+  const [baseNote, setBaseNote] = useState<string | null>(null);
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   useEffect(() => {
     let live = true;
-    getJSON<{machines: PreflightMachine[]}>("api/trials/preflight")
+    getJSON<{machines: PreflightMachine[]; base_note?: string | null}>("api/trials/preflight")
       .then(r => {
         if (!live) return;
         setPre(r.machines);
+        setBaseNote(r.base_note ?? null);
         setPicked(Object.fromEntries(r.machines.map(m => [m.name, m.ready])));
       })
       .catch(e => live && setPreError(e));
@@ -147,7 +149,7 @@ function StartDialog({onClose}: {onClose: () => void}) {
           <tbody>
             {pre.map(m => (
               <tr key={m.name} className={m.ready ? "" : "muted"}>
-                <td><input type="checkbox" checked={!!picked[m.name]} disabled={!m.ready} onChange={e => setPicked(p => ({...p, [m.name]: e.target.checked}))} aria-label={`Record on ${m.name}`} /></td>
+                <td><input type="checkbox" checked={!!picked[m.name]} disabled={!m.ready || !!m.required} title={m.required ? "The base station is always recorded" : undefined} onChange={e => setPicked(p => ({...p, [m.name]: e.target.checked}))} aria-label={`Record on ${m.name}`} /></td>
                 <td className="strong">{m.name}</td>
                 <td>{m.free_bytes != null ? fmtBytes(m.free_bytes) : "?"}</td>
                 <td title={m.rate_bps ? `at ${fmtRate(m.rate_bps)}, the rate of this machine's last trial` : "no trial recorded on this machine yet: the rate is not known"}>
@@ -159,6 +161,7 @@ function StartDialog({onClose}: {onClose: () => void}) {
           </tbody>
         </table>
       )}
+      {baseNote && <p className="tone-err small" data-testid="trial-base-note">{baseNote}</p>}
       {error != null && <ErrorBox error={error} compact />}
     </Modal>
   );

@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import pathlib
+import queue
 import re
 import shlex
 import subprocess
@@ -195,15 +196,44 @@ def summarize_body(raw: bytes, limit: int = 4000):
 DROP_KEYS = {"history", "image", "images", "token", "password", "api_key"}
 LOG_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # not operator decisions, or far too many of them
-SKIP_PATH_PARTS = (
-    "/teleop/cmd_vel",
-    "/api/trials",
-    "/api/jobs/",
-    "/dry_run",
-    "/preview",
+SKIP_PATH_PARTS = ("/teleop/cmd_vel", "/api/trials")
+# requests whose answer is part of what happened (the plan a mission got, what
+# an edit changed, what the chat said): body and response are kept up to BIG
+CAPTURE_PREFIXES = (
+    "/api/chat",
+    "/api/mission",
+    "/api/plan",
+    "/api/edit",
+    "/api/manipulation",
 )
-CAPTURE_RESPONSE = ("/api/chat",)
-MAX_BODY = 64_000
+CAPTURE_PARTS = ("/goal/", "/executor/", "/path/")
+BIG = 200_000
+# console state published to the browsers that is logged as it changes
+HUB_PREFIXES = ("manipulation/", "mission/", "maps/active", "goal_track/")
+HUB_MIN_GAP_S = 0.5
+HUB_MAX_CHARS = 20_000
+UI_KEYS = ("kind", "label", "page", "detail", "t_client")
+UI_MAX_EVENTS = 200
+
+
+def wants_response(path: str) -> bool:
+    return path.startswith(CAPTURE_PREFIXES) or any(p in path for p in CAPTURE_PARTS)
+
+
+def clip_json(data, limit: int):
+    """``data`` if its JSON is at most ``limit`` characters, else a cut copy."""
+    try:
+        text = json.dumps(data, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        text = str(data)
+    return (
+        data
+        if len(text) <= limit
+        else {"_truncated": text[:limit], "_chars": len(text)}
+    )
+
+
+MAX_BODY = BIG
 MAX_RESPONSE = 200_000
 
 
@@ -229,6 +259,14 @@ class TrialService:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # () -> dict: what the console is working with (launch, map, missions),
+        # saved into the trial at start and at stop
+        self.context = None
+        self._hub_q: queue.Queue = queue.Queue(maxsize=2000)
+        self._hub_last: dict[str, tuple[float, int]] = {}
+        self._hub_thread: threading.Thread | None = None
+        if hub is not None:
+            hub.tap = self.hub_tap
 
     # ------------------------------------------------------------ plumbing
     @property
@@ -373,12 +411,39 @@ class TrialService:
             unknown = [n for n in names if n not in known]
             if unknown:
                 raise TrialError(404, f"unknown machine(s): {', '.join(unknown)}")
-            return [m for m in machines if m["name"] in names]
+            # this machine (the base station) is always part of a trial
+            return [m for m in machines if m["name"] in names or m.get("local")]
         # default: every robot that answers, and this machine
         return [
             m for m in machines
             if (m.get("role") == "robot" and m.get("online")) or m.get("local")
         ]  # fmt: skip
+
+    def _robots(self) -> list[str]:
+        with self.fleet.lock:
+            return sorted(
+                n
+                for n, m in self.fleet.runtime_config.items()
+                if m.get("role") == "robot"
+            )
+
+    def _context(self) -> dict | None:
+        if self.context is None:
+            return None
+        try:
+            return self.context()
+        except Exception as e:  # noqa: BLE001
+            log.exception("trial context")
+            return {"error": f"{type(e).__name__}: {e}"}
+
+    def _snapshot(self, trial: dict, when: str) -> None:
+        """Save what the console is working with into the trial and the log."""
+        ctx = self._context()
+        if ctx is None:
+            return
+        with self.lock:
+            trial[f"context_{when}"] = ctx
+        self.event("context", trial, when=when, context=clip_json(ctx, BIG))
 
     def _by_name(self, names: list[str]) -> list[dict]:
         """The fleet's machines among ``names`` (one that left the topology
@@ -419,6 +484,7 @@ class TrialService:
                 {
                     "name": m["name"],
                     "role": m.get("role"),
+                    "required": bool(m.get("local")),  # the base station always records
                     "ready": bool(r.get("ok"))
                     and not r.get("recording")
                     and topic_set(m) is not None,
@@ -430,7 +496,15 @@ class TrialService:
                     "notes": notes,
                 }
             )
-        return {"updated": round(self.clock(), 3), "machines": out}
+        base = next((m["name"] for m in machines if m.get("local")), None)
+        return {
+            "updated": round(self.clock(), 3),
+            "machines": out,
+            "base_station": base,
+            "base_note": None
+            if base
+            else "this console's machine is not in the topology: no base-station bag will be recorded",
+        }
 
     # -------------------------------------------------------------- start
     def start(self, description: str, machines: list[str] | None = None) -> dict:
@@ -493,6 +567,7 @@ class TrialService:
 
     def _start_all(self, trial: dict, machines: list[dict]) -> None:
         try:
+            self._snapshot(trial, "start")
             self._parallel(lambda m: self._start_machine(trial, m), machines)
             with self.lock:
                 states = [x["state"] for x in trial["machines"].values()]
@@ -520,6 +595,9 @@ class TrialService:
             return
         args = ["start", "--trial", trial["trial_id"], "--machine", name, "--topic-set", tset,
                 "--description", trial["description"], "--base-time", f"{self.clock():.3f}"]  # fmt: skip
+        robots = self._robots()
+        if robots:
+            args += ["--robots", ",".join(robots)]
         reply, t0, t1 = self._rec(m, args, START_TIMEOUT_S)
         if reply.get("ok") and reply.get("recording"):
             warnings = []
@@ -932,6 +1010,8 @@ class TrialService:
 
     def _finalize(self, trial: dict, note: str | None) -> None:
         now = self.clock()
+        self._drain_hub()
+        self._snapshot(trial, "stop")
         with self.lock:
             trial["stopped"], trial["stopped_at"] = round(now, 3), iso(now)
             if trial["state"] != FAILED:
@@ -988,15 +1068,103 @@ class TrialService:
             trial = self.active
         if trial is None:
             return
+        big = wants_response(path)
         fields = {
             "method": method,
             "path": path,
             "status": status,
-            "body": summarize_body(body),
+            "body": summarize_body(body, BIG if big else 20_000),
         }
         if response is not None:
-            fields["response"] = response.decode("utf-8", "replace")
+            try:
+                fields["response"] = clip_json(json.loads(response), BIG)
+            except ValueError:  # a stream (the chat's NDJSON), or cut short
+                fields["response"] = response.decode("utf-8", "replace")
         self.event("request", trial, **fields)
+
+    def log_ui(self, events: list) -> int:
+        """What the operator did on the page (clicks, pages, dialogs), sent by
+        the browser in batches.  Returns how many were logged."""
+        with self.lock:
+            trial = self.active
+        if trial is None:
+            return 0
+        n = 0
+        for ev in (events or [])[:UI_MAX_EVENTS]:
+            if not isinstance(ev, dict) or not ev.get("kind"):
+                continue
+            clean = {
+                k: (v[:500] if isinstance(v, str) else v)
+                for k, v in ev.items()
+                if k in UI_KEYS
+                and k != "kind"
+                and isinstance(v, (str, int, float, bool))
+            }
+            if (
+                self.event("ui", trial, action=str(ev["kind"])[:40], **clean)
+                is not None
+            ):
+                n += 1
+        return n
+
+    # ------------------------------------------------------------ hub tap
+    def hub_tap(self, topic: str, data) -> None:
+        """Called by the hub on every publish, from any thread: must be
+        instant.  The topics worth keeping are queued for the writer."""
+        try:
+            if self.active is None or not topic.startswith(HUB_PREFIXES):
+                return
+            self._hub_q.put_nowait((self.clock(), topic, data))
+            if self.background and (
+                self._hub_thread is None or not self._hub_thread.is_alive()
+            ):
+                self._hub_thread = threading.Thread(
+                    target=self._hub_loop, name="trial-hub", daemon=True
+                )
+                self._hub_thread.start()
+        except Exception:  # noqa: BLE001  a full queue, anything: drop it
+            pass
+
+    def _hub_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                item = self._hub_q.get(timeout=5.0)
+            except queue.Empty:
+                if self.active is None:
+                    return
+                continue
+            try:
+                self._hub_write(*item)
+            except Exception:  # noqa: BLE001
+                log.exception("trial hub log")
+
+    def _drain_hub(self) -> None:
+        while True:
+            try:
+                item = self._hub_q.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._hub_write(*item)
+            except Exception:  # noqa: BLE001
+                log.exception("trial hub log")
+
+    def _hub_write(self, t: float, topic: str, data) -> None:
+        with self.lock:
+            trial = self.active
+        if trial is None:
+            return
+        try:
+            text = json.dumps(data, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            text = str(data)
+        digest = hash(text)
+        last = self._hub_last.get(topic)
+        if last and (last[1] == digest or t - last[0] < HUB_MIN_GAP_S):
+            return  # unchanged, or changing faster than is worth a line each
+        self._hub_last[topic] = (t, digest)
+        self.event("hub", trial, topic=topic, published=round(t, 3),
+                   data=clip_json(data, HUB_MAX_CHARS))  # fmt: skip
 
 
 def _new_machine(m: dict) -> dict:
@@ -1066,10 +1234,25 @@ class TrialRequestLog:
             return
 
         body, resp, status = bytearray(), bytearray(), {}
-        keep_resp = path in CAPTURE_RESPONSE
+        keep_resp = wants_response(path)
+
+        # A small body is read here first and handed on unchanged, so it is
+        # logged even when the app answers without reading it (a 4xx / 503).
+        # A large or unsized one is only copied as the app reads it.
+        early: list = []
+        try:
+            length = int(dict(scope.get("headers") or []).get(b"content-length", b"-1"))
+        except ValueError:
+            length = -1
+        if 0 < length <= MAX_BODY:
+            while True:
+                msg = await receive()
+                early.append(msg)
+                if msg.get("type") != "http.request" or not msg.get("more_body"):
+                    break
 
         async def rx():
-            msg = await receive()
+            msg = early.pop(0) if early else await receive()
             try:
                 if msg.get("type") == "http.request" and len(body) < MAX_BODY:
                     body.extend((msg.get("body") or b"")[: MAX_BODY - len(body)])
@@ -1094,6 +1277,9 @@ class TrialRequestLog:
         try:
             await self.app(scope, rx, tx)
         finally:
+            for msg in early:  # the app never asked for the body
+                if msg.get("type") == "http.request":
+                    body.extend((msg.get("body") or b"")[: MAX_BODY - len(body)])
             try:  # off the event loop: the write is fsynced
                 await asyncio.to_thread(trials.log_request, scope["method"], path, bytes(body),
                                         status.get("code"), bytes(resp) if keep_resp else None)  # fmt: skip

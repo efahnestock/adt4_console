@@ -64,6 +64,17 @@ def flag(body: FlagBody, request: Request):
     return {"ok": True, "event": _call(_trials(request).flag, body.text)}
 
 
+class UiBody(BaseModel):
+    events: list
+
+
+@router.post("/ui")
+def ui(body: UiBody, request: Request):
+    """Operator interactions on the page (clicks, page changes, dialogs),
+    logged as ``ui`` events while a trial is active."""
+    return {"logged": _trials(request).log_ui(body.events)}
+
+
 class StopBody(BaseModel):
     force: bool = (
         False  # a second SIGINT then SIGTERM for a recorder that will not exit

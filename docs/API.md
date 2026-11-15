@@ -1867,6 +1867,31 @@ the response stream (cut at 200 kB). Skipped: `teleop/cmd_vel`, `/api/trials`,
 `/api/jobs/`, dry runs and previews. It forwards every message untouched and
 swallows its own errors.
 
+What else a trial keeps (all in `console/`):
+
+- **This machine always records.** The console's own machine (`local`) is added
+  to every trial with the `base_station` topic list, whatever was picked;
+  `adt4-rec start --robots a,b,c` expands the list's `${ADT4_FLEET_ROBOT}` lines
+  to every robot (their compiled plans). `GET /preflight` carries
+  `base_station` and, when this machine is not in the topology, a `base_note`.
+- **Context** (`trial_context` in `app.py`): `context_start` / `context_stop` in
+  `trial.json` and a `context` event: the active launch (experiment, robots,
+  prior map), the live map (`target, run, name, dsg, nodes` and `dsg_sha256` of
+  its scene graph file) and the missions. Each machine's own `trial.json` has
+  `prior_map`: the stack's `$ADT4_PRIOR_MAP`, its run id / origin and the
+  sha256 of `hydra/backend/dsg.json` and `dsg_with_mesh.json`.
+- **Responses** of `/api/chat`, `/api/mission*`, `/api/plan*`, `/api/edit*`,
+  `/api/manipulation*` and robot `goal/`, `executor/`, `path/` requests are kept
+  with the request (body and response up to 200 kB each). Previews, dry runs
+  and job confirmations are logged like any other request.
+- **`hub` events**: `manipulation/*`, `mission/*`, `maps/active` and
+  `goal_track/*` as published to the browsers, when they change (at most one
+  line per topic per 0.5 s, 20 kB each).
+- **`ui` events** (`POST /api/trials/ui {events}`; `frontend/src/lib/uiLog.ts`):
+  clicks on controls (named by aria-label / test id / text, and the dialog they
+  are in), page changes, dialogs opening (title and text) and closing, checkbox
+  and select changes. Text typed into fields is never sent.
+
 Settings: `trial_recorder` (`$ADT4_REC_CMD`; default
 `~/dcist_ws/src/awesome_dcist_t4/dcist_launch_system/bin/adt4-rec`),
 `trial_poll_s`. After a console restart the newest trial without a `stopped`
