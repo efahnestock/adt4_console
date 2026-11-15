@@ -484,6 +484,128 @@ route("POST", "/api/network/iperf", async (q, r) => {
   })});
 });
 
+// --- USB bag drives (API.md §22): euclid has a fast drive with an interrupted copy
+// on it, hamilton one on a USB 2.0 link, lewis no helper ---
+const GBY = 1e9;
+const driveState = {
+  euclid: {
+    installed: true,
+    drives: [{name: "dcist_ssd3", label: "dcist_ssd3", uuid: "7DFF-FFAA", fstype: "exfat", model: "Extreme 55AE", mountpoint: "/mnt/bag_drives/dcist_ssd3", write_dir: "/mnt/bag_drives/dcist_ssd3", mounted: true, managed: true, size_bytes: 2000 * GBY, free_bytes: 1620 * GBY, usb_speed_mbps: 10000, slow_link: false, error: "", copy_job: null}],
+    runs: [
+      {name: "nov13_b45_field_v3", mtime: now() - 20, bytes: 6.1 * GBY, dest_bytes: 0, recording: true, on_drive: ""},
+      {name: "nov13_b45_field_v2", mtime: now() - 5400, bytes: 77.5 * GBY, dest_bytes: 33.2 * GBY, recording: false, on_drive: "partial"},
+      {name: "nov13_b45_field_v1", mtime: now() - 9000, bytes: 36.2 * GBY, dest_bytes: 36.2 * GBY, recording: false, on_drive: "verified"},
+      {name: "nov11_b45_v3_map_images_v7", mtime: now() - 190000, bytes: 21.8 * GBY, dest_bytes: 0, recording: false, on_drive: ""},
+      {name: "nov11_b45_v3_map_images_v5", mtime: now() - 200000, bytes: 3.3 * GBY, dest_bytes: 0, recording: false, on_drive: ""},
+    ],
+  },
+  hamilton: {
+    installed: true,
+    drives: [{name: "a2874190-9b4d-4d28-b9da-4b7eaa5a91a7", label: "", uuid: "a2874190-9b4d-4d28-b9da-4b7eaa5a91a7", fstype: "ext4", model: "Extreme 55AE", mountpoint: "/mnt/bag_drives/a2874190-9b4d-4d28-b9da-4b7eaa5a91a7", write_dir: "/mnt/bag_drives/a2874190-9b4d-4d28-b9da-4b7eaa5a91a7/bags", mounted: true, managed: true, size_bytes: 1968 * GBY, free_bytes: 1785 * GBY, usb_speed_mbps: 480, slow_link: true, error: "", copy_job: null}],
+    runs: [
+      {name: "nov13_b45_field_v2", mtime: now() - 5400, bytes: 47 * GBY, dest_bytes: 0, recording: false, on_drive: ""},
+      {name: "nov13_b45_field_v1", mtime: now() - 9000, bytes: 30.6 * GBY, dest_bytes: 0, recording: false, on_drive: ""},
+    ],
+  },
+  lewis: {installed: false, drives: [], runs: [], error: "bag-drive is not installed on this machine"},
+  willow: {installed: true, drives: [], runs: []},
+};
+const driveOf = (machine, name) => driveState[machine]?.drives.find(d => d.name === name);
+const copyJob = d => (d.copy_job && ["running", "waiting"].includes(jobs.get(d.copy_job)?.state) ? d.copy_job : null);
+route("GET", "/api/drives", (q, r) =>
+  json(r, 200, {
+    updated: now(),
+    machines: (EMPTY ? [] : machines).map(m => {
+      const st = driveState[m.name] ?? {installed: true, drives: []};
+      return {name: m.name, role: m.role, online: m.online, installed: m.online ? st.installed : null, drives: m.online ? st.drives.map(d => ({...d, copy_job: copyJob(d)})) : [], error: m.online ? (st.error ?? "") : ""};
+    }),
+  }),
+);
+route("GET", "/api/drives/bags", (q, r, m, url) => {
+  const machine = url.searchParams.get("machine");
+  const st = driveState[machine];
+  if (!st) return json(r, 404, {detail: `unknown machine ${machine}`});
+  const drive = url.searchParams.get("drive");
+  const runs = st.runs.map(x => ({...x, ...(drive ? {} : {dest_bytes: 0, on_drive: ""}), bags: [{name: "recorded_data", bytes: x.bytes, files: 2, metadata: true, recording: x.recording}]}));
+  setTimeout(() => json(r, 200, {machine, drive, root: "/home/swarm/adt4_output", runs}), 200);
+});
+route("POST", "/api/drives/eject", async (q, r) => {
+  const b = await readBody(q);
+  const st = driveState[b.machine];
+  const d = driveOf(b.machine, b.drive);
+  if (!d) return json(r, 404, {detail: `${b.machine} has no drive named ${b.drive}`});
+  if (copyJob(d)) return json(r, 409, {detail: `a copy to ${b.drive} is still running (${d.copy_job}): cancel it first`});
+  st.drives = st.drives.filter(x => x !== d);
+  setTimeout(() => json(r, 200, {ok: true, message: `ejected ${b.drive}: unmounted and powered down, safe to unplug`}), 600);
+});
+route("POST", "/api/drives/copy", async (q, r) => {
+  const b = await readBody(q);
+  const st = driveState[b.machine];
+  const d = driveOf(b.machine, b.drive);
+  if (!d) return json(r, 404, {detail: `${b.machine} has no drive named ${b.drive}`});
+  if (copyJob(d)) return json(r, 409, {detail: `a copy to ${b.drive} is already running (${d.copy_job})`});
+  const runs = st.runs.filter(x => (b.runs ?? []).includes(x.name));
+  const total = runs.reduce((n, x) => n + x.bytes, 0);
+  const todo = runs.reduce((n, x) => n + Math.max(0, x.bytes - x.dest_bytes), 0);
+  if (todo > d.free_bytes) return json(r, 409, {detail: `not enough space on ${b.drive}`});
+  const pct = n => (total ? (100 * n) / total : 100);
+  const speed = d.slow_link ? 0.04 * GBY : 0.6 * GBY; // bytes per mock second
+  d.copy_job = newJob("drive_copy", `Copy bags ${b.machine} -> ${b.drive}`, async c => {
+    c.log("heading", `${b.machine}: ${runs.length} bag(s), ${(total / GBY).toFixed(1)} GB -> ${b.drive} (${d.write_dir})`);
+    if (todo < total) c.log("info", `${((total - todo) / GBY).toFixed(1)} GB is already on the drive: continuing from there`);
+    if (d.slow_link) c.log("warn", `${b.drive} is on a USB 2.0 link (${d.usb_speed_mbps} Mbit/s): this will be slow.`);
+    let before = 0;
+    for (const x of runs) {
+      if (x.on_drive === "verified") {
+        c.log("ok", `${x.name}/recorded_data: already on the drive, hashes checked earlier`);
+        before += x.bytes;
+        c.progress(`${b.machine} copy`, pct(before));
+        c.progress(`${b.machine} verify`, pct(before));
+        continue;
+      }
+      c.log("info", `${x.name}/recorded_data (${(x.bytes / GBY).toFixed(1)} GB)`);
+      // sped up: 100 GB on a fast link takes ~40 s
+      while (x.dest_bytes < x.bytes) {
+        await c.sleep(250);
+        if (c.cancelled()) {
+          x.on_drive = x.dest_bytes > 0 ? "partial" : "";
+          c.log("warn", "Copy interrupted. What was written stays on the drive: start the copy again to continue from there. The drive can be ejected now.");
+          return;
+        }
+        const step = Math.min(speed, x.bytes - x.dest_bytes);
+        x.dest_bytes += step;
+        d.free_bytes -= step;
+        x.on_drive = "partial";
+        c.progress(`${b.machine} copy`, pct(before + x.dest_bytes));
+      }
+      x.on_drive = "copied";
+      c.log("dim", "copied; hashing both copies");
+      for (let k = 1; k <= 12; k++) {
+        await c.sleep(250);
+        if (c.cancelled()) return;
+        c.progress(`${b.machine} verify`, pct(before + (x.bytes * k) / 12));
+      }
+      x.on_drive = "verified";
+      before += x.bytes;
+      c.log("ok", `${x.name}/recorded_data: on the drive, SHA-256 of every file matches`);
+    }
+    const removed = [];
+    if (b.remove_source) {
+      const yes = await c.confirm({message: `Delete ${runs.length} bag(s) (${(total / GBY).toFixed(1)} GB) from ${b.machine}? The hashes of the copies on ${b.drive} match. This cannot be undone.`, required_text: "delete", yes_label: "Delete from robot", no_label: "Keep them", detail: {bags: runs.map(x => `${x.name}/recorded_data`)}});
+      if (yes) {
+        for (const x of runs) {
+          st.runs = st.runs.filter(y => y !== x);
+          removed.push(`${x.name}/recorded_data`);
+          c.log("ok", `deleted /home/swarm/adt4_output/${x.name}/recorded_data`);
+        }
+      } else c.log("info", "Bags left on the robot.");
+    }
+    c.log("ok", `Done. Eject ${b.drive} before unplugging it.`);
+    return {copied: runs.map(x => ({run: x.name, bag: "recorded_data"})), removed};
+  });
+  json(r, 200, {job_id: d.copy_job, bytes: total, to_copy: todo});
+});
+
 route("GET", "/api/maps", (q, r) => setTimeout(() => json(r, 200, EMPTY ? {machines: {}} : mapsData), 150));
 route("POST", "/api/maps/transfer", async (q, r) => {
   const b = await readBody(q);

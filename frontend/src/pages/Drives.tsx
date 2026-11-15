@@ -4,7 +4,7 @@
 import {useEffect, useMemo, useState} from "react";
 import {errorText, postJSON, useApi} from "../lib/api";
 import {fmtBytes} from "../lib/fuzzy";
-import {isActive, trackJob, useJobs} from "../stores/jobs";
+import {fetchJob, isActive, useJobs} from "../stores/jobs";
 import {Badge, Card, Empty, ErrorBox, Loading, PageHeader, ProgressBar, Spinner, Toggle} from "../components/ui";
 import {JobStateBadge} from "../components/Jobs";
 
@@ -137,9 +137,9 @@ function DriveRow({machine, drive, onChanged, onMessage}: {machine: string; driv
           {fmtBytes(drive.free_bytes)} free of {fmtBytes(drive.size_bytes)}
           {drive.write_dir && <> · writes to <span className="mono">{drive.write_dir}</span></>}
         </div>
-        {drive.size_bytes > 0 && !copying && <ProgressBar pct={used} tone={used > 90 ? "warn" : "info"} />}
+        {drive.size_bytes > 0 && !copying && <ProgressBar pct={used} label="used" tone={used > 90 ? "warn" : "info"} />}
         {copying && job && Object.entries(job.progress ?? {}).map(([key, pct]) => (
-          <ProgressBar key={key} pct={pct} label={`${key.endsWith("verify") ? "Checking hashes" : "Copying"} ${pct.toFixed(0)}%`} tone={key.endsWith("verify") ? "ok" : "info"} />
+          <ProgressBar key={key} pct={pct} label={key.endsWith("verify") ? "Checking hashes" : "Copying"} tone={key.endsWith("verify") ? "ok" : "info"} />
         ))}
         {drive.error && <div className="small tone-err">{drive.error}</div>}
       </div>
@@ -201,7 +201,10 @@ function BagPicker({machine, drives, onStarted, onMessage}: {machine: string; dr
     setBusy(true);
     try {
       const r = await postJSON<{job_id: string}>("api/drives/copy", {machine, drive: drive.name, runs: runs.filter(x => picked.has(x.name)).map(x => x.name), remove_source: remove});
-      trackJob(r.job_id, `Copy bags ${machine} -> ${drive.name}`);
+      // not trackJob: it opens the Jobs drawer over this card, and the progress
+      // and the Interrupt button are on the drive's row
+      useJobs.getState().upsert({id: r.job_id, kind: "drive_copy", title: `Copy bags ${machine} -> ${drive.name}`, state: "running", created: Date.now() / 1000});
+      void fetchJob(r.job_id);
       setPicked(new Set());
       onStarted();
     } catch (e) {

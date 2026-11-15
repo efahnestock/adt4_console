@@ -108,8 +108,8 @@ describe("Drives page", () => {
     useJobs.getState().upsert({id: "drive_copy-1", kind: "drive_copy", title: "copy", state: "running", created: 1, progress: {"hamilton copy": 42, "hamilton verify": 10}});
     const posts: string[] = [];
     await mount([drive({copy_job: "drive_copy-1"})], url => { posts.push(url); return json({ok: true, state: "cancelled"}); });
-    expect(document.body.textContent).toContain("Copying 42%");
-    expect(document.body.textContent).toContain("Checking hashes 10%");
+    expect(document.body.textContent).toContain("Copying42%");
+    expect(document.body.textContent).toContain("Checking hashes10%");
     await act(async () => document.querySelector<HTMLButtonElement>('[data-testid="pause-copy"]')!.click());
     await flush();
     expect(posts).toEqual(["api/jobs/drive_copy-1/cancel"]);
@@ -150,6 +150,8 @@ describe("Drives page", () => {
     await act(async () => copy().click());
     await flush();
     expect(posts).toEqual([["api/drives/copy", {machine: "hamilton", drive: "dcist_ssd3", runs: ["nov11_b45"], remove_source: false}]]);
-    expect(useJobs.getState().focusId).toBe("drive_copy-7");
+    // the job is tracked, but the Jobs drawer stays shut: progress is on the drive's row
+    expect(useJobs.getState().jobs["drive_copy-7"]?.state).toBe("running");
+    expect(useJobs.getState().drawerOpen).toBe(false);
   });
 });
