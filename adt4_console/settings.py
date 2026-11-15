@@ -48,6 +48,11 @@ class Settings:
     # station; None = memory only (tests).  cli.py sets ~/.adt4_console/launch_memory.json
     launch_memory_path: str | None = None
     planner_ns: str | None = None  # omniplanner namespace (base station name)
+    # trials (trials.py): the recorder helper on every machine (None: the
+    # dcist_ws checkout's dcist_launch_system/bin/adt4-rec) and how often each
+    # recording machine is asked for its status while a trial runs
+    trial_recorder: str | None = field(default_factory=lambda: os.environ.get("ADT4_REC_CMD"))
+    trial_poll_s: float = 10.0
     # browser terminals on fleet machines (a shell for anyone who can reach the console)
     terminal: bool = False
     static_dir: pathlib.Path = STATIC_DIR

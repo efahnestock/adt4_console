@@ -5,6 +5,7 @@ import {useFleet} from "../stores/fleet";
 import {isActive, useJobs} from "../stores/jobs";
 import {onBackendState} from "../lib/api";
 import {JobConfirmHost, JobsDrawer} from "./Jobs";
+import {TrialBar} from "./TrialBar";
 import {Dot, Sheet} from "./ui";
 import {useTheme} from "../stores/theme";
 import {featureOn, type Feature} from "../lib/features";
@@ -283,6 +284,7 @@ export function Shell() {
       </nav>
       <div className="main">
         <TopBar />
+        <TrialBar />
         {!backendUp && (
           <div className="banner banner-err" role="alert">
             Console server unreachable. Showing the last known data; reconnecting automatically.

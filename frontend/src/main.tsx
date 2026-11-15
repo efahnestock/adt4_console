@@ -10,6 +10,7 @@ import {bindNavViz} from "./stores/navViz";
 import {bindLiveAnchor} from "./stores/mission";
 import {bindRobotColors} from "./stores/robotColors";
 import {bindTheme} from "./stores/theme";
+import {bindTrial} from "./stores/trial";
 import "./styles.css";
 import "./theme.css";
 
@@ -21,6 +22,7 @@ bindRobots();
 bindNavViz();
 bindLiveAnchor();
 bindRobotColors();
+bindTrial();
 ws.start();
 void useFleet.getState().load();
 void useJobs.getState().load();

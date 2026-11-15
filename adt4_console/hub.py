@@ -41,6 +41,7 @@ LATEST_VALUE_PREFIXES = (
     "manipulation/",
     "goal_track/",
     "awcd/",
+    "trial/",
 )
 LATEST_VALUE_SUFFIXES = ("/version",)
 VIDEO_PREFIX = "video/"

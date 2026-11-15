@@ -89,6 +89,7 @@ class Services:
     planner_state: object = (
         None  # planner_state.PlannerState: what the planner believes
     )
+    trials: object = None  # trials.TrialService: fleet-wide recordings, flags
     nav_viz: object = (
         None  # nav_viz.NavViz: MPPI / mid-range markers, GPS fix (on demand)
     )
@@ -107,6 +108,8 @@ class Services:
         self.graph.warm()
 
     def stop(self) -> None:
+        if self.trials is not None:
+            self.trials.shutdown()  # only the polling: recordings keep going
         for svc in (
             self.nav_viz,
             self.missions,
@@ -209,6 +212,13 @@ def build_services(
     chat.sget = SgetService(graph, ros, settings)
     svc.missions.edits = svc.edits
     wire_scene_repair(svc)
+    from .trials import TrialService
+
+    svc.trials = TrialService(settings, fleet, lambda: svc.helpers, hub)
+    try:
+        svc.trials.restore()  # a trial still recording when the console last exited
+    except Exception:  # noqa: BLE001
+        log.exception("restoring the active trial")
     return svc
 
 
@@ -439,17 +449,21 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
         scene_repair,
         teleop,
         terminal,
+        trials,
         ws,
     )
 
     for mod in (fleet, launch, jobs, network, maps, graph, plan, live, chat, sam3, teleop, terminal,
                 geo, mission, quad, edit, change_detection, scene_repair, manipulation, planner_state,
-                drives, ws):  # fmt: skip
+                drives, trials, ws):  # fmt: skip
         app.include_router(mod.router)
     app.include_router(live.robots_router)
 
     _mount_static(app, pathlib.Path(settings.static_dir))
 
+    from .trials import TrialRequestLog
+
+    app.add_middleware(TrialRequestLog)  # operator actions -> the trial's events.jsonl
     app.add_middleware(SelectiveGZipMiddleware, minimum_size=1024)
     app.add_middleware(TokenAuthMiddleware, token=settings.token)
     return app

@@ -5321,3 +5321,124 @@ input[type="checkbox"] {
 .drives-offline {
   margin-top: 12px;
 }
+
+/* ---------- trial recording bar (components/TrialBar.tsx) ---------- */
+.trial-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  font-size: 13px;
+}
+.trial-bar-on {
+  display: block;
+  background: var(--ok-bg);
+  border-bottom-color: var(--ok);
+}
+.trial-bar-on.trial-bar-warn {
+  background: var(--err-bg);
+  border-bottom-color: var(--err);
+}
+.trial-row,
+.trial-machines {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.trial-machines {
+  margin-top: 6px;
+}
+.trial-bar:not(.trial-bar-on) .trial-machines {
+  margin-top: 0;
+  flex-basis: 100%;
+}
+.trial-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.trial-count {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.trial-desc {
+  min-width: 0;
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+.rec-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--err);
+  animation: rec-blink 1.4s steps(2, jump-none) infinite;
+}
+.rec-dot-off {
+  animation: none;
+  background: var(--warn);
+}
+@keyframes rec-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot {
+    animation: none;
+  }
+}
+.trial-chip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 7px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  font-variant-numeric: tabular-nums;
+}
+.trial-chip-warn {
+  border-color: var(--warn);
+}
+.trial-chip-err {
+  border-color: var(--err);
+  background: var(--err-bg);
+}
+.trial-note {
+  color: var(--warn);
+  font-weight: 600;
+}
+.trial-chip-err .trial-note,
+.trial-bar-warn > .trial-machines > .trial-note {
+  color: var(--err);
+}
+.trial-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.trial-flag .input {
+  width: 30ch;
+  max-width: 46vw;
+}
+.trial-pre {
+  margin-top: 12px;
+}
+.trial-row .grow {
+  flex: 1;
+}
+body.map-full .trial-bar:not(.trial-bar-on) {
+  display: none;
+}
