@@ -32,6 +32,7 @@ class FakeRec:
         self.missing_topics = []
 
     def ssh_cmd(self, user, ip, cmd, timeout=5):
+        assert isinstance(timeout, int)  # it becomes ssh -o ConnectTimeout=N
         argv = shlex.split(cmd)
         assert (
             argv[0] == "python3"

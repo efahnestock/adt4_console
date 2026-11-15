@@ -251,8 +251,9 @@ class TrialService:
             if m.get("local"):
                 rc, out, err = self._run_local(cmd, timeout)
             else:
+                # ssh's ConnectTimeout takes whole seconds only
                 rc, out, err = self.helpers().ssh_cmd(
-                    m["user"], m["ip"], cmd, timeout=timeout
+                    m["user"], m["ip"], cmd, timeout=int(round(timeout))
                 )
         except Exception as e:  # noqa: BLE001
             rc, out, err = -1, "", f"{type(e).__name__}: {e}"
