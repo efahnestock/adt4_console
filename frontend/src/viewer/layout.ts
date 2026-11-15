@@ -385,7 +385,11 @@ export function layoutGraph(model: GraphModel, opts: LayoutOpts): GraphLayout {
       const dz = TEXT_HEIGHT[info.kind] ?? 0.5;
       for (const n of shown) {
         let text = n.sym; // IdTextAdapter
-        if (info.kind === "objects") text = `${model.labelName(n) || n.name || "?"} ${n.sym}`; // LabelIdTextAdapter
+        if (info.kind === "objects") {
+          // LabelIdTextAdapter; a name the operator gave the object (Map tab) wins over its class
+          const cls = model.labelName(n);
+          text = `${n.name && n.name !== cls ? n.name : cls || n.name || "?"} ${n.sym}`;
+        } else if (info.kind === "places") text = placeLabelText(n.sym, n.name);
         else if (info.kind === "rooms" || info.kind === "buildings") {
           // NameIdTextAdapter, but a named room (an operator's area) is just its
           // name: the UI calls them areas, the R(n) symbol is in Inspect; rooms

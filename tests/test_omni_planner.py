@@ -487,3 +487,21 @@ def test_execute_waits_for_the_planner_to_have_the_staged_map(svc, monkeypatch):
     service.MAP_WAIT_S = 0.0
     with pytest.raises(ValueError, match="has not received"):
         service._await_planner_map(9)
+
+
+def test_safe_is_spelled_as_an_inspection_by_one_of_the_robots():
+    assert omni.inspect_goals("(and (safe o4) (not (suspicious O7)))", ["spot1", "husky1"]) == (
+        "(and (or (inspected-by spot1 o4) (inspected-by husky1 o4)) "
+        "(or (inspected-by spot1 o7) (inspected-by husky1 o7)))"
+    )
+    assert omni.inspect_goals("(safe o4)", ["spot1"]) == "(inspected-by spot1 o4)"
+    assert omni.inspect_goals("(visited-object o4)", ["spot1"]) == "(visited-object o4)"
+
+
+def test_safe_takes_an_inspection_not_an_empty_plan(svc):
+    """Objects start safe on the robots' planner; the mission sends and plans an
+    inspection by one of its robots, which the planner picks."""
+    _, service = svc
+    m, _ = omni.plan_pddl("(safe o0)", [SPOT1, SPOT2], None, service)
+    assert [(t.type, t.target) for t in m.tasks] == [("inspect", "O(0)")]
+    assert m.goal["pddl"] == "(or (inspected-by spot1 o0) (inspected-by spot2 o0))"

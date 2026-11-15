@@ -15,7 +15,8 @@ router = APIRouter()
 async def ws(websocket: WebSocket):
     hub = websocket.app.state.services.hub
     await websocket.accept()
-    client = hub.add_client(asyncio.get_running_loop())
+    peer = websocket.client
+    client = hub.add_client(asyncio.get_running_loop(), who=peer.host if peer else None)
     hub.subscribe(client, None)
 
     async def reader():

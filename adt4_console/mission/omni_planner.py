@@ -27,6 +27,7 @@ Fast Downward one is also kept under its old name ``fast_downward``.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import time
@@ -193,6 +194,28 @@ def area_symbols(areas) -> dict[str, dict]:
         out[sym] = {"name": str(a.get("name") or sym),
                     "polygon": [[float(x), float(y)] for x, y in a["polygon"]]}  # fmt: skip
     return out
+
+
+SUSPICIOUS_ENV = "OMNIPLANNER_OBJECTS_SUSPICIOUS"
+_SAFE = re.compile(r"\(\s*not\s*\(\s*suspicious\s+([a-z]\d+)\s*\)\s*\)|\(\s*safe\s+([a-z]\d+)\s*\)", re.I)
+
+
+def inspect_goals(goal: str, robots: list[str]) -> str:
+    """``(safe o4)`` / ``(not (suspicious o4))`` spelled as an inspection by one of
+    ``robots``: ``(or (inspected-by spot1 o4) (inspected-by husky1 o4))``. The domain
+    derives safe as "not suspicious"; the console plans with every object suspicious
+    (:data:`SUSPICIOUS_ENV`), but the robots' goal manager starts every object safe,
+    where the goal as written would be true before any robot moves. Spelled this way
+    it means the same to both."""
+    if not robots:
+        return goal
+
+    def one(m):
+        o = (m.group(1) or m.group(2)).lower()
+        alts = [f"(inspected-by {r} {o})" for r in robots]
+        return alts[0] if len(alts) == 1 else f"(or {' '.join(alts)})"
+
+    return _SAFE.sub(one, goal)
 
 
 def goal_areas(goal: str, areas) -> dict[str, dict]:
@@ -459,6 +482,9 @@ def solve(
         goal_obj = om["PddlGoal"](
             pddl_goal=area_goal, robot_id=first, constraints=facts, **extra
         )
+        # mission planning: every object starts suspicious (not yet inspected),
+        # so (safe o4) takes an inspection and a pick looks first
+        os.environ.setdefault(SUSPICIOUS_ENV, "1")
         grounded = om["ground_problem"](om["domain"], G, robots, goal_obj).value
         t1 = time.perf_counter()
         plan = om["make_plan"](grounded, G)
@@ -535,6 +561,9 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
     ground = [a for a in m0.agents if a.is_ground]
     if not ground:
         raise ValueError("omniplanner plans ground robots (spot, husky) only")
+    if engine != "grstaps":
+        goal = inspect_goals(goal, [pddl_name(a.id) for a in ground])
+        m0.goal["pddl"] = goal
     world = service.world(m0)
     if world.graph is None or world.graph.G is None:
         raise ValueError("no scene graph to plan on")

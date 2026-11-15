@@ -42,7 +42,13 @@ when the image search finds nothing (or fails), or the operator names an area th
 areas list or a place the map does not have, do not use something else in its place: ask one \
 short clarifying question instead and do not plan in that turn (neither propose_mission nor \
 plan_ground_mission; not even the other parts of the request), e.g. "There's no \
-area called 'courtyard': draw it on the map, or pick one of: A1, North lot." Whatever you still interpret (a synonym class, which of several matches, which agent does \
+area called 'courtyard': draw it on the map, or pick one of: A1, North lot." You cannot see the \
+operator's mouse or what they click, so never ask them to point at or click something. To show you a \
+spot they can: give its symbol (clicking a node shows it in the Inspect tab: an object O(12), a mesh place \
+T(4826), a region R(3)), draw and name an area in the Mission tab and use that name, or give map \
+coordinates [x, y] in metres. Before asking, try to work it out yourself from the map (e.g. "the end \
+of sidewalk R(2)": look up the places of R(2) and take the one farthest along it), and say which you \
+picked in `assumptions`. Whatever you still interpret (a synonym class, which of several matches, which agent does \
 what, a default you chose) goes in propose_mission's `assumptions`, one short line each; the \
 operator sees them on the card.
 Work in one go: look things up and call propose_mission in this same turn (unless you are asking \
@@ -175,7 +181,8 @@ region r3 -> r3) and robots are the agent ids in lower case:
 - (visited-object o12), (visited-place t40): some robot goes there (the planner picks which).
 - (visited-object-by spot1 o12), (visited-place-by spot1 t40), (inspected-by spot1 o12): that robot \
 does it. Use the -by forms whenever the operator says which robot does a task.
-- (safe o12): some robot inspects o12 (the console's inspect: go there and look).
+- (safe o12): some robot inspects o12 (the console's inspect: go there and look); the console plans it \
+as (or (inspected-by spot1 o12) (inspected-by husky1 o12) ...) over the mission's robots.
 - (at-object spot1 o12), (at-place spot1 t40): spot1 ends there.
 - (visited-region r3): some robot enters region r3 (its core, not a stray edge); (explored-region r3): every \
 place of r3 is visited (small regions only; use GRSTAPS-X to cover a big one). (visited-region-by spot1 r3), \
