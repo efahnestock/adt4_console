@@ -4,6 +4,7 @@ import type {TrajPath} from "../stores/viewer";
 import {GraphModel, isAgentNode, layerHidden, layerInfo, type LayerInfo} from "../lib/graphModel";
 import {LAYER_COLORS, nodeColor} from "../lib/palette";
 import {placeLabelText} from "../lib/labels";
+import {uiSym} from "../lib/mapEdit";
 import {
   colorKeyOf,
   heightKeyOf,
@@ -391,11 +392,11 @@ export function layoutGraph(model: GraphModel, opts: LayoutOpts): GraphLayout {
           text = `${n.name && n.name !== cls ? n.name : cls || n.name || "?"} ${n.sym}`;
         } else if (info.kind === "places") text = placeLabelText(n.sym, n.name);
         else if (info.kind === "rooms" || info.kind === "buildings") {
-          // NameIdTextAdapter, but a named room (an operator's area) is just its
-          // name: the UI calls them areas, the R(n) symbol is in Inspect; rooms
-          // without a name fall back to their labelspace class + symbol
+          // NameIdTextAdapter: the name (an operator's area name, else the
+          // labelspace class) and the symbol as the UI prints it, R(n), so a
+          // region can be named in chat and goals by its number
           const nm = n.name || labelSpaceName(model, n);
-          text = n.name && info.kind === "rooms" ? n.name : nm ? `${nm} ${n.sym}` : n.sym;
+          text = nm ? `${nm} ${uiSym(n.sym)}` : uiSym(n.sym);
         }
         texts.push({pos: [n.pos[0], n.pos[1], n.pos[2] + z + dz], text, kind: info.kind, sym: n.sym});
       }

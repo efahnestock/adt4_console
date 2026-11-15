@@ -25,6 +25,6 @@ describe("operator names on labels", () => {
     m.nodes.set("R2", rec("R2", 4, 0, -1, "north sidewalk"));
     const t = layoutGraph(m, base).texts;
     expect(t.find(x => x.sym === "t7")?.text).toBe("t(7) sidewalk end");
-    expect(t.find(x => x.sym === "R2")?.text).toBe("north sidewalk");
+    expect(t.find(x => x.sym === "R2")?.text).toBe("north sidewalk R(2)");
   });
 });
