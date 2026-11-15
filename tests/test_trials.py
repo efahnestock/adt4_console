@@ -560,22 +560,29 @@ def test_preflight_reports_missing_helper_and_running_recorder(rig):
     )  # no rate known yet
 
 
-def test_this_machine_is_always_recorded_and_gets_every_robots_plan(rig):
+def test_this_machine_records_by_default_and_gets_every_robots_plan(rig):
     with rig.svc.fleet.lock:
         rig.svc.fleet.runtime_config["willow"]["local"] = True
     # this machine's helper runs locally, not over ssh
     rig.t._run_local = lambda cmd, timeout: rig.fake.ssh_cmd(
         "me", "local", cmd, timeout=int(timeout)
     )
-    a = start(rig, machines=["euclid"]).json()["active"]  # the base was not picked
-    assert sorted(a["machines"]) == ["euclid", "willow"]
+    a = start(rig, machines=None).json()[
+        "active"
+    ]  # the default: robots and this machine
+    assert "willow" in a["machines"] and "euclid" in a["machines"]
     args = next(x for ip, x in rig.fake.calls if x[0] == "start" and "willow" in x)
     assert args[args.index("--topic-set") + 1] == "base_station"
     robots = args[args.index("--robots") + 1].split(",")
     assert {"euclid", "hamilton", "gauss"} <= set(robots) and "willow" not in robots
     pre = rig.c.get("/api/trials/preflight").json()
     assert pre["base_station"] == "willow" and pre["base_note"] is None
-    assert next(m for m in pre["machines"] if m["name"] == "willow")["required"] is True
+    assert next(m for m in pre["machines"] if m["name"] == "willow")["local"] is True
+    rig.c.post("/api/trials/stop")
+    rig.now[0] += 1
+    # unticked: it is not recorded
+    b = start(rig, machines=["euclid"]).json()["active"]
+    assert sorted(b["machines"]) == ["euclid"]
 
 
 def test_preflight_says_when_there_is_no_base_station_bag(rig):
@@ -640,6 +647,56 @@ def test_hub_state_is_logged_while_recording_deduped(rig):
         ("manipulation/pending", []),
     ]
     assert hub[2]["topic"] == "mission/m1" and hub[2]["data"]["_chars"] > 50_000
+
+
+def test_screen_recording_chunks_append_in_order(rig):
+    q = "/api/trials/screen?session=s1&mime=video/webm;codecs=vp9"
+    assert rig.c.post(q + "&seq=0", content=b"AAAA").status_code == 409  # no trial
+    a = start(rig).json()["active"]
+    assert (
+        rig.c.post("/api/trials/screen?session=../x&seq=0", content=b"x").status_code
+        == 400
+    )
+    r = rig.c.post(q + "&seq=0&t_client=12.5", content=b"AAAA").json()
+    assert r == {"ok": True, "next": 1, "bytes": 4, "file": "screen_s1.webm"}
+    assert (
+        rig.c.post(q + "&seq=0", content=b"AAAA").json()["duplicate"] is True
+    )  # a retry
+    rig.c.post(q + "&seq=1", content=b"BB")
+    video = pathlib.Path(a["console_dir"]) / "screen_s1.webm"
+    assert video.read_bytes() == b"AAAABB"
+    rig.now[0] += 60
+    rig.c.post("/api/trials/stop")
+    # the last piece arrives after the trial ended, and is still taken
+    rig.now[0] += 5
+    r = rig.c.post(q + "&seq=2&final=true", content=b"C")
+    assert r.status_code == 200 and video.read_bytes() == b"AAAABBC"
+    last = rig.c.get("/api/trials").json()["last"]
+    st = last["screen"]["s1"]
+    assert st["chunks"] == 3 and st["bytes"] == 7 and st["ended"] and st["gaps"] == 0
+    kinds = [
+        e["type"] for e in events(rig, a["trial_id"]) if e["type"].startswith("screen")
+    ]
+    assert kinds == ["screen_start", "screen_stop"]
+    # a session the trial never had, or one that comes far too late, is refused
+    assert (
+        rig.c.post("/api/trials/screen?session=other&seq=0", content=b"x").status_code
+        == 409
+    )
+    rig.now[0] += 500
+    assert rig.c.post(q + "&seq=3", content=b"x").status_code == 409
+    manifest = json.loads((pathlib.Path(a["console_dir"]) / "trial.json").read_text())
+    assert manifest["screen"]["s1"]["bytes"] == 7
+
+
+def test_screen_note_is_logged(rig):
+    a = start(rig).json()["active"]
+    rig.c.post(
+        "/api/trials/screen/note",
+        json={"session": "s1", "what": "denied", "detail": "NotAllowedError"},
+    )
+    ev = [e for e in events(rig, a["trial_id"]) if e["type"] == "screen_note"]
+    assert ev[0]["what"] == "denied"
 
 
 def test_ui_events_are_logged_only_while_recording(rig):

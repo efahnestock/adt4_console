@@ -5442,3 +5442,15 @@ input[type="checkbox"] {
 body.map-full .trial-bar:not(.trial-bar-on) {
   display: none;
 }
+.trial-video-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+.trial-screen {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

@@ -48,8 +48,8 @@ export interface PreflightMachine {
   name: string;
   role?: string | null;
   ready: boolean;
-  /** the base station: always part of a trial */
-  required?: boolean;
+  /** this console's own machine: the base station */
+  local?: boolean;
   error: string | null;
   free_bytes: number | null;
   total_bytes: number | null;

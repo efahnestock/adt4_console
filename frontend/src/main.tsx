@@ -12,6 +12,7 @@ import {bindRobotColors} from "./stores/robotColors";
 import {bindTheme} from "./stores/theme";
 import {bindTrial} from "./stores/trial";
 import {bindUiLog} from "./lib/uiLog";
+import {bindScreenRec} from "./lib/screenRec";
 import "./styles.css";
 import "./theme.css";
 
@@ -25,6 +26,7 @@ bindLiveAnchor();
 bindRobotColors();
 bindTrial();
 bindUiLog();
+bindScreenRec();
 ws.start();
 void useFleet.getState().load();
 void useJobs.getState().load();

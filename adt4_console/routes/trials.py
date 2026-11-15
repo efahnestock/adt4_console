@@ -75,6 +75,33 @@ def ui(body: UiBody, request: Request):
     return {"logged": _trials(request).log_ui(body.events)}
 
 
+@router.post("/screen")
+async def screen(request: Request, session: str, seq: int, mime: str = "video/webm",
+                 final: bool = False, t_client: float | None = None):  # fmt: skip
+    """One piece of a browser's recording of the console page (the raw
+    MediaRecorder bytes as the body), appended to the trial's
+    ``console/screen_<session>.webm``."""
+    import asyncio
+
+    svc = _trials(request)
+    data = await request.body()
+    return await asyncio.to_thread(
+        _call, svc.screen_chunk, session, seq, data, mime, final, t_client
+    )
+
+
+class ScreenNote(BaseModel):
+    session: str = ""
+    what: str
+    detail: str = ""
+
+
+@router.post("/screen/note")
+def screen_note(body: ScreenNote, request: Request):
+    _trials(request).screen_note(body.session, body.what, body.detail)
+    return {"ok": True}
+
+
 class StopBody(BaseModel):
     force: bool = (
         False  # a second SIGINT then SIGTERM for a recorder that will not exit

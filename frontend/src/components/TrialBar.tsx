@@ -7,6 +7,7 @@ import {fmtBytes, fmtRate} from "../lib/fuzzy";
 import {answerAge, fmtAge, fmtElapsed, fmtMinutes, LIVE, machineLabel, machineTone, recordingCount, shortestLeft, staleAfter, topicCheckLabel,
   type PreflightMachine, type Trial, type TrialMachine, type TrialPayload} from "../lib/trial";
 import {serverNow, useTrial} from "../stores/trial";
+import {acquireScreen, note as screenNote, SCREEN_FPS, screenPref, setScreenPref, startScreenRecording, useScreenRec} from "../lib/screenRec";
 import {Dot, ErrorBox, Modal, Spinner} from "./ui";
 
 /** Re-render every second (elapsed time, answer ages). */
@@ -63,6 +64,24 @@ function MachineChip({m, now, pollS, onRetry}: {m: TrialMachine; now: number; po
   );
 }
 
+/** Is this browser recording the page for the trial? */
+function ScreenChip() {
+  const st = useScreenRec();
+  const again = async () => {
+    const s = await acquireScreen();
+    if (s) startScreenRecording(s);
+  };
+  if (st.status === "recording") return <span className="muted small" data-testid="trial-screen" title="This browser tab is being recorded into the trial's console folder">screen: recording {fmtBytes(st.bytes)}</span>;
+  return (
+    <span className="trial-screen" data-testid="trial-screen">
+      <span className={st.status === "off" ? "muted small" : "trial-note"} title={st.detail}>
+        {st.status === "off" ? "screen: not recorded by this browser" : st.status === "denied" ? "SCREEN NOT RECORDED (not allowed)" : st.status === "ended" ? "SCREEN RECORDING STOPPED" : st.status === "unsupported" ? "SCREEN NOT RECORDED (browser cannot)" : "SCREEN RECORDING ERROR"}
+      </span>
+      {st.status !== "unsupported" && <button className="btn btn-sm" onClick={() => void again()}>Record screen</button>}
+    </span>
+  );
+}
+
 function FlagBox({trial}: {trial: Trial}) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -102,6 +121,7 @@ function StartDialog({onClose}: {onClose: () => void}) {
   const [pre, setPre] = useState<PreflightMachine[] | null>(null);
   const [preError, setPreError] = useState<unknown>(null);
   const [baseNote, setBaseNote] = useState<string | null>(null);
+  const [video, setVideo] = useState(() => screenPref());
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -121,10 +141,17 @@ function StartDialog({onClose}: {onClose: () => void}) {
   const start = async () => {
     setBusy(true);
     setError(null);
+    setScreenPref(video);
+    // the browser only lets a click ask for the screen: ask first, then start
+    const stream = video ? await acquireScreen() : null;
     try {
       useTrial.getState().set(await postJSON<TrialPayload>("api/trials/start", {description: desc.trim(), machines: names}));
+      if (stream) startScreenRecording(stream);
+      else if (video) screenNote(useScreenRec.getState().status, useScreenRec.getState().detail);
+      else screenNote("off", "screen recording was switched off for this trial");
       onClose();
     } catch (e) {
+      stream?.getTracks().forEach(t => t.stop());
       setError(e);
       setBusy(false);
     }
@@ -149,8 +176,8 @@ function StartDialog({onClose}: {onClose: () => void}) {
           <tbody>
             {pre.map(m => (
               <tr key={m.name} className={m.ready ? "" : "muted"}>
-                <td><input type="checkbox" checked={!!picked[m.name]} disabled={!m.ready || !!m.required} title={m.required ? "The base station is always recorded" : undefined} onChange={e => setPicked(p => ({...p, [m.name]: e.target.checked}))} aria-label={`Record on ${m.name}`} /></td>
-                <td className="strong">{m.name}</td>
+                <td><input type="checkbox" checked={!!picked[m.name]} disabled={!m.ready} onChange={e => setPicked(p => ({...p, [m.name]: e.target.checked}))} aria-label={`Record on ${m.name}`} /></td>
+                <td className="strong">{m.name}{m.local && <span className="muted small"> (this machine: base station)</span>}</td>
                 <td>{m.free_bytes != null ? fmtBytes(m.free_bytes) : "?"}</td>
                 <td title={m.rate_bps ? `at ${fmtRate(m.rate_bps)}, the rate of this machine's last trial` : "no trial recorded on this machine yet: the rate is not known"}>
                   {m.minutes != null ? fmtMinutes(m.minutes) : "unknown until its first trial"}
@@ -162,6 +189,10 @@ function StartDialog({onClose}: {onClose: () => void}) {
         </table>
       )}
       {baseNote && <p className="tone-err small" data-testid="trial-base-note">{baseNote}</p>}
+      <label className="trial-video-opt">
+        <input type="checkbox" checked={video} onChange={e => setVideo(e.target.checked)} aria-label="Record this browser tab as video" data-testid="trial-video" />
+        Record this browser tab as video ({SCREEN_FPS} fps). The browser will ask which tab to share: pick this one.
+      </label>
       {error != null && <ErrorBox error={error} compact />}
     </Modal>
   );
@@ -255,6 +286,7 @@ export function TrialBar() {
         <span className={`trial-count ${allOk ? "" : "tone-err"}`} data-testid="trial-count">{count.ok} of {count.of} recording</span>
         <span className="trial-desc" title={t.trial_id}>{t.description}</span>
         {left && <span className={left.minutes < 10 ? "tone-err small" : "muted small"} title="The machine whose disk fills first, at its current rate">disk: {fmtMinutes(left.minutes)} left ({left.name})</span>}
+        {!stopping && <ScreenChip />}
         <span className="grow" />
         {!stopping && <FlagBox trial={t} />}
         {!stopping && <button className="btn btn-sm" onClick={() => setDialog("stop")} data-testid="trial-stop">Stop recording</button>}

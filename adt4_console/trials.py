@@ -209,6 +209,11 @@ CAPTURE_PREFIXES = (
 CAPTURE_PARTS = ("/goal/", "/executor/", "/path/")
 BIG = 200_000
 # console state published to the browsers that is logged as it changes
+# screen recordings of the console page, uploaded by the browser in pieces
+SCREEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+SCREEN_EXT = {"video/webm": "webm", "video/mp4": "mp4", "video/x-matroska": "mkv"}
+SCREEN_MAX_CHUNK = 64 * 10**6
+SCREEN_LATE_S = 120.0  # the last pieces arrive after the trial has ended
 HUB_PREFIXES = ("manipulation/", "mission/", "maps/active", "goal_track/")
 HUB_MIN_GAP_S = 0.5
 HUB_MAX_CHARS = 20_000
@@ -411,8 +416,7 @@ class TrialService:
             unknown = [n for n in names if n not in known]
             if unknown:
                 raise TrialError(404, f"unknown machine(s): {', '.join(unknown)}")
-            # this machine (the base station) is always part of a trial
-            return [m for m in machines if m["name"] in names or m.get("local")]
+            return [m for m in machines if m["name"] in names]
         # default: every robot that answers, and this machine
         return [
             m for m in machines
@@ -484,7 +488,7 @@ class TrialService:
                 {
                     "name": m["name"],
                     "role": m.get("role"),
-                    "required": bool(m.get("local")),  # the base station always records
+                    "local": bool(m.get("local")),  # this machine: the base station
                     "ready": bool(r.get("ok"))
                     and not r.get("recording")
                     and topic_set(m) is not None,
@@ -1106,6 +1110,82 @@ class TrialService:
             ):
                 n += 1
         return n
+
+    # ------------------------------------------------------ screen video
+    def screen_chunk(self, session: str, seq: int, data: bytes, mime: str = "video/webm",
+                     final: bool = False, t_client: float | None = None) -> dict:  # fmt: skip
+        """Append one piece of a browser's recording of the console page to
+        ``console/screen_<session>.<ext>``.  Pieces of one session arrive in
+        order (``seq`` 0, 1, ...); a repeated one is ignored."""
+        if not SCREEN_RE.match(session or ""):
+            raise TrialError(400, "bad screen session id")
+        if len(data) > SCREEN_MAX_CHUNK:
+            raise TrialError(413, "screen chunk too large")
+        now = self.clock()
+        with self.lock:
+            trial = self.active
+            if trial is None and self.last is not None:
+                late = now - (self.last.get("stopped") or 0) < SCREEN_LATE_S
+                if late and session in (self.last.get("screen") or {}):
+                    trial = self.last
+            if trial is None:
+                raise TrialError(409, "no trial is recording")
+            sessions = trial.setdefault("screen", {})
+            st = sessions.get(session)
+            new = st is None
+            if new:
+                ext = SCREEN_EXT.get((mime or "").split(";")[0].strip(), "webm")
+                st = sessions[session] = {
+                    "file": f"screen_{session}.{ext}", "mime": mime, "chunks": 0, "bytes": 0,
+                    "started": round(now, 3), "last": None, "ended": None, "gaps": 0,
+                }  # fmt: skip
+            if seq < st["chunks"]:
+                return {"ok": True, "duplicate": True, "next": st["chunks"]}
+            gap = seq > st["chunks"]
+        path = self._console_dir(trial["trial_id"]) / st["file"]
+        if new:
+            self.event("screen_start", trial, session=session, file=st["file"], mime=mime,
+                       t_client=t_client)  # fmt: skip
+        if gap:
+            self.event(
+                "screen_gap", trial, session=session, expected=st["chunks"], got=seq
+            )
+        try:
+            with open(path, "ab") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as e:
+            with self.lock:
+                trial["log_error"] = f"{st['file']}: {e}"
+            raise TrialError(500, f"screen recording NOT saved: {e}") from e
+        with self.lock:
+            st["chunks"] = seq + 1
+            st["bytes"] += len(data)
+            st["last"] = round(now, 3)
+            st["gaps"] += 1 if gap else 0
+            if final:
+                st["ended"] = round(now, 3)
+        if final:
+            self.event(
+                "screen_stop",
+                trial,
+                session=session,
+                file=st["file"],
+                bytes=st["bytes"],
+            )
+            self._save(trial)
+            self._publish()
+        return {"ok": True, "next": seq + 1, "bytes": st["bytes"], "file": st["file"]}
+
+    def screen_note(self, session: str, what: str, detail: str = "") -> None:
+        """The browser says why it is not recording (permission denied,
+        sharing stopped)."""
+        with self.lock:
+            trial = self.active
+        if trial is not None:
+            self.event("screen_note", trial, session=str(session)[:40], what=str(what)[:40],
+                       detail=str(detail)[:300])  # fmt: skip
 
     # ------------------------------------------------------------ hub tap
     def hub_tap(self, topic: str, data) -> None:
