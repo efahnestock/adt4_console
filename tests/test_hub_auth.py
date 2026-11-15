@@ -111,3 +111,15 @@ def test_spa_fallback(settings, tmp_path):
         )
         assert c.get("/api/does-not-exist").status_code == 404
         assert c.get("/../../etc/passwd").text == "<html>spa</html>"
+
+
+def test_viewers_count_people_by_address_and_tabs_by_connection():
+    hub = Hub()
+    a1 = hub.add_client(who="10.0.0.1")
+    hub.add_client(who="10.0.0.1")  # a second tab
+    b = hub.add_client(who="10.0.0.2")
+    assert hub.viewers() == {"viewers": 2, "tabs": 3}
+    assert hub.latest("console/viewers") == {"viewers": 2, "tabs": 3}
+    hub.remove_client(b)
+    hub.remove_client(a1)
+    assert hub.latest("console/viewers") == {"viewers": 1, "tabs": 1}

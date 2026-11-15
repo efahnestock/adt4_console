@@ -14,6 +14,8 @@ live from the database so it cannot drift from what heracles writes.
 
 from __future__ import annotations
 
+import re
+
 import time
 
 MAX_ROWS = 200
@@ -267,4 +269,26 @@ def describe(src) -> str:
             "Object classes in the map (count; nothing else is mapped): "
             + ", ".join(f"{x['c']} ({x['n']})" for x in cls["rows"])
         )
+    # names the operators gave nodes (Map tab): the words they will use for them
+    named = run_read(
+        src,
+        "MATCH (n) WHERE (n:Object OR n:MeshPlace OR n:Place OR n:Room) AND n.name IS NOT NULL "
+        "AND trim(n.name) <> '' AND toLower(n.name) <> toLower(coalesce(n.class, '')) "
+        "RETURN n.nodeSymbol AS s, n.name AS name, n.class AS c ORDER BY s",
+        max_rows=200,
+    )
+    if named.get("rows"):
+        lines.append(
+            "Names the operators gave map nodes (they may call them by these names): "
+            + ", ".join(
+                f"{_ui_sym(x['s'])} '{x['name']}'" + (f" ({x['c']})" if x.get("c") else "")
+                for x in named["rows"]
+            )
+        )
     return "\n".join(lines)
+
+
+def _ui_sym(s) -> str:
+    """``O12`` -> ``O(12)``."""
+    m = re.match(r"^([A-Za-z])\(?(\d+)\)?$", str(s or ""))
+    return f"{m.group(1)}({m.group(2)})" if m else str(s)

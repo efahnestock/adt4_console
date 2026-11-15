@@ -2,6 +2,7 @@ import {useEffect, useState, type ReactNode} from "react";
 import {NavLink, Outlet, useLocation} from "react-router";
 import {useWsStatus} from "../ws";
 import {useFleet} from "../stores/fleet";
+import {useViewers} from "../stores/viewers";
 import {isActive, useJobs} from "../stores/jobs";
 import {onBackendState} from "../lib/api";
 import {JobConfirmHost, JobsDrawer} from "./Jobs";
@@ -26,6 +27,7 @@ const P = {
   more: "M3.5 12a1.5 1.5 0 103 0 1.5 1.5 0 10-3 0M10.5 12a1.5 1.5 0 103 0 1.5 1.5 0 10-3 0M17.5 12a1.5 1.5 0 103 0 1.5 1.5 0 10-3 0",
   collapse: "M15 6l-6 6 6 6",
   expand: "M9 6l6 6-6 6",
+  eye: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 15a3 3 0 100-6 3 3 0 000 6z",
 };
 
 export function Icon({name, size = 18}: {name: keyof typeof P; size?: number}) {
@@ -165,6 +167,7 @@ function TopBar() {
         ))}
       </div>
       <HealthButton items={items} />
+      <ViewersPill />
       <ThemeToggle />
       <button className={`btn jobs-btn ${waiting ? "attention" : ""}`} onClick={() => (drawerOpen ? close() : open())} aria-label="Jobs">
         <Icon name="jobs" size={16} />
@@ -173,6 +176,20 @@ function TopBar() {
         {waiting > 0 && <span className="count count-warn">{waiting} waiting</span>}
       </button>
     </div>
+  );
+}
+
+/** How many people have the console open now (the shared console's other users). */
+function ViewersPill() {
+  const viewers = useViewers(s => s.viewers);
+  const tabs = useViewers(s => s.tabs);
+  if (viewers == null) return null;
+  const title = `${viewers} ${viewers === 1 ? "person has" : "people have"} the console open (${tabs} tab${tabs === 1 ? "" : "s"}); counted by network address, so people behind one address count once`;
+  return (
+    <span className="pill viewers-pill" title={title} data-testid="viewers" aria-label={title}>
+      <Icon name="eye" size={14} />
+      {viewers} viewing
+    </span>
   );
 }
 
