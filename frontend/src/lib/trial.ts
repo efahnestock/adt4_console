@@ -20,7 +20,7 @@ export interface TrialMachine {
   last_seen?: number | null;
   warnings?: string[];
   clock_offset_s?: number | null;
-  topic_check?: {ok: boolean; published?: number; topics?: number; missing?: string[]; error?: string} | null;
+  topic_check?: {ok: boolean; tries?: number; retrying?: boolean; published?: number; topics?: number; missing?: string[]; error?: string} | null;
 }
 
 export interface Trial {
@@ -59,6 +59,16 @@ export interface PreflightMachine {
 /** A machine that is, or may be, still recording. */
 export const LIVE: MachineState[] = ["recording", "unreachable", "stop_pending", "stop_failed", "stopping"];
 
+/** What the chip says about the topic check (which topics have a publisher). */
+export function topicCheckLabel(m: TrialMachine): {text: string; bad: boolean} {
+  const tc = m.topic_check;
+  if (!tc) return {text: "topic check pending", bad: false};
+  if (!tc.ok) return tc.retrying ? {text: `topic check got no answer, retrying (${tc.tries ?? 1})`, bad: true} : {text: "TOPIC CHECK DID NOT RUN", bad: true};
+  const n = tc.missing?.length ?? 0;
+  if (n) return {text: `${n} of ${tc.topics} topics without a publisher`, bad: true};
+  return {text: `${tc.published}/${tc.topics} topics published`, bad: false};
+}
+
 /** Seconds since the machine last answered, on the console server's clock. */
 export function answerAge(m: TrialMachine, serverNow: number): number | null {
   return m.last_seen ? Math.max(0, serverNow - m.last_seen) : null;
@@ -88,7 +98,8 @@ export function machineTone(m: TrialMachine, serverNow: number, pollS: number): 
       const age = answerAge(m, serverNow);
       if (age === null || age > staleAfter(pollS)) return "warn";
       if (m.warnings?.length) return "warn";
-      if (m.topic_check && (!m.topic_check.ok || m.topic_check.missing?.length)) return "warn";
+      // not green until the topic check has run and found every topic published
+      if (!m.topic_check || !m.topic_check.ok || m.topic_check.missing?.length) return "warn";
       return "ok";
     }
   }

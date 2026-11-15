@@ -368,6 +368,71 @@ def test_recorder_that_died_shows_as_lost(rig):
     assert m["state"] == "lost" and "NOT recording" in m["message"]
 
 
+def test_topic_check_is_retried_until_the_machine_answers(rig):
+    ip = rig.ip["hamilton"]
+    real = rig.fake.ssh_cmd
+    drop = {"n": 2}  # the first two check-topics to hamilton get no answer
+
+    def flaky(user, addr, cmd, timeout=5):
+        if addr == ip and " check-topics" in cmd and drop["n"] > 0:
+            drop["n"] -= 1
+            rig.fake.calls.append((addr, ["check-topics"]))
+            return 255, "", "ssh: connect to host: Connection timed out"
+        return real(user, addr, cmd, timeout=timeout)
+
+    rig.fake.ssh_cmd = flaky
+    rig.fake.missing_topics = ["/x/fix"]
+    a = start(rig).json()["active"]
+    tc = a["machines"]["hamilton"]["topic_check"]
+    assert tc["ok"] is False and tc["retrying"] is True and tc["tries"] == 1
+    assert a["machines"]["euclid"]["topic_check"]["ok"] is True
+    rig.now[0] += 10
+    rig.t.poll_once()  # second try: still no answer
+    rig.now[0] += 10
+    rig.t.poll_once()  # third try: it answers
+    a = rig.c.get("/api/trials").json()["active"]
+    tc = a["machines"]["hamilton"]["topic_check"]
+    assert tc == {
+        "ok": True,
+        "tries": 3,
+        "published": 18,
+        "topics": 19,
+        "missing": ["/x/fix"],
+    }
+    assert rig.fake.verbs(ip).count("check-topics") == 3
+    rig.now[0] += 10
+    rig.t.poll_once()  # done: not asked again
+    assert rig.fake.verbs(ip).count("check-topics") == 3
+    assert rig.fake.verbs(rig.ip["euclid"]).count("check-topics") == 1
+    kinds = [
+        e["type"] for e in events(rig, a["trial_id"]) if e.get("machine") == "hamilton"
+    ]
+    assert "topic_check" in kinds and "topics_missing" in kinds
+
+
+def test_topic_check_gives_up_loudly(rig):
+    rig.fake.ssh_cmd_real = rig.fake.ssh_cmd
+
+    def never(user, addr, cmd, timeout=5):
+        if " check-topics" in cmd:
+            return 255, "", "ssh: connect to host: Connection timed out"
+        return rig.fake.ssh_cmd_real(user, addr, cmd, timeout=timeout)
+
+    rig.fake.ssh_cmd = never
+    a = start(rig).json()["active"]
+    for _ in range(tr.CHECK_TRIES + 2):
+        rig.now[0] += 10
+        rig.t.poll_once()
+    tc = rig.c.get("/api/trials").json()["active"]["machines"]["euclid"]["topic_check"]
+    assert (
+        tc["ok"] is False and tc["tries"] == tr.CHECK_TRIES and tc["retrying"] is False
+    )
+    failed = [
+        e for e in events(rig, a["trial_id"]) if e["type"] == "topic_check_failed"
+    ]
+    assert len(failed) == 3
+
+
 def test_flags_are_timestamped_and_only_during_a_trial(rig):
     assert rig.c.post("/api/trials/flag", json={"text": "early"}).status_code == 409
     a = start(rig).json()["active"]

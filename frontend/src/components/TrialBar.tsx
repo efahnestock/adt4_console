@@ -4,7 +4,7 @@
 import {useEffect, useRef, useState} from "react";
 import {errorText, getJSON, postJSON} from "../lib/api";
 import {fmtBytes, fmtRate} from "../lib/fuzzy";
-import {answerAge, fmtAge, fmtElapsed, fmtMinutes, LIVE, machineLabel, machineTone, recordingCount, shortestLeft, staleAfter,
+import {answerAge, fmtAge, fmtElapsed, fmtMinutes, LIVE, machineLabel, machineTone, recordingCount, shortestLeft, staleAfter, topicCheckLabel,
   type PreflightMachine, type Trial, type TrialMachine, type TrialPayload} from "../lib/trial";
 import {serverNow, useTrial} from "../stores/trial";
 import {Dot, ErrorBox, Modal, Spinner} from "./ui";
@@ -27,6 +27,7 @@ function machineTitle(m: TrialMachine, now: number): string {
     m.free_bytes != null ? `${fmtBytes(m.free_bytes)} free` : "",
     m.clock_offset_s != null ? `clock ${m.clock_offset_s >= 0 ? "+" : ""}${m.clock_offset_s.toFixed(2)} s vs this console` : "",
     m.topic_check?.missing?.length ? `no publisher for: ${m.topic_check.missing.join(", ")}` : "",
+    m.topic_check && !m.topic_check.ok ? `topic check: ${m.topic_check.error ?? "failed"}` : "",
     ...(m.warnings ?? []),
   ].filter(Boolean).join("\n");
 }
@@ -35,7 +36,7 @@ function MachineChip({m, now, pollS, onRetry}: {m: TrialMachine; now: number; po
   const tone = machineTone(m, now, pollS);
   const age = answerAge(m, now);
   const stale = m.state === "recording" && (age === null || age > staleAfter(pollS));
-  const missing = m.topic_check?.missing?.length ?? 0;
+  const topics = m.state === "recording" ? topicCheckLabel(m) : null;
   return (
     <span className={`trial-chip trial-chip-${tone}`} title={machineTitle(m, now)} data-testid={`trial-machine-${m.name}`}>
       <Dot tone={tone} />
@@ -50,7 +51,7 @@ function MachineChip({m, now, pollS, onRetry}: {m: TrialMachine; now: number; po
       )}
       {(stale || m.state === "unreachable" || m.state === "stop_pending") && <span className="muted">last answer {fmtAge(age)}</span>}
       {m.state === "stopped" && m.bytes != null && <span className="muted">{fmtBytes(m.bytes)}</span>}
-      {missing > 0 && <span className="trial-note">{missing} topic{missing > 1 ? "s" : ""} without a publisher</span>}
+      {topics && <span className={topics.bad ? "trial-note" : "muted"} data-testid={`trial-topics-${m.name}`}>{topics.text}</span>}
       {(m.warnings ?? []).map(w => (
         <span key={w} className="trial-note">{w.replace(/^(disk|bag): /, "")}</span>
       ))}

@@ -62,6 +62,7 @@ STATUS_TIMEOUT_S = 8.0
 STOP_TIMEOUT_S = 90.0
 CHECK_TIMEOUT_S = 30.0
 CHECK_DELAY_S = 5.0
+CHECK_TRIES = 6  # the topic check is repeated until a machine answers
 
 # warnings, never actions
 LOW_DISK_BYTES = 10 * 10**9
@@ -574,14 +575,31 @@ class TrialService:
             return reply
 
         for name, reply in self._parallel(one, rec).items():
+            with self.lock:
+                tries = (trial["machines"][name].get("topic_check") or {}).get(
+                    "tries", 0
+                ) + 1
             if not isinstance(reply, dict) or not reply.get("ok"):
                 err = reply.get("error") if isinstance(reply, dict) else str(reply)
-                self._set(trial, name, topic_check={"ok": False, "error": err})
+                left = CHECK_TRIES - tries
+                self._set(trial, name, topic_check={
+                    "ok": False, "tries": tries, "error": err,
+                    "retrying": left > 0})  # fmt: skip
+                if left <= 0:
+                    self.event(
+                        "topic_check_failed",
+                        trial,
+                        machine=name,
+                        error=err,
+                        tries=tries,
+                    )
                 continue
             missing = reply.get("missing") or []
             self._set(trial, name, topic_check={
-                "ok": True, "published": reply.get("published"), "topics": reply.get("topics"),
-                "missing": missing})  # fmt: skip
+                "ok": True, "tries": tries, "published": reply.get("published"),
+                "topics": reply.get("topics"), "missing": missing})  # fmt: skip
+            self.event("topic_check", trial, machine=name, published=reply.get("published"),
+                       topics=reply.get("topics"), tries=tries)  # fmt: skip
             if missing:
                 self.event("topics_missing", trial, machine=name, missing=missing)
         self._save(trial)
@@ -667,9 +685,36 @@ class TrialService:
                 self._stop_result(trial, name, reply)
             else:
                 self._status_result(trial, name, reply, t0, t1)
+        self._retry_topic_checks(trial, machines)
         self._maybe_finalize(trial)
         self._save(trial)
         self._publish()
+
+    def _retry_topic_checks(self, trial: dict, machines: dict) -> None:
+        """The topic check must have run on every recording machine: one that
+        failed (no answer) is tried again each poll, CHECK_TRIES times in all;
+        one that never ran (console restarted) runs now."""
+        now = self.clock()
+        with self.lock:
+            if trial["state"] != RECORDING:
+                return
+            todo = []
+            for name, x in trial["machines"].items():
+                tc = x.get("topic_check")
+                if x["state"] != RECORDING or name not in machines:
+                    continue
+                never = (
+                    tc is None and now - (x.get("started") or now) > 3 * CHECK_DELAY_S
+                )
+                again = (
+                    tc is not None
+                    and not tc.get("ok")
+                    and tc.get("tries", 0) < CHECK_TRIES
+                )
+                if never or again:
+                    todo.append(machines[name])
+        if todo:
+            self._check_topics(trial, todo)
 
     def _status_result(
         self, trial: dict, name: str, r: dict, t0: float, t1: float
