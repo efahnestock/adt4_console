@@ -330,7 +330,7 @@ def copy(body: CopyBody, request: Request):
                 f"Delete {len(on_drive)} bag(s) ({bd.human(sum(i['bytes'] for i in on_drive))}) "
                 f"from {name}? The hashes of the copies on {body.drive} match. "
                 "This cannot be undone.",
-                required_text="delete",
+                kind="drive_delete",
                 yes_label="Delete from robot",
                 no_label="Keep them",
                 detail={"bags": [f"{i['run']}/{i['bag']}" for i in on_drive]},

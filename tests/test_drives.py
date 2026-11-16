@@ -573,11 +573,11 @@ def test_move_deletes_only_after_the_hashes_match_and_a_typed_yes(app):
         # the hash check ran before the question
         assert [_is_copy(c) for c in svc.streamed] == [True, False]
         assert "cannot be undone" in job.confirm_request["message"]
-        assert job.confirm_request["required_text"] == "delete"
+        # one button: nothing to type
+        assert job.confirm_request["required_text"] is None
+        assert job.confirm_request["yes_label"] == "Delete from robot"
         assert not any(c.startswith("rm -rf") for c in svc.helpers.calls)
-        client.post(
-            f"/api/jobs/{job_id}/confirm", json={"answer": answer, "text": "delete"}
-        )
+        client.post(f"/api/jobs/{job_id}/confirm", json={"answer": answer})
         return svc.jobs.wait(job_id)
 
     kept = run(False)

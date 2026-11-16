@@ -591,7 +591,7 @@ route("POST", "/api/drives/copy", async (q, r) => {
     }
     const removed = [];
     if (b.remove_source) {
-      const yes = await c.confirm({message: `Delete ${runs.length} bag(s) (${(total / GBY).toFixed(1)} GB) from ${b.machine}? The hashes of the copies on ${b.drive} match. This cannot be undone.`, required_text: "delete", yes_label: "Delete from robot", no_label: "Keep them", detail: {bags: runs.map(x => `${x.name}/recorded_data`)}});
+      const yes = await c.confirm({message: `Delete ${runs.length} bag(s) (${(total / GBY).toFixed(1)} GB) from ${b.machine}? The hashes of the copies on ${b.drive} match. This cannot be undone.`, yes_label: "Delete from robot", no_label: "Keep them", detail: {bags: runs.map(x => `${x.name}/recorded_data`)}});
       if (yes) {
         for (const x of runs) {
           st.runs = st.runs.filter(y => y !== x);
