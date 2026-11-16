@@ -668,3 +668,203 @@ def test_eject_waits_for_a_running_copy(app, monkeypatch):
         "/api/drives/eject", json={"machine": robot, "drive": "dcist_ssd3"}
     )
     assert again.status_code == 200
+
+
+# ------------------------------------------------------------ run output
+def _scan(out, dest=None):
+    args = [sys.executable, "-c", bd.BAG_SCAN, str(out)] + ([str(dest)] if dest else [])
+    p = subprocess.run(args, capture_output=True, text=True)
+    return bd.parse_bag_scan(p.returncode, p.stdout, p.stderr)
+
+
+def _trial_with_output(out, output_dir):
+    bag = out / "trial_x" / "euclid"
+    bag.mkdir(parents=True)
+    (bag / "euclid_0.mcap").write_bytes(b"m" * 500)
+    (bag / "metadata.yaml").write_text("meta")
+    (bag / "trial.json").write_text(
+        json.dumps({"run": {"output_dir": str(output_dir)}})
+    )
+    old = time.time() - 600
+    for f in bag.iterdir():
+        os.utime(f, (old, old))
+
+
+def test_bag_scan_finds_the_run_output_a_trial_points_to(tmp_path):
+    out, dest = tmp_path / "out", tmp_path / "drive" / "euclid"
+    exp = out / "exp_a"
+    (exp / "hydra" / "backend").mkdir(parents=True)
+    (exp / "hydra" / "backend" / "dsg.json").write_bytes(b"d" * 300)
+    (exp / "roman").mkdir()
+    (exp / "roman" / "map.pkl").write_bytes(b"r" * 200)
+    old = time.time() - 600
+    for d, _, files in os.walk(exp):
+        for f in files:
+            os.utime(os.path.join(d, f), (old, old))
+    _trial_with_output(out, exp)
+
+    o = _scan(out)["runs"][0]["output"]
+    assert (o["name"], o["bytes"], o["files"]) == ("exp_a", 500, 2)
+    assert o["missing"] is False and o["on_drive"] == ""
+    # the run output folder itself is not listed as a run: it holds no bag
+    assert [r["name"] for r in _scan(out)["runs"]] == ["trial_x"]
+
+    # part of it on the drive, then all of it, then with its manifest
+    there = dest / "trial_x" / "run_output" / "exp_a"
+    (there / "roman").mkdir(parents=True)
+    (there / "roman" / "map.pkl").write_bytes(b"r" * 200)
+    assert _scan(out, dest)["runs"][0]["output"]["on_drive"] == "partial"
+    (there / "hydra" / "backend").mkdir(parents=True)
+    (there / "hydra" / "backend" / "dsg.json").write_bytes(b"d" * 300)
+    assert _scan(out, dest)["runs"][0]["output"]["on_drive"] == "copied"
+    (dest / "trial_x" / "run_output" / "exp_a.sha256").write_text("x")
+    o = _scan(out, dest)["runs"][0]["output"]
+    assert o["on_drive"] == "verified" and o["dest_bytes"] == 500
+
+    # a file written just now: the stack may still be writing
+    (exp / "roman" / "map.pkl").write_bytes(b"r" * 200)
+    assert _scan(out)["runs"][0]["output"]["live"] is True
+
+
+def test_bag_scan_says_why_a_run_output_is_not_copied(tmp_path):
+    out = tmp_path / "out"
+    _trial_with_output(out, out / "gone")
+    o = _scan(out)["runs"][0]["output"]
+    assert o["missing"] is True and "not on this machine" in o["note"]
+
+    # only a folder directly under the output root: never an arbitrary path
+    (out / "trial_x" / "euclid" / "trial.json").write_text(
+        json.dumps({"run": {"output_dir": str(tmp_path)}})
+    )
+    o = _scan(out)["runs"][0]["output"]
+    assert o["missing"] is True and "not copied" in o["note"]
+
+    # a trial that names no run output has none
+    (out / "trial_x" / "euclid" / "trial.json").write_text('{"run": {}}')
+    assert _scan(out)["runs"][0]["output"] is None
+
+
+def test_verify_walks_a_tree_and_lenient_keeps_going(tmp_path):
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    for d in (src, dst):
+        (d / "hydra" / "backend").mkdir(parents=True)
+        (d / "hydra" / "backend" / "dsg.json").write_text("graph")
+        (d / "log.txt").write_text("log")
+    p = _verify(src, dst)
+    assert p.returncode == 0, p.stdout + p.stderr
+    manifest = pathlib.Path(bd.manifest_path(str(dst))).read_text()
+    assert "  hydra/backend/dsg.json\n" in manifest and "  log.txt\n" in manifest
+    # sha256sum can check it later, from the folder itself
+    assert subprocess.run(
+        ["python3", "-c", "import hashlib,sys\nfor l in open(sys.argv[1]):\n h,n=l.rstrip('\\n').split('  ',1)\n assert hashlib.sha256(open(n,'rb').read()).hexdigest()==h",
+         bd.manifest_path(str(dst))], cwd=dst).returncode == 0  # fmt: skip
+
+    # the stack rewrote a file while it was being copied
+    (src / "log.txt").write_text("LOG")
+    pathlib.Path(bd.manifest_path(str(dst))).unlink()
+    assert _verify(src, dst).returncode == 3
+    p = subprocess.run(
+        [sys.executable, "-c", bd.VERIFY, str(src), str(dst),
+         bd.manifest_path(str(dst)), "lenient"], capture_output=True, text=True)  # fmt: skip
+    lines = p.stdout.strip().splitlines()
+    assert p.returncode == 0 and "DIFF log.txt: sha256" in p.stdout
+    assert bd.parse_verify(lines[-2]) == ("changed", ("1",))
+    assert bd.parse_verify(lines[-1])[0] == "done"
+    # the manifest says what is on the drive
+    import hashlib
+
+    manifest = pathlib.Path(bd.manifest_path(str(dst))).read_text()
+    assert f"{hashlib.sha256(b'log').hexdigest()}  log.txt" in manifest
+
+
+OUTPUT = {"name": "exp_a", "path": "/home/swarm/adt4_output/exp_a", "bytes": 4 * 10**6,
+          "files": 12, "dest_bytes": 0, "on_drive": "", "live": False, "missing": False,
+          "note": ""}  # fmt: skip
+
+
+def _scan_with_output(svc, **over):
+    scan = json.loads(json.dumps(SCAN))
+    scan["runs"][0]["output"] = {**OUTPUT, **over}
+    svc.helpers.scan = scan
+
+
+def test_copy_takes_the_run_output_along_and_never_deletes_it(app):
+    client, svc = app
+    robot = _robot(svc)
+    _scan_with_output(svc)
+    body = {"machine": robot, "drive": "dcist_ssd3", "runs": ["nov11_b45"],
+            "remove_source": True}  # fmt: skip
+    job_id = client.post("/api/drives/copy", json=body).json()["job_id"]
+    job = svc.jobs.get(job_id)
+    deadline = time.time() + 5
+    while job.state != "waiting" and time.time() < deadline:
+        time.sleep(0.01)
+    assert job.state == "waiting", job.to_dict()["log"]
+    # the bag, then the run output: copy and hash each
+    assert [_is_copy(c) for c in svc.streamed] == [True, False, True, False]
+    dst = f"/mnt/bag_drives/dcist_ssd3/{robot}/nov11_b45/run_output/exp_a"
+    assert f"/home/swarm/adt4_output/exp_a/ {dst}/" in svc.streamed[2]
+    assert "--append" not in svc.streamed[2] and "--no-links" in svc.streamed[2]
+    assert svc.streamed[3].endswith(f"{dst} {dst}.sha256 lenient")
+    assert "run output" not in job.confirm_request["message"]
+    client.post(f"/api/jobs/{job_id}/confirm", json={"answer": True})
+    job = svc.jobs.wait(job_id)
+    assert job.state == "succeeded", job.to_dict()["log"]
+    assert job.result["outputs"] == [
+        {"run": "nov11_b45", "name": "exp_a", "dest": dst, "bytes": 4 * 10**6,
+         "live": False, "state": "verified", "changed": []}
+    ]  # fmt: skip
+    removed = [c for c in svc.helpers.calls if c.startswith("rm -rf")]
+    assert removed == ["rm -rf -- /home/swarm/adt4_output/nov11_b45/recorded_data"]
+
+
+def test_a_run_output_that_changed_or_is_missing_warns_and_the_bags_still_copy(
+    app, monkeypatch
+):
+    client, svc = app
+    robot = _robot(svc)
+    _scan_with_output(svc, live=True)
+
+    def stream(job, m, cmd, on_line):
+        svc.streamed.append(cmd)
+        if cmd.endswith(" lenient"):
+            on_line("DIFF hydra/log.txt: sha256 aa on the robot, bb on the drive")
+            on_line("CHANGED 1")
+            on_line("VERIFIED 11 4000000 0.1")
+        elif "--info=progress2" not in cmd:
+            on_line("VERIFIED 2 2147483648 2.5")
+        return 0
+
+    monkeypatch.setattr(bd, "stream_cmd", stream)
+    body = {"machine": robot, "drive": "dcist_ssd3", "runs": ["nov11_b45"],
+            "remove_source": True}  # fmt: skip
+    job_id = client.post("/api/drives/copy", json=body).json()["job_id"]
+    job = svc.jobs.get(job_id)
+    deadline = time.time() + 5
+    while job.state != "waiting" and time.time() < deadline:
+        time.sleep(0.01)
+    # the question says the run output is not all there before anything is deleted
+    assert "run output of nov11_b45 is NOT fully on the drive" in job.confirm_request["message"]  # fmt: skip
+    client.post(f"/api/jobs/{job_id}/confirm", json={"answer": False})
+    job = svc.jobs.wait(job_id)
+    assert job.state == "succeeded"
+    out = job.result["outputs"][0]
+    assert out["state"] == "changed" and out["changed"] == ["hydra/log.txt"]
+    log = " ".join(e["text"] for e in job.to_dict()["log"])
+    assert "the stack is still running" in log and "1 file(s) changed" in log
+
+    # a run output that is not on the machine: said, and the bag still copies
+    _scan_with_output(svc, missing=True, note="the folder is not on this machine")
+    svc.streamed.clear()
+    r = client.post("/api/drives/copy", json={**body, "remove_source": False})
+    job = svc.jobs.wait(r.json()["job_id"])
+    assert job.state == "succeeded" and len(svc.streamed) == 2
+    assert job.result["outputs"][0]["state"] == "missing"
+
+
+def test_the_run_output_counts_toward_the_space_needed(app):
+    client, svc = app
+    robot = _robot(svc)
+    _scan_with_output(svc, bytes=1700 * GB)
+    r = client.post("/api/drives/copy", json={"machine": robot, "drive": "dcist_ssd3", "runs": ["nov11_b45"]})  # fmt: skip
+    assert r.status_code == 409 and "not enough space" in r.json()["detail"]

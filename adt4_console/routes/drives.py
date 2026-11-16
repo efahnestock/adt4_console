@@ -195,9 +195,16 @@ def copy(body: CopyBody, request: Request):
             409, f"{live[0]} is still being recorded: stop the recording first"
         )
     bags = [(r, b) for r in runs for b in by_name[r]["bags"]]
+    # the run output folder each trial points to goes along with it; it is
+    # copied after the bags, is never deleted from the machine, and a problem
+    # with it is a warning, not a failed copy
+    outputs = [
+        (r, o) for r in runs if (o := by_name[r].get("output")) and not o.get("missing")
+    ]
     total = sum(b["bytes"] for _, b in bags)
     # what is on the drive already (an interrupted or finished copy) needs no space
     needed = sum(max(0, b["bytes"] - b.get("dest_bytes", 0)) for _, b in bags)
+    needed += sum(max(0, o["bytes"] - o.get("dest_bytes", 0)) for _, o in outputs)
     if needed > drive["free_bytes"]:
         raise HTTPException(
             409,
@@ -229,7 +236,7 @@ def copy(body: CopyBody, request: Request):
                 f"{body.drive} is on a USB 2.0 link ({drive['usb_speed_mbps']} Mbit/s): "
                 "this will be slow. Use a USB-C port that links at 5 Gbit/s or more.",
             )
-        result = {"copied": [], "skipped": [], "removed": [], "bytes": 0}
+        result = {"copied": [], "skipped": [], "removed": [], "bytes": 0, "outputs": []}
         try:
             return work(job, result)
         except JobCancelled:
@@ -324,12 +331,36 @@ def copy(body: CopyBody, request: Request):
             result["bytes"] += size
             job.check_cancelled()
 
+        for run_name in runs:
+            o = by_name[run_name].get("output")
+            if o and o.get("missing"):
+                job.log(
+                    "warn",
+                    f"{run_name}: run output {o['name']} was not copied ({o.get('note')})",
+                )
+                result["outputs"].append(
+                    {"run": run_name, "name": o["name"], "state": "missing", "note": o.get("note")}
+                )  # fmt: skip
+        for run_name, o in outputs:
+            result["outputs"].append(copy_output(job, run_name, o))
+            job.check_cancelled()
+        shaky = [o for o in result["outputs"] if o["state"] != "verified"]
+
         on_drive = result["copied"] + result["skipped"]
         if body.remove_source and on_drive:
             answer = job.confirm(
                 f"Delete {len(on_drive)} bag(s) ({bd.human(sum(i['bytes'] for i in on_drive))}) "
                 f"from {name}? The hashes of the copies on {body.drive} match. "
-                "This cannot be undone.",
+                + (
+                    "The run output of "
+                    + ", ".join(sorted({o["run"] for o in shaky}))
+                    + " is NOT fully on the drive (see the log); it stays on "
+                    f"{name}, but once the bags are deleted this page no longer "
+                    "offers to copy it. "
+                    if shaky
+                    else ""
+                )
+                + "This cannot be undone.",
                 kind="drive_delete",
                 yes_label="Delete from robot",
                 no_label="Keep them",
@@ -350,6 +381,63 @@ def copy(body: CopyBody, request: Request):
                 job.log("info", "Bags left on the robot.")
         job.log("ok", f"Done. Eject {body.drive} before unplugging it.")
         return result
+
+    def copy_output(job, run_name: str, o: dict) -> dict:
+        """Copy one run output folder and hash it.  Never raises for a problem
+        with the folder: the bags are what the job is judged on."""
+        label = f"{run_name}: run output {o['name']}"
+        dst = bd.output_dest_dir(write_dir, name, run_name, o["name"])
+        item = {"run": run_name, "name": o["name"], "dest": dst, "bytes": o["bytes"],
+                "live": bool(o.get("live")), "state": "failed", "changed": []}  # fmt: skip
+        job.log("info", f"{label} ({bd.human(o['bytes'])}, {o['files']} files)")
+        if o.get("live"):
+            job.log(
+                "warn",
+                f"{label}: the stack is still running or wrote to it in the last "
+                "minute, so this copy may be incomplete (the final scene graph is "
+                "saved when the stack stops). Copy the run again after stopping it.",
+            )
+        tail: list[str] = []
+
+        def on_copy(line):
+            if bd.parse_progress(line) is None:
+                tail.append(line)
+                del tail[:-5]
+
+        rc = bd.stream_cmd(job, m, bd.copy_tree_command(o["path"], dst), on_copy)
+        # rc 24: files vanished while copying (a folder still being written)
+        if rc not in (0, 24):
+            job.log(
+                "warn", f"{label}: copy failed (rc {rc}): {' | '.join(tail)[-300:]}"
+            )
+            return item
+        verified: list[tuple] = []
+
+        def on_verify(line):
+            kind, v = bd.parse_verify(line)
+            if kind == "diff":
+                item["changed"].append(v[0].split(":", 1)[0])
+            elif kind == "done":
+                verified.append(v)
+
+        rc = bd.stream_cmd(job, m, bd.verify_command(o["path"], dst, True), on_verify)
+        if rc != 0 or not verified:
+            job.log("warn", f"{label}: could not check the copy (rc {rc})")
+            return item
+        if item["changed"]:
+            item["state"] = "changed"
+            shown = ", ".join(item["changed"][:5])
+            more = len(item["changed"]) - 5
+            job.log(
+                "warn",
+                f"{label}: {len(item['changed'])} file(s) changed on {name} while "
+                f"being copied ({shown}{f', and {more} more' if more > 0 else ''}). "
+                "The rest matches; copy again once the stack is stopped.",
+            )
+        else:
+            item["state"] = "verified"
+            job.log("ok", f"{label}: on the drive, SHA-256 of every file matches")
+        return item
 
     job = svc.jobs.start("drive_copy", f"Copy bags {name} -> {body.drive}", run)
     with _copies_lock:

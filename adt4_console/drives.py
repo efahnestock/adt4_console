@@ -130,8 +130,14 @@ def eject_command(drive: str) -> str:
 # each bag also says what is there already: "dest_bytes" and "on_drive" =
 # "verified" (all bytes there and a hash manifest written by VERIFY), "copied"
 # (all bytes there, not hashed yet), "partial" (an interrupted copy) or "".
+# "output": the run output folder the stack wrote during a trial (hydra, roman,
+# ...), named by run.output_dir of the trial.json beside the bag.  Only a folder
+# directly under the output root is taken; "live" says the stack is still up or
+# a file in it changed in the last minute (so a copy of it may be incomplete),
+# "missing"/"note" why there is nothing to copy.  It is copied to
+# <dest>/<run>/run_output/<name>/ and never deleted from the machine.
 BAG_SCAN = r"""
-import json, os, sys, time
+import json, os, stat, sys, time
 root = os.path.expanduser(sys.argv[1])
 dest = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
 now = time.time()
@@ -141,6 +147,62 @@ try:
 except OSError as e:
     print(json.dumps({"root": root, "runs": [], "error": str(e)}))
     sys.exit(0)
+def stack_up():
+    import subprocess
+    try:
+        return subprocess.run(["tmux", "has-session", "-t", "=adt4_system"],
+                              capture_output=True, timeout=5).returncode == 0
+    except Exception:
+        return False
+STACK = stack_up()
+def run_output(run, subs, name):
+    path = None
+    for sub in subs:
+        try:
+            with open(os.path.join(run, sub, "trial.json")) as f:
+                path = (json.load(f).get("run") or {}).get("output_dir")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if path:
+            break
+    if not path or not isinstance(path, str):
+        return None
+    path = os.path.normpath(path)
+    out = {"name": os.path.basename(path), "path": path, "bytes": 0, "files": 0,
+           "dest_bytes": 0, "on_drive": "", "live": False, "missing": False, "note": ""}
+    if os.path.dirname(path) != os.path.normpath(root) or out["name"] == name:
+        out.update(missing=True, note="not a folder directly under %s: not copied" % root)
+        return out
+    if not os.path.isdir(path) or os.path.islink(path):
+        out.update(missing=True, note="the folder is not on this machine")
+        return out
+    newest, there = 0.0, 0
+    base = os.path.join(dest, name, "run_output", out["name"]) if dest else None
+    for d, dirs, files in os.walk(path):
+        dirs[:] = sorted(x for x in dirs if not os.path.islink(os.path.join(d, x)))
+        for fn in files:
+            fp = os.path.join(d, fn)
+            try:
+                st = os.lstat(fp)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            out["files"] += 1
+            out["bytes"] += st.st_size
+            newest = max(newest, st.st_mtime)
+            if base:
+                try:
+                    there += min(os.path.getsize(os.path.join(base, os.path.relpath(fp, path))), st.st_size)
+                except OSError:
+                    pass
+    out["live"] = STACK or now - newest < 60
+    out["dest_bytes"] = there
+    if base and out["files"] and there >= out["bytes"]:
+        out["on_drive"] = "verified" if os.path.isfile(base + ".sha256") else "copied"
+    elif there > 0:
+        out["on_drive"] = "partial"
+    return out
 def state(bags):
     kinds = {b["on_drive"] for b in bags}
     if kinds == {"verified"}:
@@ -207,7 +269,8 @@ for name in names:
                      "bytes": sum(b["bytes"] for b in bags),
                      "dest_bytes": sum(b["dest_bytes"] for b in bags),
                      "recording": any(b["recording"] for b in bags),
-                     "on_drive": state(bags), "bags": bags})
+                     "on_drive": state(bags), "bags": bags,
+                     "output": run_output(run, subs, name)})
 runs.sort(key=lambda r: -r["mtime"])
 print(json.dumps({"root": root, "runs": runs}))
 """
@@ -237,6 +300,10 @@ def parse_bag_scan(rc: int, out: str, err: str = "") -> dict:
         if valid_run(r.get("name"))
         and all(valid_bag(b.get("name")) for b in r.get("bags") or [])
     ]
+    for r in runs:
+        o = r.get("output")
+        if o and not (valid_run(o.get("name")) and isinstance(o.get("path"), str)):
+            r["output"] = None
     return {"root": data.get("root", ""), "runs": runs}
 
 
@@ -260,6 +327,27 @@ def machine_dir(write_dir: str, machine: str) -> str:
 def dest_dir(write_dir: str, machine: str, run: str, bag: str) -> str:
     """Where a bag lands on the drive: ``<write dir>/<machine>/<run>/<bag>``."""
     return "/".join([machine_dir(write_dir, machine), run, bag])
+
+
+OUTPUT_DIR = "run_output"
+
+
+def output_dest_dir(write_dir: str, machine: str, run: str, name: str) -> str:
+    """Where a trial's run output lands: ``<write dir>/<machine>/<run>/run_output/<name>``."""
+    return "/".join([machine_dir(write_dir, machine), run, OUTPUT_DIR, name])
+
+
+def copy_tree_command(src: str, dst: str) -> str:
+    """Copy the folder tree ``src`` to ``dst`` and flush it.  No ``--append``:
+    the stack may have rewritten a file since an earlier copy, so a file whose
+    size or time differs is written again whole (these folders are small next
+    to a bag).  Symbolic links are not followed or copied."""
+    s, d = shlex.quote(src.rstrip("/") + "/"), shlex.quote(dst.rstrip("/") + "/")
+    return (
+        f"mkdir -p {d} && "
+        f"rsync -rt --no-links --no-inc-recursive --info=progress2,name0 {s} {d} && "
+        f"sync -f {d}"
+    )
 
 
 def copy_command(src: str, dst: str) -> str:
@@ -288,12 +376,24 @@ def copy_command(src: str, dst: str) -> str:
 # stdout: "P <bytes done> <bytes total> <MB/s>" progress lines, "DIFF <file>:
 # <why>" for each mismatch, then "VERIFIED <files> <bytes> <seconds>" (exit 0)
 # or "FAILED <mismatches>" (exit 3).  On success the hashes are written to the
-# manifest (sha256sum format) next to the copy.
+# manifest (sha256sum format) next to the copy.  Files are taken from the whole
+# tree under the source (a bag is flat; a run output folder is not).
+# A fifth argument "lenient" is for a folder the stack may still be writing: a
+# file that differs is reported (DIFF, then "CHANGED <n>") but the check still
+# ends VERIFIED, and the manifest holds the hashes of what is on the drive.
 VERIFY = r"""
 import hashlib, os, sys, threading, time
 src, dst, manifest = sys.argv[1], sys.argv[2], sys.argv[3]
+lenient = len(sys.argv) > 4 and sys.argv[4] == "lenient"
 CHUNK = 16 << 20
-names = sorted(f.name for f in os.scandir(src) if f.is_file(follow_symlinks=False))
+names = []
+for d_, dirs_, files_ in os.walk(src):
+    dirs_[:] = [x for x in dirs_ if not os.path.islink(os.path.join(d_, x))]
+    for f_ in files_:
+        p_ = os.path.join(d_, f_)
+        if os.path.isfile(p_) and not os.path.islink(p_):
+            names.append(os.path.relpath(p_, src))
+names.sort()
 total = sum(os.path.getsize(os.path.join(src, n)) for n in names)
 done = [0]
 lock = threading.Lock()
@@ -351,17 +451,21 @@ for n in names:
     if out["s"] != out["d"] or out["s"].startswith("error"):
         print("DIFF %s: sha256 %s on the robot, %s on the drive" % (n, out["s"], out["d"]), flush=True)
         bad += 1
+        if lenient and not out["d"].startswith("error"):
+            sums.append("%s  %s" % (out["d"], n))
     else:
         sums.append("%s  %s" % (out["s"], n))
 stop.set()
-if bad:
+if bad and not lenient:
     print("FAILED %d" % bad, flush=True)
     sys.exit(3)
 with open(manifest, "w") as f:
     f.write("\n".join(sums) + "\n")
     f.flush()
     os.fsync(f.fileno())
-print("VERIFIED %d %d %.1f" % (len(names), total, time.time() - t0), flush=True)
+if bad:
+    print("CHANGED %d" % bad, flush=True)
+print("VERIFIED %d %d %.1f" % (len(names) - bad, total, time.time() - t0), flush=True)
 """
 
 VERIFY_PROGRESS = re.compile(r"^P (\d+) (\d+) (\d+)$")
@@ -373,12 +477,12 @@ def manifest_path(dst: str) -> str:
     return dst.rstrip("/") + ".sha256"
 
 
-def verify_command(src: str, dst: str) -> str:
+def verify_command(src: str, dst: str, lenient: bool = False) -> str:
     """Hash ``src`` and its copy ``dst`` and compare (see ``VERIFY``)."""
     args = " ".join(
         shlex.quote(a) for a in (src.rstrip("/"), dst.rstrip("/"), manifest_path(dst))
     )
-    return f"python3 -c {shlex.quote(VERIFY)} {args}"
+    return f"python3 -c {shlex.quote(VERIFY)} {args}" + (" lenient" if lenient else "")
 
 
 def parse_verify(line: str) -> tuple[str, tuple]:
@@ -392,6 +496,8 @@ def parse_verify(line: str) -> tuple[str, tuple]:
         return "done", (int(m.group(1)), int(m.group(2)), float(m.group(3)))
     if line.startswith("DIFF "):
         return "diff", (line[5:],)
+    if line.startswith("CHANGED "):
+        return "changed", (line[8:],)
     return "other", (line,)
 
 

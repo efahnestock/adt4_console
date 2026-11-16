@@ -56,6 +56,27 @@ export interface BagRun {
   on_drive?: "verified" | "copied" | "partial" | "";
   dest_bytes?: number;
   bags: {name: string; bytes: number; files: number; metadata?: boolean}[];
+  output?: RunOutput | null;
+}
+
+/** The run output folder (hydra, roman, ...) a trial points to; copied with it. */
+export interface RunOutput {
+  name: string;
+  bytes: number;
+  files: number;
+  dest_bytes?: number;
+  on_drive?: "verified" | "copied" | "partial" | "";
+  live?: boolean;
+  missing?: boolean;
+  note?: string;
+}
+
+export function outputLabel(o: RunOutput): {tone: "ok" | "info" | "warn" | "off"; text: string; title: string} {
+  if (o.missing) return {tone: "warn", text: `run output ${o.name} missing`, title: `The trial names the run output folder ${o.name}, but ${o.note || "it is not here"}. Only the bag is copied.`};
+  const size = `${fmtBytes(o.bytes)}`;
+  if (o.live) return {tone: "warn", text: `+ run output ${o.name}, ${size}, stack running`, title: "The stack is still running or wrote to this folder in the last minute. It is copied with the bag, but may be incomplete: the final scene graph is saved when the stack stops. Copy again after stopping it."};
+  if (o.on_drive === "verified") return {tone: "ok", text: `+ run output ${o.name} on drive`, title: "The run output folder is on the drive and its hashes were checked."};
+  return {tone: "off", text: `+ run output ${o.name}, ${size}`, title: "The folder the stack wrote during this run (scene graph, logs). It is copied with the bag into run_output/ and is never deleted from the robot."};
 }
 
 interface BagsPayload {
@@ -189,7 +210,8 @@ function BagPicker({machine, drives, refresh, remove, onStarted, onMessage}: {ma
   }, [jobState]);
   const unfinished = ready.filter(r => r.on_drive !== "verified");
   const resuming = runs.some(r => picked.has(r.name) && r.on_drive === "partial");
-  const toCopy = useMemo(() => runs.filter(r => picked.has(r.name)).reduce((n, r) => n + Math.max(0, r.bytes - (r.dest_bytes ?? 0)), 0), [runs, picked]);
+  const outLeft = (r: BagRun) => (r.output && !r.output.missing ? Math.max(0, r.output.bytes - (r.output.dest_bytes ?? 0)) : 0);
+  const toCopy = useMemo(() => runs.filter(r => picked.has(r.name)).reduce((n, r) => n + Math.max(0, r.bytes - (r.dest_bytes ?? 0)) + outLeft(r), 0), [runs, picked]);
   const fits = !drive || toCopy <= drive.free_bytes;
 
   const toggle = (name: string) =>
@@ -243,6 +265,7 @@ function BagPicker({machine, drives, refresh, remove, onStarted, onMessage}: {ma
                 <td className="mono">
                   {r.name} {r.recording && <Badge tone="warn" title="This bag is still being written. Stop the recording before copying it.">recording</Badge>}
                   {(() => { const l = onDriveLabel(r); return l && <Badge tone={l.tone} title={l.title}>{l.text}</Badge>; })()}
+                  {r.output && (() => { const l = outputLabel(r.output); return <span data-testid={`run-output-${r.name}`}> <Badge tone={l.tone} title={l.title}>{l.text}</Badge></span>; })()}
                 </td>
                 <td className="small muted">{when(r.mtime)}</td>
                 <td className="num">{fmtBytes(r.bytes)}</td>

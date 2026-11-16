@@ -1765,6 +1765,21 @@ straight onto the drive, so bag data never crosses the radio.
     (a *Delete from robot* button, nothing to type), and only on a yes are the bags removed from the machine.
     The Drives page sends `remove_source: true` unless the switch at the top of
     the machine's card is turned off.
+  * **Run output.** A trial's `trial.json` names the folder the stack wrote
+    during the run (`run.output_dir`: scene graph, ROMAN map, logs). In the
+    bag listing a run then has `output` = `{name, path, bytes, files,
+    dest_bytes, on_drive, live, missing, note}`, or `null`. Only a folder
+    directly under the output root counts; anything else is `missing` with a
+    `note`. The copy job copies it after the bags, to
+    `<write_dir>/<machine>/<run>/run_output/<name>/` with its manifest
+    `<name>.sha256` beside it (paths relative to the folder), and counts it in
+    the space check. It is **never deleted** from the machine. `live` means the
+    stack session is up or a file changed in the last minute: the copy still
+    runs, with a warning that it may be incomplete. A problem with the run
+    output (files that changed while being copied, a failed copy) is a warning
+    in the log and in `result.outputs[].state` (`verified`, `changed`,
+    `failed`, `missing`), never a failed job; the delete question names the
+    runs whose output is not fully on the drive.
 
 ## Deviations
 

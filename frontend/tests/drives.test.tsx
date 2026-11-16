@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {act} from "react";
 import {createRoot, type Root} from "react-dom/client";
-import {DrivesPage, linkLabel, onDriveLabel, usable, type Drive} from "../src/pages/Drives";
+import {DrivesPage, linkLabel, onDriveLabel, usable, type Drive, outputLabel} from "../src/pages/Drives";
 import {useJobs} from "../src/stores/jobs";
 
 (globalThis as unknown as {IS_REACT_ACT_ENVIRONMENT: boolean}).IS_REACT_ACT_ENVIRONMENT = true;
@@ -166,5 +166,16 @@ describe("Drives page", () => {
     await act(async () => button("Copy to dcist_ssd3")!.click());
     await flush();
     expect(posts).toEqual([["api/drives/copy", {machine: "hamilton", drive: "dcist_ssd3", runs: ["nov11_b45"], remove_source: false}]]);
+  });
+
+  it("says what happens to a trial's run output", () => {
+    const o = {name: "exp_a", bytes: 4e6, files: 12};
+    expect(outputLabel(o).text).toBe("+ run output exp_a, 4.0 MB");
+    expect(outputLabel({...o, live: true}).tone).toBe("warn");
+    expect(outputLabel({...o, live: true}).text).toContain("stack running");
+    expect(outputLabel({...o, on_drive: "verified"}).text).toBe("+ run output exp_a on drive");
+    const gone = outputLabel({...o, missing: true, note: "the folder is not on this machine"});
+    expect(gone.text).toBe("run output exp_a missing");
+    expect(gone.title).toContain("Only the bag is copied");
   });
 });
