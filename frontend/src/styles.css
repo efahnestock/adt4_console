@@ -209,7 +209,9 @@ code,
 body.map-full .sidenav,
 body.map-full .topbar,
 body.map-full .tabbar,
-body.map-full .banner {
+body.map-full .banner,
+body.map-full .trial-bar {
+  /* the trial bar stays mounted (a screen recording it runs goes on) */
   display: none;
 }
 body.map-full .shell,

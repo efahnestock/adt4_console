@@ -168,3 +168,13 @@ describe("TrialBar", () => {
     expect($("trial-flag-input")).toBeNull();
   });
 });
+
+describe("full map", () => {
+  it("hides the trial bar with the rest of the app chrome", async () => {
+    const {readFileSync} = await import("node:fs");
+    const css = readFileSync("src/styles.css", "utf8");
+    const rule = css.slice(css.indexOf("body.map-full .sidenav"), css.indexOf("body.map-full .shell"));
+    expect(rule).toContain("body.map-full .trial-bar");
+    expect(rule).toContain("display: none");
+  });
+});
