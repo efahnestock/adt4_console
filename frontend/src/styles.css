@@ -5410,6 +5410,52 @@ input[type="checkbox"] {
   background: var(--bg-2);
   font-variant-numeric: tabular-nums;
 }
+.trial-chip-has-pop {
+  position: relative;
+  cursor: pointer;
+}
+.trial-pop {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 70;
+  flex-direction: column;
+  gap: 6px;
+  width: max-content;
+  max-width: min(640px, 90vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.35);
+  cursor: default;
+  white-space: normal;
+}
+.trial-chip-has-pop:hover > .trial-pop,
+.trial-chip-pinned > .trial-pop {
+  display: flex;
+}
+.trial-pop-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-weight: 600;
+}
+.trial-pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 12px;
+}
+.trial-pop-foot {
+  font-size: 12px;
+  white-space: pre-line;
+}
 .trial-chip-warn {
   border-color: var(--warn);
 }

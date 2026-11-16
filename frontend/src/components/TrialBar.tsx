@@ -27,7 +27,6 @@ function machineTitle(m: TrialMachine, now: number): string {
     m.last_seen ? `last answer ${fmtAge(answerAge(m, now))}` : "no answer yet",
     m.free_bytes != null ? `${fmtBytes(m.free_bytes)} free` : "",
     m.clock_offset_s != null ? `clock ${m.clock_offset_s >= 0 ? "+" : ""}${m.clock_offset_s.toFixed(2)} s vs this console` : "",
-    m.topic_check?.missing?.length ? `no publisher for: ${m.topic_check.missing.join(", ")}` : "",
     m.topic_check && !m.topic_check.ok ? `topic check: ${m.topic_check.error ?? "failed"}` : "",
     ...(m.warnings ?? []),
   ].filter(Boolean).join("\n");
@@ -38,8 +37,14 @@ function MachineChip({m, now, pollS, onRetry}: {m: TrialMachine; now: number; po
   const age = answerAge(m, now);
   const stale = m.state === "recording" && (age === null || age > staleAfter(pollS));
   const topics = m.state === "recording" ? topicCheckLabel(m) : null;
+  const missing = m.topic_check?.missing ?? [];
+  // the list of topics nobody publishes: shown while the pointer is on the chip,
+  // and kept open by a click (a native tooltip is too easy to miss and puts 40
+  // topics on one line)
+  const [pinned, setPinned] = useState(false);
   return (
-    <span className={`trial-chip trial-chip-${tone}`} title={machineTitle(m, now)} data-testid={`trial-machine-${m.name}`}>
+    <span className={`trial-chip trial-chip-${tone} ${missing.length ? "trial-chip-has-pop" : ""} ${pinned ? "trial-chip-pinned" : ""}`} title={missing.length ? undefined : machineTitle(m, now)}
+      data-testid={`trial-machine-${m.name}`} onClick={missing.length ? () => setPinned(p => !p) : undefined}>
       <Dot tone={tone} />
       <span className="strong">{m.name}</span>
       {/* a healthy recording needs no word: the dot and the growing size say it */}
@@ -60,6 +65,19 @@ function MachineChip({m, now, pollS, onRetry}: {m: TrialMachine; now: number; po
       {(m.state === "failed" || m.state === "lost") && m.message && <span className="trial-note">{m.message}</span>}
       {onRetry && (m.state === "failed" || m.state === "lost") && (
         <button className="btn btn-sm" onClick={onRetry}>Retry</button>
+      )}
+      {missing.length > 0 && (
+        <span className="trial-pop" role="tooltip" data-testid={`trial-missing-${m.name}`} onClick={e => e.stopPropagation()}>
+          <span className="trial-pop-head">
+            {missing.length} of {m.topic_check?.topics ?? "?"} topics on {m.name} had no publisher when the recording started
+            {pinned && <button className="btn btn-xs" onClick={() => setPinned(false)}>Close</button>}
+          </span>
+          <span className="trial-pop-list">
+            {missing.map(t => <span key={t} className="mono">{t}</span>)}
+          </span>
+          <span className="trial-pop-foot muted">{machineTitle(m, now)}</span>
+          {!pinned && <span className="trial-pop-foot muted">Click the chip to keep this open.</span>}
+        </span>
       )}
     </span>
   );

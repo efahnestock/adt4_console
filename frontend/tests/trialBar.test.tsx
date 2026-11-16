@@ -103,6 +103,15 @@ describe("TrialBar", () => {
     await act(async () => useTrial.getState().set(payload(trial([machine("euclid", {topic_check: {ok: false, retrying: true, tries: 2, error: "no answer"}}), machine("hamilton", {topic_check: {ok: true, tries: 1, published: 18, topics: 20, missing: ["/h/fix", "/h/rtcm"]}})]))));
     expect($("trial-topics-euclid")!.textContent).toBe("topic check got no answer, retrying (2)");
     expect($("trial-topics-hamilton")!.textContent).toBe("2/20 topics unpublished");
+    // the topics nobody publishes: one per line in a panel on the chip, which a click pins open
+    const pop = $("trial-missing-hamilton")!;
+    expect([...pop.querySelectorAll(".trial-pop-list .mono")].map(e => e.textContent)).toEqual(["/h/fix", "/h/rtcm"]);
+    expect(pop.textContent).toContain("2 of 20 topics on hamilton had no publisher");
+    expect($("trial-missing-euclid")).toBeNull();
+    await act(async () => $("trial-machine-hamilton")!.click());
+    expect($("trial-machine-hamilton")!.className).toContain("trial-chip-pinned");
+    await act(async () => [...pop.querySelectorAll("button")].find(b => b.textContent === "Close")!.click());
+    expect($("trial-machine-hamilton")!.className).not.toContain("trial-chip-pinned");
     await act(async () => useTrial.getState().set(payload(trial([machine("euclid"), machine("hamilton")]))));
 
     await act(async () => useTrial.getState().set(payload(trial([machine("euclid"), machine("hamilton", {state: "unreachable", last_seen: T0 + 80})]))));
