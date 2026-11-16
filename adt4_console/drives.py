@@ -505,6 +505,13 @@ def remove_command(src: str) -> str:
     return f"rm -rf -- {shlex.quote(src.rstrip('/'))}"
 
 
+def prune_command(run_dir: str) -> str:
+    """Remove a run folder if nothing is left in it (``rmdir`` refuses a folder
+    that still holds anything), so a moved or deleted trial leaves no empty
+    folder behind.  Always exits 0."""
+    return f"rmdir -- {shlex.quote(run_dir.rstrip('/'))} 2>/dev/null; true"
+
+
 # ---------------------------------------------------------- running things
 def run_cmd(svc, m: dict, cmd: str, timeout: float) -> tuple[int, str, str]:
     """Run ``cmd`` on machine ``m``: (rc, stdout, stderr)."""

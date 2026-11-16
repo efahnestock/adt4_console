@@ -178,4 +178,25 @@ describe("Drives page", () => {
     expect(gone.text).toBe("run output exp_a missing");
     expect(gone.title).toContain("Only the bag is copied");
   });
+
+  it("lists the bags and offers to delete them with no drive plugged in", async () => {
+    const posts: [string, unknown][] = [];
+    await mount([], (url, body) => { posts.push([url, body]); return json({job_id: "bag_delete-1", bytes: 30 * GB, not_on_drive: ["nov11_b45"]}); });
+    const del = document.querySelector<HTMLButtonElement>('[data-testid="delete-bags-hamilton"]')!;
+    const card = del.closest(".card")!;
+    expect(card.textContent).toContain("No drive plugged in.");
+    expect(card.textContent).toContain("nov11_b45");
+    // nothing to copy to: no copy button, and delete waits for a selection
+    expect([...card.querySelectorAll("button")].some(b => /^(Copy|Move) to/.test(b.textContent || ""))).toBe(false);
+    expect(del.disabled).toBe(true);
+    await act(async () => card.querySelector<HTMLInputElement>('input[aria-label="Select nov11_b45"]')!.click());
+    expect(del.disabled).toBe(false);
+    await act(async () => del.click());
+    await flush();
+    expect(posts).toEqual([["api/drives/delete", {machine: "hamilton", runs: ["nov11_b45"], drive: null}]]);
+    // the typed confirmation is in the Jobs drawer, which opens
+    expect(useJobs.getState().drawerOpen).toBe(true);
+    // an offline machine has no list
+    expect(document.querySelector('[data-testid="delete-bags-gauss"]')).toBeNull();
+  });
 });

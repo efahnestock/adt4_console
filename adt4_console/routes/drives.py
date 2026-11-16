@@ -377,6 +377,8 @@ def copy(body: CopyBody, request: Request):
                         return False
                     result["removed"].append(f"{item['run']}/{item['bag']}")
                     job.log("ok", f"deleted {src}")
+                for run_name in dict.fromkeys(i["run"] for i in on_drive):
+                    bd.run_cmd(svc, m, bd.prune_command(f"{root}/{run_name}"), 30)
             else:
                 job.log("info", "Bags left on the robot.")
         job.log("ok", f"Done. Eject {body.drive} before unplugging it.")
@@ -443,3 +445,95 @@ def copy(body: CopyBody, request: Request):
     with _copies_lock:
         _copies[(name, body.drive)] = job.id
     return {"job_id": job.id, "bytes": total, "to_copy": needed}
+
+
+class DeleteBody(BaseModel):
+    machine: str
+    runs: list[str]
+    # a plugged-in drive: the question then says which of the runs are on it
+    drive: str | None = None
+
+
+@router.post("/delete")
+def delete(body: DeleteBody, request: Request):
+    """Delete the bags of ``runs`` from ``machine``'s disk, drive or no drive.
+
+    Nothing is copied first, so the job asks with a typed ``delete`` and says
+    what it knows about copies.  A run's output folder is not touched."""
+    svc = services(request)
+    m = require_machine(svc, body.machine)
+    runs = list(dict.fromkeys(body.runs))
+    if not runs:
+        raise HTTPException(400, "no runs selected")
+    bad = [r for r in runs if not bd.valid_run(r)]
+    if bad:
+        raise HTTPException(400, f"bad run name {bad[0]!r}")
+    target = None
+    if body.drive:
+        if not bd.valid_drive(body.drive):
+            raise HTTPException(400, f"bad drive name {body.drive!r}")
+        if _busy(svc, m["name"], body.drive):
+            raise HTTPException(409, f"a copy to {body.drive} is running: wait for it")
+        target = _find_drive(svc, m, body.drive)
+    scan = _scan_bags(svc, m, target)
+    by_name = {r["name"]: r for r in scan["runs"]}
+    missing = [r for r in runs if r not in by_name]
+    if missing:
+        raise HTTPException(404, f"{m['name']} has no bags in run {missing[0]}")
+    live = [r for r in runs if by_name[r].get("recording")]
+    if live:
+        raise HTTPException(
+            409, f"{live[0]} is still being recorded: stop the recording first"
+        )
+    root, name = scan["root"], m["name"]
+    bags = [(r, b) for r in runs for b in by_name[r]["bags"]]
+    total = sum(b["bytes"] for _, b in bags)
+    safe = [r for r in runs if target and by_name[r].get("on_drive") == "verified"]
+    unsafe = [r for r in runs if r not in safe]
+
+    def run(job):
+        if not unsafe:
+            copies = f"All of them are on {body.drive} with their hashes checked."
+        elif target:
+            copies = (
+                f"{len(unsafe)} of them are NOT on {body.drive} with checked hashes "
+                f"({', '.join(unsafe[:4])}{', ...' if len(unsafe) > 4 else ''}): "
+                "this may be the only copy."
+            )
+        else:
+            copies = "No drive was checked for copies: this may be the only copy."
+        answer = job.confirm(
+            f"Delete {len(runs)} run(s), {len(bags)} bag folder(s) "
+            f"({bd.human(total)}) from {name}? {copies} This cannot be undone.",
+            kind="bag_delete",
+            required_text="delete",
+            yes_label=f"Delete from {name}",
+            no_label="Keep them",
+            detail={"bags": [f"{r}/{b['name']}" for r, b in bags], "not_on_drive": unsafe},
+        )  # fmt: skip
+        result = {"removed": [], "bytes": 0}
+        if not answer:
+            job.log("info", f"Nothing deleted from {name}.")
+            return result
+        # look again: a recording may have started while the question was open
+        fresh = {r["name"]: r for r in _scan_bags(svc, m, None)["runs"]}
+        for run_name, bag in bags:
+            label = f"{run_name}/{bag['name']}"
+            now = fresh.get(run_name)
+            if now and now.get("recording"):
+                job.log("error", f"{label}: is being recorded now, not deleted")
+                return False
+            rc, out, err = bd.run_cmd(svc, m, bd.remove_command(f"{root}/{label}"), 300)
+            if rc != 0:
+                job.log("error", f"could not delete {label}: {(err or out)[-200:]}")
+                return False
+            result["removed"].append(label)
+            result["bytes"] += bag["bytes"]
+            job.log("ok", f"deleted {root}/{label}")
+        for run_name in runs:
+            bd.run_cmd(svc, m, bd.prune_command(f"{root}/{run_name}"), 30)
+        job.log("ok", f"Done: {bd.human(result['bytes'])} freed on {name}.")
+        return result
+
+    job = svc.jobs.start("bag_delete", f"Delete bags on {name}", run)
+    return {"job_id": job.id, "bytes": total, "not_on_drive": unsafe}

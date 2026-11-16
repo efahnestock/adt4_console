@@ -95,7 +95,7 @@ class FakeHelpers:
             )
         if cmd.startswith("python3 -c"):
             return 0, json.dumps(self.scan), ""
-        if cmd.startswith("rm -rf"):
+        if cmd.startswith(("rm -rf", "rmdir ")):
             return 0, "", ""
         return 1, "", f"unexpected command {cmd}"
 
@@ -868,3 +868,83 @@ def test_the_run_output_counts_toward_the_space_needed(app):
     _scan_with_output(svc, bytes=1700 * GB)
     r = client.post("/api/drives/copy", json={"machine": robot, "drive": "dcist_ssd3", "runs": ["nov11_b45"]})  # fmt: skip
     assert r.status_code == 409 and "not enough space" in r.json()["detail"]
+
+
+# ----------------------------------------------------------------- delete
+def _ask(client, svc, body):
+    r = client.post("/api/drives/delete", json=body)
+    assert r.status_code == 200, r.text
+    job = svc.jobs.get(r.json()["job_id"])
+    deadline = time.time() + 5
+    while job.state != "waiting" and time.time() < deadline:
+        time.sleep(0.01)
+    assert job.state == "waiting", job.to_dict()["log"]
+    return job
+
+
+def test_delete_bags_without_a_drive_needs_a_typed_yes(app):
+    client, svc = app
+    robot = _robot(svc)
+    svc.helpers.status = {"host": robot, "drives": []}  # nothing plugged in
+    body = {"machine": robot, "runs": ["nov11_b45"]}
+    job = _ask(client, svc, body)
+    q = job.confirm_request
+    assert q["required_text"] == "delete" and q["kind"] == "bag_delete"
+    assert "may be the only copy" in q["message"] and "30.0 GB" in q["message"]
+    assert not any(c.startswith("rm -rf") for c in svc.helpers.calls)
+    client.post(f"/api/jobs/{job.id}/confirm", json={"answer": False})
+    assert svc.jobs.wait(job.id).result["removed"] == []
+    assert not any(c.startswith("rm -rf") for c in svc.helpers.calls)
+
+    job = _ask(client, svc, body)
+    # the word has to be typed
+    client.post(f"/api/jobs/{job.id}/confirm", json={"answer": True})
+    assert svc.jobs.wait(job.id).result["removed"] == []
+    assert not any(c.startswith("rm -rf") for c in svc.helpers.calls)
+    job = _ask(client, svc, body)
+    client.post(f"/api/jobs/{job.id}/confirm", json={"answer": True, "text": "delete"})
+    job = svc.jobs.wait(job.id)
+    assert job.state == "succeeded" and job.result["removed"] == ["nov11_b45/recorded_data"]  # fmt: skip
+    calls = svc.helpers.calls
+    rm = "rm -rf -- /home/swarm/adt4_output/nov11_b45/recorded_data"
+    prune = "rmdir -- /home/swarm/adt4_output/nov11_b45 2>/dev/null; true"
+    # the bag, then the run folder only if that left it empty; never the root
+    assert rm in calls and prune in calls and calls.index(rm) < calls.index(prune)
+    assert [c for c in calls if c.startswith("rm -rf")] == [rm]
+
+
+def test_delete_says_what_is_on_the_plugged_drive_and_refuses_a_live_bag(app):
+    client, svc = app
+    robot = _robot(svc)
+    scan = json.loads(json.dumps(SCAN))
+    scan["runs"][0]["on_drive"] = "verified"
+    svc.helpers.scan = scan
+    body = {"machine": robot, "drive": "dcist_ssd3"}
+    job = _ask(client, svc, {**body, "runs": ["nov11_b45"]})
+    assert "All of them are on dcist_ssd3" in job.confirm_request["message"]
+    client.post(f"/api/jobs/{job.id}/confirm", json={"answer": False})
+    job = _ask(client, svc, {**body, "runs": ["nov11_b45", "nov10_courtyard"]})
+    assert "1 of them are NOT on dcist_ssd3" in job.confirm_request["message"]
+    assert job.confirm_request["detail"]["not_on_drive"] == ["nov10_courtyard"]
+    client.post(f"/api/jobs/{job.id}/confirm", json={"answer": False})
+    svc.jobs.wait(job.id)
+
+    scan["runs"][0]["recording"] = True
+    r = client.post("/api/drives/delete", json={**body, "runs": ["nov11_b45"]})
+    assert r.status_code == 409 and "still being recorded" in r.json()["detail"]
+    assert client.post("/api/drives/delete", json={**body, "runs": ["../etc"]}).status_code == 400  # fmt: skip
+    assert client.post("/api/drives/delete", json={**body, "runs": ["nope"]}).status_code == 404  # fmt: skip
+    assert client.post("/api/drives/delete", json={**body, "runs": []}).status_code == 400  # fmt: skip
+
+
+def test_a_move_leaves_no_empty_run_folder(app):
+    client, svc = app
+    robot = _robot(svc)
+    body = {"machine": robot, "drive": "dcist_ssd3", "runs": ["nov11_b45"], "remove_source": True}  # fmt: skip
+    job = svc.jobs.get(client.post("/api/drives/copy", json=body).json()["job_id"])
+    deadline = time.time() + 5
+    while job.state != "waiting" and time.time() < deadline:
+        time.sleep(0.01)
+    client.post(f"/api/jobs/{job.id}/confirm", json={"answer": True})
+    svc.jobs.wait(job.id)
+    assert "rmdir -- /home/swarm/adt4_output/nov11_b45 2>/dev/null; true" in svc.helpers.calls  # fmt: skip

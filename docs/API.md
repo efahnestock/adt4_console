@@ -1780,6 +1780,17 @@ straight onto the drive, so bag data never crosses the radio.
     in the log and in `result.outputs[].state` (`verified`, `changed`,
     `failed`, `missing`), never a failed job; the delete question names the
     runs whose output is not fully on the drive.
+* `POST /api/drives/delete` `{machine, runs, drive=null}` → `{job_id, bytes,
+  not_on_drive}`; job kind `bag_delete`. Deletes the bag folders of `runs`
+  from the machine's disk, with or without a drive plugged in (the Drives page
+  lists a machine's bags either way). Nothing is copied first, so the job asks
+  with a typed `delete` (confirm kind `bag_delete`) and its message says what is
+  known about copies: with `drive`, which runs are not on it with checked
+  hashes; without, that no drive was checked. The bags are scanned again after
+  the answer, and a run being recorded is refused (409 before the job, an
+  error in it). A run folder left empty is removed (`rmdir`, also after a
+  move); a run's output folder is never touched. 400 bad names / no runs, 404
+  unknown run.
 
 ## Deviations
 

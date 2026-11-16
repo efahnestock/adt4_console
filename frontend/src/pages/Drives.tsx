@@ -4,7 +4,7 @@
 import {useEffect, useMemo, useState} from "react";
 import {errorText, postJSON, useApi} from "../lib/api";
 import {fmtBytes} from "../lib/fuzzy";
-import {fetchJob, isActive, useJobs} from "../stores/jobs";
+import {fetchJob, isActive, trackJob, useJobs} from "../stores/jobs";
 import {Badge, Card, Empty, ErrorBox, Loading, PageHeader, ProgressBar, Spinner, Toggle} from "../components/ui";
 import {JobStateBadge} from "../components/Jobs";
 
@@ -208,6 +208,31 @@ function BagPicker({machine, drives, refresh, remove, onStarted, onMessage}: {ma
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobState]);
+  // deleting bags from the machine itself, drive or no drive: the job asks with
+  // a typed "delete" in the Jobs drawer, then the list is read again
+  const [delJob, setDelJob] = useState<string | null>(null);
+  const delState = useJobs(s => (delJob ? s.jobs[delJob]?.state : undefined));
+  useEffect(() => {
+    if (delJob && delState && delState !== "running" && delState !== "waiting") {
+      setDelJob(null);
+      bags.reload();
+      onStarted();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delJob, delState]);
+  const del = async () => {
+    setBusy(true);
+    try {
+      const r = await postJSON<{job_id: string}>("api/drives/delete", {machine, runs: runs.filter(x => picked.has(x.name)).map(x => x.name), drive: drive?.name ?? null});
+      trackJob(r.job_id, `Delete bags on ${machine}`);
+      setDelJob(r.job_id);
+      setPicked(new Set());
+    } catch (e) {
+      onMessage({ok: false, text: errorText(e)});
+    } finally {
+      setBusy(false);
+    }
+  };
   const unfinished = ready.filter(r => r.on_drive !== "verified");
   const resuming = runs.some(r => picked.has(r.name) && r.on_drive === "partial");
   const outLeft = (r: BagRun) => (r.output && !r.output.missing ? Math.max(0, r.output.bytes - (r.output.dest_bytes ?? 0)) : 0);
@@ -291,13 +316,19 @@ function BagPicker({machine, drives, refresh, remove, onStarted, onMessage}: {ma
         )}
         <span className={`small ${fits ? "muted" : "tone-err"}`}>
           {picked.size} selected, {fmtBytes(total)}
-          {toCopy < total && `, ${fmtBytes(toCopy)} left to copy`}
+          {drive && toCopy < total && `, ${fmtBytes(toCopy)} left to copy`}
           {drive && !fits && ` (only ${fmtBytes(drive.free_bytes)} free)`}
         </span>
-        <button className="btn btn-sm btn-primary" disabled={busy || copying || picked.size === 0 || !fits || !drive} onClick={copy}
-          title={copying ? "A copy to this drive is already running" : undefined}>
-          {busy ? <Spinner label="Starting" /> : `${resuming ? "Resume copy" : remove ? "Move" : "Copy"} to ${drive?.label || drive?.name || "drive"}`}
+        <button className="btn btn-sm btn-danger-outline" disabled={busy || copying || Boolean(delJob) || picked.size === 0} onClick={del} data-testid={`delete-bags-${machine}`}
+          title={`Delete the selected runs' bags from ${machine} without copying them. You are asked to type "delete" first, and told which of them are not on the plugged-in drive. A run's output folder is not touched.`}>
+          Delete from {machine}
         </button>
+        {drive && (
+          <button className="btn btn-sm btn-primary" disabled={busy || copying || picked.size === 0 || !fits} onClick={copy}
+            title={copying ? "A copy to this drive is already running" : undefined}>
+            {busy ? <Spinner label="Starting" /> : `${resuming ? "Resume copy" : remove ? "Move" : "Copy"} to ${drive.label || drive.name}`}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -323,11 +354,11 @@ function MachineCard({m, refresh, onChanged, onMessage}: {m: DriveMachine; refre
       ) : m.drives.length === 0 ? (
         <div className="muted small">No drive plugged in.</div>
       ) : (
-        <>
-          {m.drives.map(d => <DriveRow key={d.name} machine={m.name} drive={d} onChanged={onChanged} onMessage={onMessage} />)}
-          {targets.length > 0 && <BagPicker machine={m.name} drives={targets} refresh={refresh} remove={remove} onStarted={onChanged} onMessage={onMessage} />}
-        </>
+        m.drives.map(d => <DriveRow key={d.name} machine={m.name} drive={d} onChanged={onChanged} onMessage={onMessage} />)
       )}
+      {/* the bags on the machine are listed with or without a drive: they can
+          be deleted from here either way */}
+      {m.online && <BagPicker machine={m.name} drives={targets} refresh={refresh} remove={remove} onStarted={onChanged} onMessage={onMessage} />}
     </Card>
   );
 }
