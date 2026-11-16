@@ -1763,6 +1763,8 @@ straight onto the drive, so bag data never crosses the radio.
     continues each file where it stopped and skips bags that are `verified`.
   * With `remove_source`, once every selected bag is verified the job asks
     (a *Delete from robot* button, nothing to type), and only on a yes are the bags removed from the machine.
+    The Drives page sends `remove_source: true` unless the switch at the top of
+    the machine's card is turned off.
 
 ## Deviations
 

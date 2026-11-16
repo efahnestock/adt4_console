@@ -157,12 +157,11 @@ function DriveRow({machine, drive, onChanged, onMessage}: {machine: string; driv
   );
 }
 
-function BagPicker({machine, drives, refresh, onStarted, onMessage}: {machine: string; drives: Drive[]; refresh: number; onStarted: () => void; onMessage: (m: {ok: boolean; text: string}) => void}) {
+function BagPicker({machine, drives, refresh, remove, onStarted, onMessage}: {machine: string; drives: Drive[]; refresh: number; remove: boolean; onStarted: () => void; onMessage: (m: {ok: boolean; text: string}) => void}) {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [target, setTarget] = useState(drives[0]?.name ?? "");
   // asked with the target drive, so each run says what of it is already there
   const bags = useApi<BagsPayload>(`api/drives/bags?machine=${encodeURIComponent(machine)}${target ? `&drive=${encodeURIComponent(target)}` : ""}`);
-  const [remove, setRemove] = useState(false);
   const [busy, setBusy] = useState(false);
   const drive = drives.find(d => d.name === target) ?? drives[0];
   useEffect(() => {
@@ -267,8 +266,6 @@ function BagPicker({machine, drives, refresh, onStarted, onMessage}: {machine: s
             {drives.map(d => <option key={d.name} value={d.name}>{d.label || d.name}</option>)}
           </select>
         )}
-        <Toggle checked={remove} onChange={setRemove} label="Delete from robot after a verified copy"
-          title="After copying, every byte of the copy is checked against the original. The job then asks before deleting anything from the robot." />
         <span className={`small ${fits ? "muted" : "tone-err"}`}>
           {picked.size} selected, {fmtBytes(total)}
           {toCopy < total && `, ${fmtBytes(toCopy)} left to copy`}
@@ -285,8 +282,17 @@ function BagPicker({machine, drives, refresh, onStarted, onMessage}: {machine: s
 
 function MachineCard({m, refresh, onChanged, onMessage}: {m: DriveMachine; refresh: number; onChanged: () => void; onMessage: (m: {ok: boolean; text: string}) => void}) {
   const targets = m.drives.filter(usable);
+  // on by default: a bag is deleted only after every byte of its copy has been
+  // checked against the original, and the job asks first
+  const [remove, setRemove] = useState(true);
   return (
-    <Card title={<>{m.name} {m.role && <span className="muted small">{m.role}</span>}</>}>
+    <Card title={<>{m.name} {m.role && <span className="muted small">{m.role}</span>}</>}
+      actions={targets.length > 0 && (
+        <span data-testid={`remove-after-copy-${m.name}`}>
+          <Toggle checked={remove} onChange={setRemove} label={`Delete from ${m.name} after a verified copy`}
+            title="After copying, every byte of the copy is checked against the original. The job then asks before deleting anything from this machine. Switch off to keep the bags here." />
+        </span>
+      )}>
       {m.installed === false ? (
         <div className="muted small">The bag-drive helper is not installed on this machine, so drives do not mount by themselves here.</div>
       ) : m.error ? (
@@ -296,7 +302,7 @@ function MachineCard({m, refresh, onChanged, onMessage}: {m: DriveMachine; refre
       ) : (
         <>
           {m.drives.map(d => <DriveRow key={d.name} machine={m.name} drive={d} onChanged={onChanged} onMessage={onMessage} />)}
-          {targets.length > 0 && <BagPicker machine={m.name} drives={targets} refresh={refresh} onStarted={onChanged} onMessage={onMessage} />}
+          {targets.length > 0 && <BagPicker machine={m.name} drives={targets} refresh={refresh} remove={remove} onStarted={onChanged} onMessage={onMessage} />}
         </>
       )}
     </Card>

@@ -133,13 +133,13 @@ describe("Drives page", () => {
     expect(resume.disabled).toBe(false);
     await act(async () => resume.click());
     await flush();
-    expect(posts).toEqual([["api/drives/copy", {machine: "hamilton", drive: "dcist_ssd3", runs: ["big_run"], remove_source: false}]]);
+    expect(posts).toEqual([["api/drives/copy", {machine: "hamilton", drive: "dcist_ssd3", runs: ["big_run"], remove_source: true}]]);
   });
 
   it("copies the selected runs and refuses a selection that does not fit", async () => {
     const posts: [string, unknown][] = [];
     await mount([drive()], (url, body) => { posts.push([url, body]); return json({job_id: "drive_copy-7", bytes: 30 * GB}); });
-    const copy = () => button("Copy to dcist_ssd3")!;
+    const copy = () => button("Move to dcist_ssd3")!;
     expect(copy().disabled).toBe(true); // nothing selected
     await act(async () => box("big_run").click());
     await act(async () => box("nov11_b45").click());
@@ -149,9 +149,22 @@ describe("Drives page", () => {
     expect(copy().disabled).toBe(false);
     await act(async () => copy().click());
     await flush();
-    expect(posts).toEqual([["api/drives/copy", {machine: "hamilton", drive: "dcist_ssd3", runs: ["nov11_b45"], remove_source: false}]]);
+    // deleting from the robot after a verified copy is the default
+    expect(posts).toEqual([["api/drives/copy", {machine: "hamilton", drive: "dcist_ssd3", runs: ["nov11_b45"], remove_source: true}]]);
     // the job is tracked, but the Jobs drawer stays shut: progress is on the drive's row
     expect(useJobs.getState().jobs["drive_copy-7"]?.state).toBe("running");
     expect(useJobs.getState().drawerOpen).toBe(false);
+  });
+
+  it("keeps the bags on the robot when the switch at the top of its card is off", async () => {
+    const posts: [string, unknown][] = [];
+    await mount([drive()], (url, body) => { posts.push([url, body]); return json({job_id: "drive_copy-8", bytes: 30 * GB}); });
+    const sw = document.querySelector<HTMLInputElement>('.card-head [data-testid="remove-after-copy-hamilton"] input')!;
+    expect(sw.checked).toBe(true);
+    await act(async () => sw.click());
+    await act(async () => box("nov11_b45").click());
+    await act(async () => button("Copy to dcist_ssd3")!.click());
+    await flush();
+    expect(posts).toEqual([["api/drives/copy", {machine: "hamilton", drive: "dcist_ssd3", runs: ["nov11_b45"], remove_source: false}]]);
   });
 });
