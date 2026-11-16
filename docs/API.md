@@ -1809,8 +1809,14 @@ straight onto the drive, so bag data never crosses the radio.
 A *trial* is one operator-started recording on every chosen machine, with a
 description and timestamped flags. Each machine records with `adt4-rec`
 (Awesome-DCIST-T4 `dcist_launch_system/bin/adt4-rec`, standard library only), in
-its own tmux session `adt4_rec`: starting or stopping a trial sends nothing to
-`adt4_system`. The console only uses ssh: one command per machine at start and
+its own tmux session `adt4_rec` on its own tmux server (`tmux -L adt4_rec
+attach` on the machine shows it): starting or stopping a trial sends nothing to
+`adt4_system`, a `tmux kill-server` there does not end a recording, and a plain
+`tmux attach` never lands in the recorder. A machine whose recorder died
+(`lost`) can be started again from its chip (*Retry*): the first bag stays in
+`<trial>/<machine>/` and the recording goes on in `<trial>/<machine>_part2/`
+(then `_part3`, ...), each a rosbag2 directory with its own `trial.json`
+(`part`). The console only uses ssh: one command per machine at start and
 at stop, one `status` per machine every `trial_poll_s` (10 s) while recording.
 Nothing recorded crosses the radio, and a machine that loses the radio keeps
 recording.
