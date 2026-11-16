@@ -69,6 +69,10 @@ CHECK_TRIES = 6  # the topic check is repeated until a machine answers
 LOW_DISK_BYTES = 10 * 10**9
 LOW_MINUTES = 10.0
 STALL_S = 45.0  # a bag that grew before and has not for this long
+# ... but only a bag that writes this much in STALL_S on average: the recorder
+# writes a chunk at a time, so a bag of a few small topics (the base station's)
+# goes minutes between writes while recording everything
+STALL_MIN_BYTES = 8 * 10**6
 
 # machine states
 STARTING, RECORDING, FAILED, UNREACHABLE = (
@@ -880,7 +884,9 @@ class TrialService:
             left = "" if secs is None else f", about {secs / 60:.0f} min at this rate"
             warnings.append(f"disk: {free / 1e9:.1f} GB free{left}")
         grew = fields.get("last_growth", cur.get("last_growth"))
-        if grew and t1 - grew > STALL_S:
+        age = t1 - (cur.get("started") or t1)
+        steady = age > 0 and (nbytes or 0) / age * STALL_S >= STALL_MIN_BYTES
+        if grew and steady and t1 - grew > STALL_S:
             warnings.append(f"bag: has not grown for {t1 - grew:.0f} s")
         had = {w.split(":")[0] for w in cur.get("warnings") or []}
         new = [w for w in warnings if w.split(":")[0] not in had]

@@ -334,6 +334,33 @@ def test_low_disk_warns_once_and_never_stops(rig):
     assert len(warn) == 1
 
 
+def test_a_bag_that_stops_growing_warns_unless_it_was_always_slow(rig):
+    start(rig)
+    for _ in range(3):  # 50 MB per poll: a camera bag
+        rig.now[0] += 10
+        rig.t.poll_once()
+    rig.fake.rate = 0
+    for _ in range(6):
+        rig.now[0] += 10
+        rig.t.poll_once()
+    m = rig.c.get("/api/trials").json()["active"]["machines"]["euclid"]
+    assert any(w.startswith("bag: has not grown") for w in m["warnings"])
+
+
+def test_a_slow_bag_written_a_chunk_at_a_time_is_not_a_stall(rig):
+    # a base station's bag: a few hundred kB every few minutes, as chunks fill
+    rig.fake.rate = 0
+    start(rig)
+    for i in range(60):
+        rig.fake.rate = 500_000 if i % 20 == 5 else 0
+        rig.now[0] += 10
+        rig.t.poll_once()
+    a = rig.c.get("/api/trials").json()["active"]
+    assert a["machines"]["euclid"]["bytes"] > 0
+    assert a["machines"]["euclid"]["warnings"] == []
+    assert not [e for e in events(rig, a["trial_id"]) if e["type"] == "warning"]
+
+
 def test_unreachable_is_unknown_then_recovers(rig):
     start(rig)
     rig.now[0] += 10
