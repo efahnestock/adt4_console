@@ -1770,7 +1770,9 @@ straight onto the drive, so bag data never crosses the radio.
     bag listing a run then has `output` = `{name, path, bytes, files,
     dest_bytes, on_drive, live, missing, note}`, or `null`. Only a folder
     directly under the output root counts; anything else is `missing` with a
-    `note`. The copy job copies it after the bags, to
+    `note`. So does a folder whose `run_info.json` does not carry the
+    `run.run_id` the trial recorded (the stack was launched again under the
+    same experiment name, which clears the folder). The copy job copies it after the bags, to
     `<write_dir>/<machine>/<run>/run_output/<name>/` with its manifest
     `<name>.sha256` beside it (paths relative to the folder), and counts it in
     the space check. It is **never deleted** from the machine. `live` means the

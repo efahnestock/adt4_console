@@ -134,6 +134,9 @@ def eject_command(drive: str) -> str:
 # ...), named by run.output_dir of the trial.json beside the bag.  Only a folder
 # directly under the output root is taken; "live" says the stack is still up or
 # a file in it changed in the last minute (so a copy of it may be incomplete),
+# A trial that recorded the launch's run id (run.run_id) only takes a folder whose
+# run_info.json has the same id: a later launch under the same experiment name
+# clears the folder, and its output must not be filed under the earlier trial.
 # "missing"/"note" why there is nothing to copy.  It is copied to
 # <dest>/<run>/run_output/<name>/ and never deleted from the machine.
 BAG_SCAN = r"""
@@ -156,11 +159,12 @@ def stack_up():
         return False
 STACK = stack_up()
 def run_output(run, subs, name):
-    path = None
+    path = want = None
     for sub in subs:
         try:
             with open(os.path.join(run, sub, "trial.json")) as f:
-                path = (json.load(f).get("run") or {}).get("output_dir")
+                info = json.load(f).get("run") or {}
+            path, want = info.get("output_dir"), info.get("run_id")
         except (OSError, ValueError, AttributeError):
             continue
         if path:
@@ -176,6 +180,22 @@ def run_output(run, subs, name):
     if not os.path.isdir(path) or os.path.islink(path):
         out.update(missing=True, note="the folder is not on this machine")
         return out
+    # the stack was launched again under the same experiment name since the
+    # trial: the folder was cleared and holds another run's output
+    if want:
+        try:
+            with open(os.path.join(path, "run_info.json")) as f:
+                have = json.load(f).get("run_id")
+        except (OSError, ValueError, AttributeError):
+            have = None
+        if have != want:
+            out.update(missing=True, note=(
+                "the folder now holds another launch's output (run %s, the trial "
+                "was recorded in run %s): not copied" % (str(have)[:8], str(want)[:8])
+                if have else
+                "the folder has no run_info.json to show it is the run the trial "
+                "was recorded in (%s): not copied" % str(want)[:8]))
+            return out
     newest, there = 0.0, 0
     base = os.path.join(dest, name, "run_output", out["name"]) if dest else None
     for d, dirs, files in os.walk(path):

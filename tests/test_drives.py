@@ -744,6 +744,36 @@ def test_bag_scan_says_why_a_run_output_is_not_copied(tmp_path):
     assert _scan(out)["runs"][0]["output"] is None
 
 
+def test_bag_scan_takes_only_the_run_output_of_the_launch_the_trial_recorded(tmp_path):
+    out = tmp_path / "out"
+    exp = out / "exp_a"
+    exp.mkdir(parents=True)
+    (exp / "dsg.json").write_bytes(b"d" * 300)
+    (exp / "run_info.json").write_text(json.dumps({"run_id": "aaaaaaaa-1"}))
+    _trial_with_output(out, exp)
+    trial = out / "trial_x" / "euclid" / "trial.json"
+    trial.write_text(
+        json.dumps({"run": {"output_dir": str(exp), "run_id": "aaaaaaaa-1"}})
+    )
+    o = _scan(out)["runs"][0]["output"]
+    assert o["missing"] is False and o["files"] == 2
+
+    # the stack was launched again under the same experiment name
+    (exp / "run_info.json").write_text(json.dumps({"run_id": "bbbbbbbb-2"}))
+    o = _scan(out)["runs"][0]["output"]
+    assert o["missing"] is True
+    assert "bbbbbbbb" in o["note"] and "aaaaaaaa" in o["note"]
+
+    # no run_info.json: nothing says it is the trial's run
+    (exp / "run_info.json").unlink()
+    o = _scan(out)["runs"][0]["output"]
+    assert o["missing"] is True and "run_info.json" in o["note"]
+
+    # a trial that recorded no run id is taken as before
+    trial.write_text(json.dumps({"run": {"output_dir": str(exp)}}))
+    assert _scan(out)["runs"][0]["output"]["missing"] is False
+
+
 def test_verify_walks_a_tree_and_lenient_keeps_going(tmp_path):
     src, dst = tmp_path / "src", tmp_path / "dst"
     for d in (src, dst):
