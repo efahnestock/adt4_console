@@ -1,11 +1,16 @@
 import {describe, expect, it} from "vitest";
-import {makeUploader, pickMime, screenPref, setScreenPref} from "../src/lib/screenRec";
+import {makeUploader, pickMime, remoteHint, screenPref, setScreenPref} from "../src/lib/screenRec";
 
 describe("screenRec", () => {
   it("prefers vp9 webm, falls back, and copes with nothing supported", () => {
     expect(pickMime(() => true)).toBe("video/webm;codecs=vp9");
     expect(pickMime(m => m === "video/mp4")).toBe("video/mp4");
     expect(pickMime(() => false)).toBe("");
+  });
+  it("tells a remote browser how to get a page it can record", () => {
+    const hint = remoteHint({hostname: "10.31.132.194", port: "8090"});
+    expect(hint).toContain("ssh -L 8090:localhost:8090 <user>@10.31.132.194");
+    expect(hint).toContain("http://localhost:8090");
   });
   it("is on by default and remembers being switched off", () => {
     window.localStorage.clear();

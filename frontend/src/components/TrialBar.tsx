@@ -7,7 +7,7 @@ import {fmtBytes, fmtRate} from "../lib/fuzzy";
 import {answerAge, fmtAge, fmtElapsed, fmtMinutes, LIVE, machineLabel, machineTone, recordingCount, shortestLeft, staleAfter, topicCheckLabel,
   type PreflightMachine, type Trial, type TrialMachine, type TrialPayload} from "../lib/trial";
 import {serverNow, useTrial} from "../stores/trial";
-import {acquireScreen, note as screenNote, SCREEN_FPS, screenPref, setScreenPref, startScreenRecording, useScreenRec} from "../lib/screenRec";
+import {acquireScreen, note as screenNote, remoteHint, SCREEN_FPS, screenPref, screenSupported, setScreenPref, startScreenRecording, useScreenRec} from "../lib/screenRec";
 import {Dot, ErrorBox, Modal, Spinner} from "./ui";
 
 /** Re-render every second (elapsed time, answer ages). */
@@ -75,7 +75,7 @@ function ScreenChip() {
   return (
     <span className="trial-screen" data-testid="trial-screen">
       <span className={st.status === "off" ? "muted small" : "trial-note"} title={st.detail}>
-        {st.status === "off" ? "screen: not recorded by this browser" : st.status === "denied" ? "SCREEN NOT RECORDED (not allowed)" : st.status === "ended" ? "SCREEN RECORDING STOPPED" : st.status === "unsupported" ? "SCREEN NOT RECORDED (browser cannot)" : "SCREEN RECORDING ERROR"}
+        {st.status === "off" ? "screen: not recorded by this browser" : st.status === "denied" ? "SCREEN NOT RECORDED (not allowed)" : st.status === "ended" ? "SCREEN RECORDING STOPPED" : st.status === "unsupported" ? "SCREEN NOT RECORDED (page not on localhost or https)" : "SCREEN RECORDING ERROR"}
       </span>
       {st.status !== "unsupported" && <button className="btn btn-sm" onClick={() => void again()}>Record screen</button>}
     </span>
@@ -121,7 +121,8 @@ function StartDialog({onClose}: {onClose: () => void}) {
   const [pre, setPre] = useState<PreflightMachine[] | null>(null);
   const [preError, setPreError] = useState<unknown>(null);
   const [baseNote, setBaseNote] = useState<string | null>(null);
-  const [video, setVideo] = useState(() => screenPref());
+  const canVideo = screenSupported();
+  const [video, setVideo] = useState(() => canVideo && screenPref());
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -141,14 +142,17 @@ function StartDialog({onClose}: {onClose: () => void}) {
   const start = async () => {
     setBusy(true);
     setError(null);
-    setScreenPref(video);
+    if (canVideo) setScreenPref(video);
     // the browser only lets a click ask for the screen: ask first, then start
     const stream = video ? await acquireScreen() : null;
     try {
       useTrial.getState().set(await postJSON<TrialPayload>("api/trials/start", {description: desc.trim(), machines: names}));
       if (stream) startScreenRecording(stream);
       else if (video) screenNote(useScreenRec.getState().status, useScreenRec.getState().detail);
-      else screenNote("off", "screen recording was switched off for this trial");
+      else if (!canVideo) {
+        useScreenRec.setState({status: "unsupported", detail: remoteHint()});
+        screenNote("unsupported", "page is not on localhost or https");
+      } else screenNote("off", "screen recording was switched off for this trial");
       onClose();
     } catch (e) {
       stream?.getTracks().forEach(t => t.stop());
@@ -190,9 +194,10 @@ function StartDialog({onClose}: {onClose: () => void}) {
       )}
       {baseNote && <p className="tone-err small" data-testid="trial-base-note">{baseNote}</p>}
       <label className="trial-video-opt">
-        <input type="checkbox" checked={video} onChange={e => setVideo(e.target.checked)} aria-label="Record this browser tab as video" data-testid="trial-video" />
+        <input type="checkbox" checked={video} disabled={!canVideo} onChange={e => setVideo(e.target.checked)} aria-label="Record this browser tab as video" data-testid="trial-video" />
         Record this browser tab as video ({SCREEN_FPS} fps). The browser will ask which tab to share: pick this one.
       </label>
+      {!canVideo && <p className="tone-warn small" data-testid="trial-video-hint">The screen will not be recorded. {remoteHint()}</p>}
       {error != null && <ErrorBox error={error} compact />}
     </Modal>
   );

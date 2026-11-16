@@ -37,6 +37,14 @@ export function setScreenPref(on: boolean) {
 
 export const screenSupported = () => typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia && typeof MediaRecorder !== "undefined";
 
+/** Why this page cannot record the screen, and what to do about it. Browsers
+ *  only share the screen with a page on localhost or https; a console opened
+ *  from another computer as http://<base station>:8090 is neither. */
+export function remoteHint(loc: {hostname: string; port: string} = window.location): string {
+  const port = loc.port || "80";
+  return `The browser only shares the screen with a page on localhost or https, and this page is on http://${loc.hostname}. To record it, on this computer run "ssh -L ${port}:localhost:${port} <user>@${loc.hostname}" and open http://localhost:${port} instead.`;
+}
+
 export function pickMime(supported: (m: string) => boolean = m => MediaRecorder.isTypeSupported(m)): string {
   return ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"].find(supported) ?? "";
 }
@@ -66,7 +74,7 @@ export function makeUploader(send: (seq: number, data: Blob, final: boolean) => 
  *  browser cannot, or the operator said no (the status says which). */
 export async function acquireScreen(): Promise<MediaStream | null> {
   if (!screenSupported()) {
-    useScreenRec.setState({status: "unsupported", detail: "this browser cannot record the screen (it needs https or localhost)"});
+    useScreenRec.setState({status: "unsupported", detail: remoteHint()});
     return null;
   }
   try {

@@ -217,6 +217,7 @@ def build_services(
 
     svc.trials = TrialService(settings, fleet, lambda: svc.helpers, hub)
     svc.trials.context = lambda: trial_context(svc)
+    svc.trials.jobs = jobs  # to log the question a job confirmation answers
     try:
         svc.trials.restore()  # a trial still recording when the console last exited
     except Exception:  # noqa: BLE001

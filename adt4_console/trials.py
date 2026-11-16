@@ -221,6 +221,24 @@ UI_KEYS = ("kind", "label", "page", "detail", "t_client")
 UI_MAX_EVENTS = 200
 
 
+JOB_RE = re.compile(r"^/api/jobs/([^/]+)/(confirm|cancel)$")
+
+
+def request_category(path: str) -> str:
+    """What kind of operator request a path is, so the ones that change
+    nothing are told apart in the log: ``preview`` (show what this would do),
+    ``dry_run`` (list what a launch would run), ``job_confirm`` (the answer to
+    a question a background job asked), ``job_cancel``, else ``action``."""
+    m = JOB_RE.match(path)
+    if m:
+        return "job_confirm" if m.group(2) == "confirm" else "job_cancel"
+    if "/dry_run" in path:
+        return "dry_run"
+    if "preview" in path.rsplit("/", 1)[-1] or "/preview" in path:
+        return "preview"
+    return "action"
+
+
 def wants_response(path: str) -> bool:
     return path.startswith(CAPTURE_PREFIXES) or any(p in path for p in CAPTURE_PARTS)
 
@@ -1065,19 +1083,45 @@ class TrialService:
         self._ensure_poller()
 
     # -------------------------------------------------------- request log
+    def request_extra(self, path: str) -> dict | None:
+        """Read before the request is handled: for an answer to a job's
+        question, the job and the question (it is gone once answered)."""
+        m = JOB_RE.match(path)
+        jobs = getattr(self, "jobs", None)
+        if not m or jobs is None:
+            return None
+        job = jobs.get(m.group(1))
+        if job is None:
+            return None
+        q = job.confirm_request or {}
+        return {
+            "job": {
+                "id": job.id,
+                "kind": job.kind,
+                "title": job.title,
+                "question": q.get("message"),
+                "question_kind": q.get("kind"),
+                "yes_label": q.get("yes_label"),
+                "no_label": q.get("no_label"),
+            }
+        }
+
     def log_request(
-        self, method: str, path: str, body: bytes, status, response: bytes | None
-    ) -> None:
+        self, method: str, path: str, body: bytes, status, response: bytes | None,
+        extra: dict | None = None,
+    ) -> None:  # fmt: skip
         with self.lock:
             trial = self.active
         if trial is None:
             return
         big = wants_response(path)
         fields = {
+            "category": request_category(path),
             "method": method,
             "path": path,
             "status": status,
             "body": summarize_body(body, BIG if big else 20_000),
+            **(extra or {}),
         }
         if response is not None:
             try:
@@ -1315,6 +1359,10 @@ class TrialRequestLog:
 
         body, resp, status = bytearray(), bytearray(), {}
         keep_resp = wants_response(path)
+        try:
+            extra = trials.request_extra(path)
+        except Exception:  # noqa: BLE001
+            extra = None
 
         # A small body is read here first and handed on unchanged, so it is
         # logged even when the app answers without reading it (a 4xx / 503).
@@ -1362,6 +1410,7 @@ class TrialRequestLog:
                     body.extend((msg.get("body") or b"")[: MAX_BODY - len(body)])
             try:  # off the event loop: the write is fsynced
                 await asyncio.to_thread(trials.log_request, scope["method"], path, bytes(body),
-                                        status.get("code"), bytes(resp) if keep_resp else None)  # fmt: skip
+                                        status.get("code"), bytes(resp) if keep_resp else None,
+                                        extra)  # fmt: skip
             except Exception:  # noqa: BLE001
                 log.exception("trial request log")

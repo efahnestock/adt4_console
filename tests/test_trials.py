@@ -714,6 +714,43 @@ def test_ui_events_are_logged_only_while_recording(rig):
     assert not [e for e in events(rig, a["trial_id"]) if e["type"] == "request"]
 
 
+def test_request_categories():
+    cat = tr.request_category
+    assert cat("/api/mission/plan/preview_pddl") == "preview"
+    assert cat("/api/edit/live/preview") == "preview"
+    assert cat("/api/launch/dry_run") == "dry_run"
+    assert cat("/api/jobs/launch-3-1794800000/confirm") == "job_confirm"
+    assert cat("/api/jobs/launch-3-1794800000/cancel") == "job_cancel"
+    assert cat("/api/mission/m1/execute") == "action"
+    assert cat("/api/robots/euclid/goal/pddl") == "action"
+
+
+def test_job_confirmation_is_logged_with_its_question(rig):
+    import threading
+
+    a = start(rig).json()["active"]
+    got = {}
+
+    def work(job):
+        got["answer"] = job.confirm("The recorder on euclid is still running. Stop harder?",
+                                    kind="stop_bag_harder", yes_label="Stop harder", no_label="Leave it")  # fmt: skip
+
+    job = rig.svc.jobs.start("stop_bag", "Stop bag on euclid", work)
+    for _ in range(200):
+        if job.confirm_request:
+            break
+        threading.Event().wait(0.01)
+    r = rig.c.post(f"/api/jobs/{job.id}/confirm", json={"answer": False})
+    assert r.status_code == 200
+    rig.svc.jobs.wait(job.id, 5)
+    assert got["answer"] is False
+    ev = [e for e in events(rig, a["trial_id"]) if e["type"] == "request"][-1]
+    assert ev["category"] == "job_confirm" and ev["body"]["answer"] is False
+    assert ev["job"]["title"] == "Stop bag on euclid"
+    assert ev["job"]["question"].startswith("The recorder on euclid is still running")
+    assert ev["job"]["no_label"] == "Leave it"
+
+
 def test_plan_requests_keep_their_response_and_previews_are_logged(rig):
     a = start(rig).json()["active"]
     r = rig.c.post("/api/mission/plan/preview_pddl", json={"goal": "(and)"})
@@ -722,6 +759,7 @@ def test_plan_requests_keep_their_response_and_previews_are_logged(rig):
         ("/api/mission/plan/preview_pddl", r.status_code)
     ]
     assert reqs[0]["body"] == {"goal": "(and)"} and "response" in reqs[0]
+    assert reqs[0]["category"] == "preview"
     assert tr.wants_response("/api/robots/euclid/goal/pddl") and tr.wants_response(
         "/api/edit/live/nodes"
     )

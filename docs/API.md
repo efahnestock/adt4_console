@@ -1892,6 +1892,19 @@ What else a trial keeps (all in `console/`):
   are in), page changes, dialogs opening (title and text) and closing, checkbox
   and select changes. Text typed into fields is never sent.
 
+- **Request categories.** Every `request` event has `category`: `preview`
+  (show what this would do), `dry_run` (list what a launch would run),
+  `job_confirm` / `job_cancel` (with `job: {id, kind, title, question, ...}`,
+  the question the answer was for), else `action`.
+- **Screen video** (`POST /api/trials/screen?session&seq&mime&final`, raw
+  MediaRecorder bytes; `frontend/src/lib/screenRec.ts`): the browser that
+  starts the trial records its tab (10 fps, on by default) and uploads 5 s
+  pieces, appended to `console/screen_<session>.webm`; `screen_start`,
+  `screen_stop`, `screen_gap`, `screen_note` events; pieces are still taken
+  for 120 s after the trial ends. Browsers only allow this on `localhost` or
+  https: from another computer, tunnel (`ssh -L 8090:localhost:8090
+  user@base`) and open `http://localhost:8090`; the page says so otherwise.
+
 Settings: `trial_recorder` (`$ADT4_REC_CMD`; default
 `~/dcist_ws/src/awesome_dcist_t4/dcist_launch_system/bin/adt4-rec`),
 `trial_poll_s`. After a console restart the newest trial without a `stopped`
