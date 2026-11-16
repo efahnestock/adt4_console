@@ -167,6 +167,31 @@ def test_object_changes_are_announced_like_the_writer_does():
     assert c["old_position"] == {"x": 1.0, "y": 2.0, "z": 0.0}
 
 
+def test_the_console_skips_its_own_announcement_when_it_comes_back():
+    """The console subscribes to the topic it announces an edit on.  The copy that
+    came back counted as someone else's change and invalidated the map, so every
+    edit was followed by a full reload, folded in or not."""
+    from adt4_console.scene_repair import SceneRepair
+
+    svc, graph, ros, mod = service()
+    reloads = []
+    ros.scene_repair = SceneRepair(invalidate=lambda: reloads.append(1))
+    card, _ = svc.propose("remove_scene_object", {"symbol": "O3"}, "neo4j:live")
+    assert svc.decide(card["id"], True)["ok"]
+    ((_, _, fields),) = ros.published
+    echo = [{"kind": c["kind"], "symbol": c["symbol"], "label": c["semantic_label"]}
+            for c in fields["changes"]]  # fmt: skip
+    # the announcement as ROS hands it back: already known, nothing reloaded
+    assert ros.scene_repair.on_applied("sget/chat", fields["map_version"], echo) is None
+    assert reloads == []
+    # the repair panel still got the edit, once
+    (batch,) = ros.scene_repair._changes
+    assert batch["source"] == "sget/chat" and batch["changes"][0]["symbol"] == "O3"
+    # somebody else's change still reloads the map
+    ros.scene_repair.on_applied("awcd/euclid", fields["map_version"] + 1, echo)
+    assert reloads == [1]
+
+
 def test_undo_clear_and_reset_call_the_writer_services():
     svc, graph, ros, mod = service()
     for tool, srv in (("undo_scene_edit", "undo_last_edit"), ("clear_scene_edits", "clear_edits"),

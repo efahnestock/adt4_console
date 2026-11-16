@@ -458,6 +458,19 @@ class SgetService:
                 "confidence": 1.0,
             } for c in changes],
         }  # fmt: skip
+        # the console hears its own announcement on ROS: mark the batch as ours, so
+        # the copy that comes back is skipped instead of invalidating the map the
+        # edit is about to be folded into (a full reload after every edit)
+        repair = getattr(ros, "scene_repair", None)
+        if repair is not None:
+            try:
+                repair.on_applied(
+                    "sget/chat", int(map_version), list(changes), local=True
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "scene edit applied; noting it for plan repair failed: %s", e
+                )
         try:
             ros.publish(CHANGES_APPLIED_TOPIC, SCENE_CHANGE_TYPE, fields)
         except Exception as e:  # noqa: BLE001
