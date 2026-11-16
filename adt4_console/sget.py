@@ -21,7 +21,9 @@ it the chat keeps the console's own ``propose_map_edit`` path (graph_edit).
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import re
 import threading
 import time
 
@@ -180,6 +182,7 @@ class SgetService:
         self.settings = settings
         self._module = module  # tests inject a fake scene_graph_edit
         self._run_lock = threading.Lock()  # scene_graph_edit.gate is module-global
+        self._reported: list = []  # gate.report's changes of the edit running now
         self._lock = threading.Lock()
         self._items: dict[str, dict] = {}
         self._n = 0
@@ -348,11 +351,20 @@ class SgetService:
         if tool not in WRITER_TOOLS:
             kwargs["dsgdb_conf"] = _Conf(src.uri, *src.creds)
         gate = mod.gate
-        with self._run_lock:
+        writer = tool in WRITER_TOOLS
+        # a map edit holds the source lock from before it writes until it is folded
+        # in, so the map-version poll cannot see the bump first and reload it all
+        lock = (
+            contextlib.nullcontext() if writer
+            else getattr(src, "_lock", None) or contextlib.nullcontext()
+        )  # fmt: skip
+        with self._run_lock, lock:
             saved = (gate.allowed, gate.report, gate.call_writer)
             gate.allowed = True
             gate.report = self._report
             gate.call_writer = self._call_writer
+            self._reported = []
+            before = [] if writer else _stored_symbols(src, _named(tool, args), tool)
             try:
                 result = str(fn(**kwargs))
             except Exception as e:  # noqa: BLE001
@@ -360,10 +372,14 @@ class SgetService:
                 return {"ok": False, "tool": tool, "error": str(e)}
             finally:
                 gate.allowed, gate.report, gate.call_writer = saved
-        ok = not result.startswith(_NO_EDIT)
-        if ok:
-            self._refresh(src)
-        version = _map_version(result)
+            ok = not result.startswith(_NO_EDIT)
+            version = _map_version(result)
+            if ok and writer:  # the writer rebuilt the map: reload it all
+                self._refresh(src)
+            elif ok:
+                changed = [str(c["symbol"]) for c in self._reported if c.get("symbol")]
+                after = _stored_symbols(src, _named(tool, args) + changed, tool=None)
+                self._apply(src, version, before + after + changed)
         return {"ok": ok, "tool": tool, "result": result, "map_version": version,
                 "undoable": ok and tool not in WRITER_TOOLS}  # fmt: skip
 
@@ -391,6 +407,19 @@ class SgetService:
         except Exception as e:  # noqa: BLE001
             log.warning("scene edit applied; refresh failed: %s", e)
 
+    def _apply(self, src, map_version, affected) -> None:
+        """Fold a map edit into the loaded graph: only the nodes it touched are
+        re-read (GraphService.apply_change, which falls back to a full reload)."""
+        affected = list(dict.fromkeys(affected))
+        if map_version is None or not affected:
+            self._refresh(src)
+            return
+        try:
+            self.graph.apply_change(src.id, "scene edit", map_version, affected)
+        except Exception as e:  # noqa: BLE001
+            log.warning("scene edit applied; incremental refresh failed: %s", e)
+            self._refresh(src)
+
     def _call_writer(self, service: str):
         """gate.call_writer: a std_srvs/Trigger of the scene change writer."""
         ros = self.ros
@@ -413,6 +442,7 @@ class SgetService:
     def _report(self, changes, map_version) -> None:
         """gate.report: announce the edit's object changes as the writer would, so
         the planner judges them against the running plan."""
+        self._reported.extend(changes)  # the nodes it touched, for the refresh
         ros = self.ros
         if ros is None or not getattr(ros, "available", False):
             return
@@ -440,9 +470,48 @@ def _point(xyz) -> dict:
     return {"x": float(xyz[0]), "y": float(xyz[1]), "z": float(xyz[2])}
 
 
-def _map_version(result: str):
-    import re
+def _named(tool: str, args: dict) -> list[str]:
+    """The node symbols an edit's arguments name (as typed, any case)."""
+    names = [args.get(k) for k in ("symbol", "place_a", "place_b")]
+    if tool == "add_scene_place":
+        names += str(args.get("connect_to") or "").split(",")
+    return [str(n).strip() for n in names if n and str(n).strip()]
 
+
+_STORED = (
+    "MATCH (n:Object|MeshPlace|Place|Room|Building) "
+    "WHERE toLower(n.nodeSymbol) IN $names "
+    "OPTIONAL MATCH (n)-[:CONTAINS]->(o:Object) "
+    "RETURN n.nodeSymbol AS s, collect(o.nodeSymbol) AS held"
+)
+
+
+def _stored_symbols(src, names, tool) -> list[str]:
+    """``names`` as the map stores them (scene_change lowercases a place id the map
+    may hold as ``T22``), read case-insensitively.  Before a place is removed, the
+    objects it holds too: scene_change relinks them to their nearest place."""
+    keys = []
+    for n in names:
+        m = re.fullmatch(r"\s*([A-Za-z])\s*\(?\s*(\d+)\s*\)?\s*", n)
+        if m:
+            c, i = m.group(1).lower(), m.group(2)
+            keys += [f"{c}{i}", f"{c}({i})"]
+    if not keys or not hasattr(src, "query"):
+        return []
+    try:
+        rows = src.query(_STORED, names=keys)
+    except Exception as e:  # noqa: BLE001  (the fallback: a full reload)
+        log.warning("scene edit: reading the nodes it names failed: %s", e)
+        return []
+    out = []
+    for r in rows:
+        out.append(str(r["s"]))
+        if tool == "remove_scene_place":
+            out += [str(o) for o in r["held"] or ()]
+    return out
+
+
+def _map_version(result: str):
     m = re.search(r"map_version (\d+)", result or "")
     return int(m.group(1)) if m else None
 
