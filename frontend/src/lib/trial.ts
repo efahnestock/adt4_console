@@ -67,8 +67,8 @@ export function topicCheckLabel(m: TrialMachine): {text: string; bad: boolean} {
   if (!tc) return {text: "topic check pending", bad: false};
   if (!tc.ok) return tc.retrying ? {text: `topic check got no answer, retrying (${tc.tries ?? 1})`, bad: true} : {text: "TOPIC CHECK DID NOT RUN", bad: true};
   const n = tc.missing?.length ?? 0;
-  if (n) return {text: `${n} of ${tc.topics} topics without a publisher`, bad: true};
-  return {text: `${tc.published}/${tc.topics} topics published`, bad: false};
+  if (n) return {text: `${n}/${tc.topics} topics unpublished`, bad: true};
+  return {text: `${tc.published}/${tc.topics} topics`, bad: false};
 }
 
 /** Seconds since the machine last answered, on the console server's clock. */

@@ -42,7 +42,8 @@ function MachineChip({m, now, pollS, onRetry}: {m: TrialMachine; now: number; po
     <span className={`trial-chip trial-chip-${tone}`} title={machineTitle(m, now)} data-testid={`trial-machine-${m.name}`}>
       <Dot tone={tone} />
       <span className="strong">{m.name}</span>
-      <span>{stale ? "no recent answer" : machineLabel(m)}</span>
+      {/* a healthy recording needs no word: the dot and the growing size say it */}
+      {(stale || m.state !== "recording") && <span>{stale ? "no recent answer" : machineLabel(m)}</span>}
       {m.state === "recording" && !stale && (
         <span className="muted">
           {fmtBytes(m.bytes)}
@@ -258,7 +259,7 @@ export function TrialBar() {
         <span className="trial-state"><Dot tone="off" /> Not recording</span>
         <button className="btn btn-sm btn-danger" onClick={() => setDialog("start")} data-testid="trial-start">Start recording</button>
         {last && (
-          <span className={`small ${last.state === "failed" || bad.length ? "tone-err" : warned.length ? "tone-warn" : "muted"}`} title={last.console_dir}>
+          <span className={`small ${last.state === "failed" || bad.length ? "tone-err" : warned.length ? "tone-warn" : "muted"}`} title={[last.console_dir, ...warned.map(m => `${m.name}: ${(m.warnings ?? []).join("; ")}`)].filter(Boolean).join("\n")} data-testid="trial-last">
             Last: <span className="mono">{last.trial_id}</span>{" "}
             {last.state === "failed" ? "did not start on any machine" : `${fmtElapsed((last.stopped ?? last.started) - last.started)}, ${last.flags} flag${last.flags === 1 ? "" : "s"}`}
             {bad.length > 0 && `; not confirmed stopped: ${bad.map(m => m.name).join(", ")}`}
@@ -266,8 +267,11 @@ export function TrialBar() {
             {last.note ? `; ${last.note}` : ""}
           </span>
         )}
-        {last && (bad.length > 0 || warned.length > 0 || last.state === "failed") && (
-          <span className="trial-machines">{Object.values(last.machines).map(m => <MachineChip key={m.name} m={m} now={now} pollS={payload.poll_s} />)}</span>
+        {/* after a clean stop the bar is one line; the warnings are in the tooltip
+            and in each trial.json. Chips come back only for a machine that is not
+            confirmed stopped. */}
+        {last && (bad.length > 0 || last.state === "failed") && (
+          <span className="trial-machines">{(bad.length ? bad : Object.values(last.machines)).map(m => <MachineChip key={m.name} m={m} now={now} pollS={payload.poll_s} />)}</span>
         )}
         {dialog === "start" && <StartDialog onClose={() => setDialog(null)} />}
       </div>

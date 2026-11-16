@@ -80,16 +80,29 @@ describe("TrialBar", () => {
     expect($("trial-stop")).toBeNull();
   });
 
+  it("after a stop: one line; warnings in the tooltip; chips only for a machine not confirmed stopped", async () => {
+    const stopped = (name: string, over: Partial<TrialMachine> = {}) => machine(name, {state: "stopped", message: "stopped", ...over});
+    await mount(payload(null, trial([stopped("euclid", {warnings: ["8 of 19 topics recorded no message"]}), stopped("hamilton")], {state: "stopped", stopped: T0 + 112})));
+    expect($("trial-last")!.textContent).toContain("warnings on euclid");
+    expect($("trial-last")!.title).toContain("euclid: 8 of 19 topics recorded no message");
+    expect($("trial-machine-euclid")).toBeNull();
+    act(() => root?.unmount());
+    host?.remove();
+    await mount(payload(null, trial([stopped("euclid"), machine("hamilton", {state: "stop_pending"})], {state: "stopped", stopped: T0 + 112})));
+    expect($("trial-machine-hamilton")).not.toBeNull();
+    expect($("trial-machine-euclid")).toBeNull();
+  });
+
   it("recording: every machine listed with its state; one unknown machine turns the bar red", async () => {
     await mount(payload(trial([machine("euclid"), machine("hamilton")])));
     expect($("trial-count")!.textContent).toBe("2 of 2 recording");
     expect($("trial-bar")!.className).not.toContain("trial-bar-warn");
     expect($("trial-machine-euclid")!.textContent).toContain("6.0 GB");
     expect($("trial-machine-euclid")!.textContent).toContain("21 min left");
-    expect($("trial-topics-euclid")!.textContent).toBe("20/20 topics published");
+    expect($("trial-topics-euclid")!.textContent).toBe("20/20 topics");
     await act(async () => useTrial.getState().set(payload(trial([machine("euclid", {topic_check: {ok: false, retrying: true, tries: 2, error: "no answer"}}), machine("hamilton", {topic_check: {ok: true, tries: 1, published: 18, topics: 20, missing: ["/h/fix", "/h/rtcm"]}})]))));
     expect($("trial-topics-euclid")!.textContent).toBe("topic check got no answer, retrying (2)");
-    expect($("trial-topics-hamilton")!.textContent).toBe("2 of 20 topics without a publisher");
+    expect($("trial-topics-hamilton")!.textContent).toBe("2/20 topics unpublished");
     await act(async () => useTrial.getState().set(payload(trial([machine("euclid"), machine("hamilton")]))));
 
     await act(async () => useTrial.getState().set(payload(trial([machine("euclid"), machine("hamilton", {state: "unreachable", last_seen: T0 + 80})]))));
