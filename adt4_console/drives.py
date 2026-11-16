@@ -122,7 +122,10 @@ def eject_command(drive: str) -> str:
 # -------------------------------------------------------------------- bags
 # Runs under the output root that hold rosbags.  One JSON object on stdout:
 # {"root": abs path, "runs": [{name, mtime, bytes, recording, on_drive, bags: [...]}]}
-# "recording": a bag file changed in the last minute, so the bag is still being written.
+# "recording": the bag is still being written: a file changed in the last minute
+# and the bag is not closed.  Closed = its metadata.yaml (rosbag2 writes it when
+# the recorder stops) is as new as its newest bag file; for a trial's console
+# folder, its trial.json says the trial ended.
 # With a second argument (the drive folder bags of this machine are copied to),
 # each bag also says what is there already: "dest_bytes" and "on_drive" =
 # "verified" (all bytes there and a hash manifest written by VERIFY), "copied"
@@ -145,6 +148,16 @@ def state(bags):
     if kinds <= {"verified", "copied"}:
         return "copied"
     return "partial" if kinds != {""} else ""
+def closed(d, files, stats):
+    mt = {f.name: st.st_mtime for f, st in zip(files, stats)}
+    data = [t for n, t in mt.items() if n.endswith((".mcap", ".db3"))]
+    if data:
+        return "metadata.yaml" in mt and mt["metadata.yaml"] >= max(data) - 2
+    try:
+        with open(os.path.join(d, "trial.json")) as f:
+            return json.load(f).get("state") not in ("starting", "recording", "stopping")
+    except (OSError, ValueError, AttributeError):
+        return False
 for name in names:
     run = os.path.join(root, name)
     if not os.path.isdir(run) or os.path.islink(run):
@@ -172,7 +185,8 @@ for name in names:
         total = sum(st.st_size for st in stats)
         bag = {"name": sub, "bytes": total, "files": len(files),
                "metadata": any(f.name == "metadata.yaml" for f in files),
-               "recording": now - max(st.st_mtime for st in stats) < 60,
+               "recording": now - max(st.st_mtime for st in stats) < 60
+                            and not closed(d, files, stats),
                "dest_bytes": 0, "on_drive": ""}
         if dest:
             there = 0

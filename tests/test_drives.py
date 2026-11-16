@@ -278,7 +278,7 @@ def test_bag_scan_lists_a_trials_console_folder(tmp_path):
     out = tmp_path / "out"
     con = out / "trial_x" / "console"
     con.mkdir(parents=True)
-    (con / "trial.json").write_text("{}")
+    (con / "trial.json").write_text('{"state": "recording"}')
     (con / "events.jsonl").write_text("{}\n")
     (con / "screen_a.webm").write_bytes(b"v" * 100)
     # a folder with a trial.json but another name is not one (e.g. a robot's
@@ -295,14 +295,22 @@ def test_bag_scan_lists_a_trials_console_folder(tmp_path):
         ("trial_x", ["console"])
     ]
     assert scan["runs"][0]["bags"][0]["files"] == 3
+    assert scan["runs"][0]["recording"] is True
+    (con / "trial.json").write_text('{"state": "stopped"}')
+    p = subprocess.run(
+        [sys.executable, "-c", bd.BAG_SCAN, str(out)], capture_output=True, text=True
+    )
+    assert bd.parse_bag_scan(p.returncode, p.stdout)["runs"][0]["recording"] is False
 
 
 def test_bag_scan_finds_bags_in_runs(tmp_path):
     out = tmp_path / "out"
     bag = out / "run_a" / "recorded_data"
     bag.mkdir(parents=True)
-    (bag / "recorded_data_0.mcap").write_bytes(b"x" * 1000)
     (bag / "metadata.yaml").write_text("rosbag2_bagfile_information: {}")
+    stale = time.time() - 30
+    os.utime(bag / "metadata.yaml", (stale, stale))
+    (bag / "recorded_data_0.mcap").write_bytes(b"x" * 1000)
     (out / "run_a" / "hydra").mkdir()
     (out / "run_a" / "hydra" / "dsg.json").write_text("{}")
     (out / "run_no_bag" / "hydra").mkdir(parents=True)
@@ -313,7 +321,8 @@ def test_bag_scan_finds_bags_in_runs(tmp_path):
     scan = bd.parse_bag_scan(p.returncode, "login banner\n" + p.stdout, p.stderr)
     assert [r["name"] for r in scan["runs"]] == ["run_a"]
     run = scan["runs"][0]
-    # the bag was written just now: it counts as still recording
+    # the bag file was written just now, after its metadata (a split bag that
+    # is still open): it counts as still recording
     assert run["bags"] == [
         {
             "name": "recorded_data",
@@ -333,6 +342,23 @@ def test_bag_scan_finds_bags_in_runs(tmp_path):
         [sys.executable, "-c", bd.BAG_SCAN, str(out)], capture_output=True, text=True
     )
     assert bd.parse_bag_scan(p.returncode, p.stdout)["runs"][0]["recording"] is False
+    # a bag whose metadata was written after its last data is closed: it can be
+    # copied the moment the recorder has stopped
+    (bag / "recorded_data_0.mcap").write_bytes(b"x" * 1000)
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information: {}")
+    p = subprocess.run(
+        [sys.executable, "-c", bd.BAG_SCAN, str(out)], capture_output=True, text=True
+    )
+    assert bd.parse_bag_scan(p.returncode, p.stdout)["runs"][0]["recording"] is False
+    # and one with no metadata yet is still open
+    (bag / "metadata.yaml").unlink()
+    p = subprocess.run(
+        [sys.executable, "-c", bd.BAG_SCAN, str(out)], capture_output=True, text=True
+    )
+    assert bd.parse_bag_scan(p.returncode, p.stdout)["runs"][0]["recording"] is True
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information: {}")
+    for f in bag.iterdir():
+        os.utime(f, (old, old))
     assert run["bytes"] == 1031 and scan["root"] == str(out)
     assert run["on_drive"] == "" and run["dest_bytes"] == 0
 

@@ -1733,7 +1733,10 @@ straight onto the drive, so bag data never crosses the radio.
   metadata, recording, dest_bytes, on_drive}]}]}`, newest first. A bag is a
   directory with `*.mcap` / `*.db3` files directly inside a run of the output
   root (`drives.BAG_SCAN`: the one place that decides what a bag is).
-  `recording` = a bag file changed in the last minute (still being written); a
+  A trial's `console` folder (with its `trial.json`) is listed the same way.
+  `recording` = a file changed in the last minute and the bag is not closed
+  (closed: `metadata.yaml` as new as the newest bag file; for a `console`
+  folder, its `trial.json` says the trial ended); a
   copy of such a run is refused with 409. With `drive`, `on_drive` says what of
   the run is already there: `"verified"` (every byte, and the hash manifest of a
   finished check), `"copied"` (every byte, not hashed), `"partial"` (an

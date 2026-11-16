@@ -157,7 +157,7 @@ function DriveRow({machine, drive, onChanged, onMessage}: {machine: string; driv
   );
 }
 
-function BagPicker({machine, drives, onStarted, onMessage}: {machine: string; drives: Drive[]; onStarted: () => void; onMessage: (m: {ok: boolean; text: string}) => void}) {
+function BagPicker({machine, drives, refresh, onStarted, onMessage}: {machine: string; drives: Drive[]; refresh: number; onStarted: () => void; onMessage: (m: {ok: boolean; text: string}) => void}) {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [target, setTarget] = useState(drives[0]?.name ?? "");
   // asked with the target drive, so each run says what of it is already there
@@ -176,6 +176,11 @@ function BagPicker({machine, drives, onStarted, onMessage}: {machine: string; dr
   const copying = Boolean(drive?.copy_job) && (!job || isActive(job));
   // a copy that ended (finished, failed or interrupted) changed what is on the drive
   const jobState = job?.state;
+  // the page's Refresh button asks for the bag lists again too
+  useEffect(() => {
+    if (refresh) bags.reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refresh]);
   useEffect(() => {
     if (jobState && jobState !== "running" && jobState !== "waiting") {
       bags.reload();
@@ -278,7 +283,7 @@ function BagPicker({machine, drives, onStarted, onMessage}: {machine: string; dr
   );
 }
 
-function MachineCard({m, onChanged, onMessage}: {m: DriveMachine; onChanged: () => void; onMessage: (m: {ok: boolean; text: string}) => void}) {
+function MachineCard({m, refresh, onChanged, onMessage}: {m: DriveMachine; refresh: number; onChanged: () => void; onMessage: (m: {ok: boolean; text: string}) => void}) {
   const targets = m.drives.filter(usable);
   return (
     <Card title={<>{m.name} {m.role && <span className="muted small">{m.role}</span>}</>}>
@@ -291,7 +296,7 @@ function MachineCard({m, onChanged, onMessage}: {m: DriveMachine; onChanged: () 
       ) : (
         <>
           {m.drives.map(d => <DriveRow key={d.name} machine={m.name} drive={d} onChanged={onChanged} onMessage={onMessage} />)}
-          {targets.length > 0 && <BagPicker machine={m.name} drives={targets} onStarted={onChanged} onMessage={onMessage} />}
+          {targets.length > 0 && <BagPicker machine={m.name} drives={targets} refresh={refresh} onStarted={onChanged} onMessage={onMessage} />}
         </>
       )}
     </Card>
@@ -301,6 +306,7 @@ function MachineCard({m, onChanged, onMessage}: {m: DriveMachine; onChanged: () 
 export function DrivesPage() {
   const drives = useApi<DrivesPayload>("api/drives", 8_000);
   const [msg, setMsg] = useState<{ok: boolean; text: string} | null>(null);
+  const [refresh, setRefresh] = useState(0);
   const machines = drives.data?.machines ?? [];
   const online = machines.filter(m => m.online);
   const offline = machines.filter(m => !m.online);
@@ -308,7 +314,7 @@ export function DrivesPage() {
   return (
     <div className="page">
       <PageHeader title="Drives" sub="USB drives plugged into the robots: copy recorded bags onto them, then eject."
-        actions={<button className="btn btn-sm" onClick={drives.reload} disabled={drives.loading}>Refresh</button>} />
+        actions={<button className="btn btn-sm" onClick={() => { drives.reload(); setRefresh(n => n + 1); }} disabled={drives.loading} data-testid="drives-refresh">Refresh</button>} />
       {msg && (
         <div className={`banner ${msg.ok ? "banner-ok" : "banner-err"}`} role="status">
           {msg.text}
@@ -319,7 +325,7 @@ export function DrivesPage() {
       {!drives.data && drives.loading && <Loading label="Asking the machines for their drives" />}
       {drives.data && online.length === 0 && <Empty title="No machine is online">Drives show up here once a robot is reachable.</Empty>}
       <div className="grid-2">
-        {online.map(m => <MachineCard key={m.name} m={m} onChanged={drives.reload} onMessage={setMsg} />)}
+        {online.map(m => <MachineCard key={m.name} m={m} refresh={refresh} onChanged={drives.reload} onMessage={setMsg} />)}
       </div>
       {offline.length > 0 && <div className="muted small drives-offline">Offline: {offline.map(m => m.name).join(", ")}</div>}
     </div>
