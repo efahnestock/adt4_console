@@ -1310,8 +1310,12 @@ def _guard(fn, m):
 
 def _run_local(cmd: str, timeout: float) -> tuple[int, str, str]:
     try:
+        # its own session: the helper's interactive shells must not get this
+        # process's terminal (they took its foreground group, and Ctrl-C no
+        # longer reached the console)
         p = subprocess.run(["bash", "-c", cmd], stdin=subprocess.DEVNULL, capture_output=True,
-                           text=True, errors="replace", timeout=timeout + 10)  # fmt: skip
+                           text=True, errors="replace", timeout=timeout + 10,
+                           start_new_session=True)  # fmt: skip
     except subprocess.TimeoutExpired:
         return 124, "", f"timed out after {timeout}s"
     except OSError as e:

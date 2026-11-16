@@ -2,6 +2,7 @@
 operator request log.  The machines' ``adt4-rec`` is a fake behind ssh_cmd."""
 
 import json
+import os
 import pathlib
 import shlex
 
@@ -789,3 +790,8 @@ def test_request_log_failure_never_breaks_the_request(rig, monkeypatch):
 
     monkeypatch.setattr(rig.t, "log_request", boom)
     assert rig.c.post("/api/fleet/status/refresh").status_code < 500
+
+
+def test_the_local_helper_runs_in_its_own_session():
+    rc, out, _ = tr._run_local("python3 -c 'import os; print(os.getsid(0))'", 5)
+    assert rc == 0 and int(out) != os.getsid(0)
