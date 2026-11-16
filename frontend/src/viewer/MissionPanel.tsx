@@ -7,14 +7,7 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {Badge, Empty, Segmented, Spinner, Toggle} from "../components/ui";
 import {withToken} from "../lib/auth";
-import {fmtLonLat, liveAnchorText, mapToLonLat, mapToUtm, pickLayer, utmZone, type TileLayer} from "../lib/geo";
-
-/** Picker label: the attribution up to its parenthesised details, else the layer id. */
-function layerLabel(l: TileLayer): string {
-  const a = (l.attribution || "").split("(")[0].trim().replace(/[,;]$/, "");
-  const name = a ? (a.length > 48 ? `${a.slice(0, 47)}…` : a) : l.id;
-  return l.live && !l.cached ? `${name} (online)` : name;
-}
+import {fmtLonLat, liveAnchorText, mapToLonLat, mapToUtm, pickLayer, utmZone} from "../lib/geo";
 import {toggleNavViz, useNavViz} from "../stores/navViz";
 import {useLiveRobots} from "../stores/robots";
 import {
@@ -831,27 +824,6 @@ export function MissionPanel() {
               <Toggle checked={grid} onChange={v => patchStyle({grid: v})} label="grid" title="The ground grid over the imagery" />
               <input type="range" min={0.2} max={1} step={0.05} value={satOpacity} onChange={e => s.set({satOpacity: Number(e.target.value)})} aria-label="Satellite opacity" />
             </div>
-            {layers.length > 1 ? (
-              <div className="row gap" style={{minWidth: 0}}>
-                <label className="small muted" htmlFor="sat-layer">
-                  Imagery
-                </label>
-                <select
-                  id="sat-layer"
-                  data-testid="sat-layer"
-                  value={shownLayer?.id ?? ""}
-                  onChange={e => s.set({satLayer: e.target.value || null})}
-                  title="Imagery drawn under the map"
-                  style={{flex: "1 1 0", minWidth: 0, maxWidth: "100%"}}
-                >
-                  {layers.map(l => (
-                    <option key={l.id} value={l.id} title={l.attribution}>
-                      {layerLabel(l)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ) : null}
             {geo.live ? (
               <div className="small live-anchor-note" data-testid="live-anchor">
                 <Badge tone="warn">live</Badge> {liveAnchorText(geo.live)}. Not the map&apos;s saved anchor; it updates as fixes come in.{" "}
