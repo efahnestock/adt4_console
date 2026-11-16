@@ -13,7 +13,9 @@ follows its progress.
 
 What counts as a bag (``BAG_SCAN``) is deliberately in one place: a directory
 with a ``metadata.yaml`` next to ``*.mcap`` / ``*.db3`` files, inside a run of
-the output root.
+the output root.  A trial's ``console`` folder (``trial.json``, the event log
+and the screen video) is listed and copied the same way, though it has no bag
+file.
 """
 
 from __future__ import annotations
@@ -160,7 +162,11 @@ for name in names:
             files = [f for f in os.scandir(d) if f.is_file(follow_symlinks=False)]
         except OSError:
             continue
-        if not any(f.name.endswith((".mcap", ".db3")) for f in files):
+        # a bag, or a trial's console folder (trial.json + events.jsonl + the
+        # screen video; no bag file in it)
+        if not any(f.name.endswith((".mcap", ".db3")) for f in files) and not (
+            sub == "console" and any(f.name == "trial.json" for f in files)
+        ):
             continue
         stats = [f.stat() for f in files]
         total = sum(st.st_size for st in stats)

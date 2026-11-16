@@ -274,6 +274,29 @@ def test_verify_hashes_both_copies_and_writes_a_manifest(tmp_path):
     assert "FAILED 2" in p.stdout
 
 
+def test_bag_scan_lists_a_trials_console_folder(tmp_path):
+    out = tmp_path / "out"
+    con = out / "trial_x" / "console"
+    con.mkdir(parents=True)
+    (con / "trial.json").write_text("{}")
+    (con / "events.jsonl").write_text("{}\n")
+    (con / "screen_a.webm").write_bytes(b"v" * 100)
+    # a folder with a trial.json but another name is not one (e.g. a robot's
+    # bag folder before its first mcap), and neither is a console folder without it
+    (out / "trial_x" / "notes").mkdir()
+    (out / "trial_x" / "notes" / "trial.json").write_text("{}")
+    (out / "run_b" / "console").mkdir(parents=True)
+    (out / "run_b" / "console" / "x.log").write_text("x")
+    p = subprocess.run(
+        [sys.executable, "-c", bd.BAG_SCAN, str(out)], capture_output=True, text=True
+    )
+    scan = bd.parse_bag_scan(p.returncode, p.stdout, p.stderr)
+    assert [(r["name"], [b["name"] for b in r["bags"]]) for r in scan["runs"]] == [
+        ("trial_x", ["console"])
+    ]
+    assert scan["runs"][0]["bags"][0]["files"] == 3
+
+
 def test_bag_scan_finds_bags_in_runs(tmp_path):
     out = tmp_path / "out"
     bag = out / "run_a" / "recorded_data"
