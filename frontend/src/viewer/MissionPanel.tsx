@@ -928,7 +928,7 @@ function MissionPanelBody() {
             ) : null}
             <div className="small muted">
               {geo.live ? "Estimated" : "Saved"} GPS anchor {utmZone(geo.anchor.epsg)}
-              {!geo.live && geo.anchor.rms != null ? `, fit RMS ${geo.anchor.rms.toFixed(2)} m` : ""} · {layers.map(l => `${l.id}${l.cached ? ` (${l.cached} tiles)` : ""}${l.live ? " live" : ""}`).join(", ") || "no tiles cached"}
+              {!geo.live && geo.anchor.rms != null ? `, fit RMS ${geo.anchor.rms.toFixed(2)} m` : ""} · {layers.map(l => `${l.id}${l.cached ? ` (${l.cached} tiles)` : ""}${l.live ? " live" : ""}`).join(", ") || "no imagery: no tiles cached and live fetching is off (start the console with --tiles-live, or fetch tiles with scripts/geo/fetch_tiles.py)"}
               {layers[0]?.attribution ? ` · imagery © ${layers[0].attribution}` : ""}
             </div>
             <CursorReadout />
