@@ -1,0 +1,543 @@
+{
+ "no_odom": {
+  "robot": "gauss",
+  "state": "fail",
+  "localize": {
+   "state": "warn",
+   "ready": false,
+   "items": [
+    {
+     "key": "link",
+     "name": "Robot link",
+     "state": "ok",
+     "reason": "Robot state arriving over fleetlink",
+     "source": "fleetlink C1",
+     "age_s": 0.0,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "hydra_multi",
+     "name": "hydra_multi loop closures",
+     "state": "warn",
+     "reason": "hydra_multi idle (time since last spin): no scene graph processed, no loop-closure count yet",
+     "source": "status table: hydra_multi",
+     "age_s": null,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "frame_align",
+     "name": "Global frame (map -> odom)",
+     "state": "unknown",
+     "reason": "The agent reports no global-frame alignment (older agent)",
+     "source": "fleetlink frame_align",
+     "age_s": null,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "roman_lc",
+     "name": "ROMAN loop closures",
+     "state": "unknown",
+     "reason": "roman_lc NO_HB (normal between reports)",
+     "source": "status table: roman_lc",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "roman_map",
+     "name": "ROMAN map",
+     "state": "unknown",
+     "reason": "roman_map NO_HB: Waiting for observation",
+     "source": "status table: roman_map",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "tf_network",
+     "name": "TF over the network",
+     "state": "warn",
+     "reason": "tf_network WARN: No TF received on /gauss/tf",
+     "source": "status table: tf_network",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "relocalization_monitor",
+     "name": "GPS relocalization monitor",
+     "state": "unknown",
+     "reason": "WARN: TF map->gps not available (GPS-based: cannot go green indoors or without a GPS alignment)",
+     "source": "status table: relocalization_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "gps_monitor",
+     "name": "GPS",
+     "state": "unknown",
+     "reason": "gps_monitor WARN: Fix (No RTK)",
+     "source": "status table: gps_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "ntrip_monitor",
+     "name": "NTRIP corrections",
+     "state": "unknown",
+     "reason": "ntrip_monitor STARTUP: Waiting for first NTRIP",
+     "source": "status table: ntrip_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    }
+   ],
+   "first_problem": "hydra_multi idle (time since last spin): no scene graph processed, no loop-closure count yet"
+  },
+  "odometry": {
+   "key": "odom",
+   "name": "Odometry (odom -> base_link)",
+   "state": "fail",
+   "reason": "No odometry: the robot's agent cannot look up gauss/odom -> base_link (Spot driver / DLIO not running?) (fastsam reports 'tf lookup failed')",
+   "source": "fleetlink pose (gauss/odom -> base_link TF)",
+   "age_s": null,
+   "blocking": true,
+   "info": false
+  },
+  "hydra_multi": {
+   "accepted": null,
+   "total": null,
+   "needed": 5,
+   "count_age_s": null,
+   "count_stale": false,
+   "took_s": null,
+   "ago_s": null,
+   "opt_age_s": null,
+   "opt_stale": false,
+   "status": "ERR",
+   "note": "time since last spin: 12.0 [s]",
+   "in_table": true
+  },
+  "broken": [
+   {
+    "key": "odom",
+    "name": "Odometry (odom -> base_link)",
+    "state": "fail",
+    "reason": "No odometry: the robot's agent cannot look up gauss/odom -> base_link (Spot driver / DLIO not running?) (fastsam reports 'tf lookup failed')"
+   },
+   {
+    "key": "hydra_multi",
+    "name": "hydra_multi loop closures",
+    "state": "warn",
+    "reason": "hydra_multi idle (time since last spin): no scene graph processed, no loop-closure count yet"
+   },
+   {
+    "key": "frame_align",
+    "name": "Global frame (map -> odom)",
+    "state": "unknown",
+    "reason": "The agent reports no global-frame alignment (older agent)"
+   }
+  ],
+  "summary": "No odometry: the robot's agent cannot look up gauss/odom -> base_link (Spot driver / DLIO not running?) (fastsam reports 'tf lookup failed')"
+ },
+ "relocalized_idle": {
+  "robot": "gauss",
+  "state": "ok",
+  "localize": {
+   "state": "ok",
+   "ready": true,
+   "items": [
+    {
+     "key": "link",
+     "name": "Robot link",
+     "state": "ok",
+     "reason": "Robot state arriving over fleetlink",
+     "source": "fleetlink C1",
+     "age_s": 0.0,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "hydra_multi",
+     "name": "hydra_multi loop closures",
+     "state": "ok",
+     "reason": "Relocalized: 7 / 9 inter-robot loop closures accepted (needs 5); last reported 19 s ago (hydra_multi now ERR: it reports only when a scene graph arrives)",
+     "source": "status table: hydra_multi",
+     "age_s": 19.0,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "frame_align",
+     "name": "Global frame (map -> odom)",
+     "state": "ok",
+     "reason": "map -> gauss/odom available",
+     "source": "fleetlink frame_align",
+     "age_s": 0.2,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "roman_lc",
+     "name": "ROMAN loop closures",
+     "state": "unknown",
+     "reason": "roman_lc NO_HB (normal between reports)",
+     "source": "status table: roman_lc",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "roman_map",
+     "name": "ROMAN map",
+     "state": "unknown",
+     "reason": "roman_map NO_HB: Waiting for observation",
+     "source": "status table: roman_map",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "tf_network",
+     "name": "TF over the network",
+     "state": "warn",
+     "reason": "tf_network WARN: No TF received on /gauss/tf",
+     "source": "status table: tf_network",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "relocalization_monitor",
+     "name": "GPS relocalization monitor",
+     "state": "unknown",
+     "reason": "WARN: TF map->gps not available (GPS-based: cannot go green indoors or without a GPS alignment)",
+     "source": "status table: relocalization_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "gps_monitor",
+     "name": "GPS",
+     "state": "unknown",
+     "reason": "gps_monitor WARN: Fix (No RTK)",
+     "source": "status table: gps_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "ntrip_monitor",
+     "name": "NTRIP corrections",
+     "state": "unknown",
+     "reason": "ntrip_monitor STARTUP: Waiting for first NTRIP",
+     "source": "status table: ntrip_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    }
+   ],
+   "first_problem": null
+  },
+  "odometry": {
+   "key": "odom",
+   "name": "Odometry (odom -> base_link)",
+   "state": "ok",
+   "reason": "Odometry TF is live (pose stamp advancing)",
+   "source": "fleetlink pose (gauss/odom -> base_link TF)",
+   "age_s": 0.0,
+   "blocking": true,
+   "info": false
+  },
+  "hydra_multi": {
+   "accepted": 7,
+   "total": 9,
+   "needed": 5,
+   "count_age_s": 19.0,
+   "count_stale": true,
+   "took_s": 0.412,
+   "ago_s": null,
+   "opt_age_s": 19.0,
+   "opt_stale": true,
+   "status": "ERR",
+   "note": "time since last spin: 20.0 [s]",
+   "in_table": true
+  },
+  "broken": [],
+  "summary": "Relocalized"
+ },
+ "relocalizing": {
+  "robot": "gauss",
+  "state": "warn",
+  "localize": {
+   "state": "warn",
+   "ready": false,
+   "items": [
+    {
+     "key": "link",
+     "name": "Robot link",
+     "state": "ok",
+     "reason": "Robot state arriving over fleetlink",
+     "source": "fleetlink C1",
+     "age_s": 0.0,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "hydra_multi",
+     "name": "hydra_multi loop closures",
+     "state": "warn",
+     "reason": "Relocalizing: 2 of the 5 needed loop closures accepted (4 proposed)",
+     "source": "status table: hydra_multi",
+     "age_s": 0.0,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "frame_align",
+     "name": "Global frame (map -> odom)",
+     "state": "ok",
+     "reason": "map -> gauss/odom available",
+     "source": "fleetlink frame_align",
+     "age_s": 0.2,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "roman_lc",
+     "name": "ROMAN loop closures",
+     "state": "unknown",
+     "reason": "roman_lc NO_HB (normal between reports)",
+     "source": "status table: roman_lc",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "roman_map",
+     "name": "ROMAN map",
+     "state": "unknown",
+     "reason": "roman_map NO_HB: Waiting for observation",
+     "source": "status table: roman_map",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "tf_network",
+     "name": "TF over the network",
+     "state": "warn",
+     "reason": "tf_network WARN: No TF received on /gauss/tf",
+     "source": "status table: tf_network",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "relocalization_monitor",
+     "name": "GPS relocalization monitor",
+     "state": "unknown",
+     "reason": "WARN: TF map->gps not available (GPS-based: cannot go green indoors or without a GPS alignment)",
+     "source": "status table: relocalization_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "gps_monitor",
+     "name": "GPS",
+     "state": "unknown",
+     "reason": "gps_monitor WARN: Fix (No RTK)",
+     "source": "status table: gps_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "ntrip_monitor",
+     "name": "NTRIP corrections",
+     "state": "unknown",
+     "reason": "ntrip_monitor STARTUP: Waiting for first NTRIP",
+     "source": "status table: ntrip_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    }
+   ],
+   "first_problem": "Relocalizing: 2 of the 5 needed loop closures accepted (4 proposed)"
+  },
+  "odometry": {
+   "key": "odom",
+   "name": "Odometry (odom -> base_link)",
+   "state": "ok",
+   "reason": "Odometry TF is live (pose stamp advancing)",
+   "source": "fleetlink pose (gauss/odom -> base_link TF)",
+   "age_s": 0.0,
+   "blocking": true,
+   "info": false
+  },
+  "hydra_multi": {
+   "accepted": 2,
+   "total": 4,
+   "needed": 5,
+   "count_age_s": 0.0,
+   "count_stale": false,
+   "took_s": null,
+   "ago_s": null,
+   "opt_age_s": null,
+   "opt_stale": false,
+   "status": "OK",
+   "note": "2 / 4 valid interrobot loop closures",
+   "in_table": true
+  },
+  "broken": [
+   {
+    "key": "hydra_multi",
+    "name": "hydra_multi loop closures",
+    "state": "warn",
+    "reason": "Relocalizing: 2 of the 5 needed loop closures accepted (4 proposed)"
+   }
+  ],
+  "summary": "Relocalizing: 2 of the 5 needed loop closures accepted (4 proposed)"
+ },
+ "suspect": {
+  "robot": "gauss",
+  "state": "fail",
+  "localize": {
+   "state": "fail",
+   "ready": false,
+   "items": [
+    {
+     "key": "link",
+     "name": "Robot link",
+     "state": "ok",
+     "reason": "Robot state arriving over fleetlink",
+     "source": "fleetlink C1",
+     "age_s": 0.0,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "hydra_multi",
+     "name": "hydra_multi loop closures",
+     "state": "ok",
+     "reason": "Relocalized: 9 / 9 inter-robot loop closures accepted (needs 5)",
+     "source": "status table: hydra_multi",
+     "age_s": 0.0,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "frame_align",
+     "name": "Global frame (map -> odom)",
+     "state": "fail",
+     "reason": "Suspect placement: the placement jumped 2x (loop closures disagree)",
+     "source": "fleetlink reloc",
+     "age_s": 0.2,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "roman_lc",
+     "name": "ROMAN loop closures",
+     "state": "unknown",
+     "reason": "roman_lc NO_HB (normal between reports)",
+     "source": "status table: roman_lc",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "roman_map",
+     "name": "ROMAN map",
+     "state": "unknown",
+     "reason": "roman_map NO_HB: Waiting for observation",
+     "source": "status table: roman_map",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "tf_network",
+     "name": "TF over the network",
+     "state": "warn",
+     "reason": "tf_network WARN: No TF received on /gauss/tf",
+     "source": "status table: tf_network",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "relocalization_monitor",
+     "name": "GPS relocalization monitor",
+     "state": "unknown",
+     "reason": "WARN: TF map->gps not available (GPS-based: cannot go green indoors or without a GPS alignment)",
+     "source": "status table: relocalization_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "gps_monitor",
+     "name": "GPS",
+     "state": "unknown",
+     "reason": "gps_monitor WARN: Fix (No RTK)",
+     "source": "status table: gps_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "ntrip_monitor",
+     "name": "NTRIP corrections",
+     "state": "unknown",
+     "reason": "ntrip_monitor STARTUP: Waiting for first NTRIP",
+     "source": "status table: ntrip_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    }
+   ],
+   "first_problem": "Suspect placement: the placement jumped 2x (loop closures disagree)"
+  },
+  "odometry": {
+   "key": "odom",
+   "name": "Odometry (odom -> base_link)",
+   "state": "ok",
+   "reason": "Odometry TF is live (pose stamp advancing)",
+   "source": "fleetlink pose (gauss/odom -> base_link TF)",
+   "age_s": 0.0,
+   "blocking": true,
+   "info": false
+  },
+  "hydra_multi": {
+   "accepted": 9,
+   "total": 9,
+   "needed": 5,
+   "count_age_s": 0.0,
+   "count_stale": false,
+   "took_s": null,
+   "ago_s": null,
+   "opt_age_s": null,
+   "opt_stale": false,
+   "status": "OK",
+   "note": "9 / 9 valid interrobot loop closures",
+   "in_table": true
+  },
+  "broken": [
+   {
+    "key": "frame_align",
+    "name": "Global frame (map -> odom)",
+    "state": "fail",
+    "reason": "Suspect placement: the placement jumped 2x (loop closures disagree)"
+   }
+  ],
+  "summary": "Suspect placement: the placement jumped 2x (loop closures disagree)"
+ }
+}

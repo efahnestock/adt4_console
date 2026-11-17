@@ -1522,8 +1522,8 @@ def reset(body: ResetBody, request: Request):
         if n_feat:
             job.log("ok", f"place / room features: {n_feat}")
         version = bump_map_counters(db)
-        target.invalidate()
-        svc.graph.notify_version(target.id, "reset")
+        # the same map again: viewers get what the reset undid, not the whole map
+        svc.graph.refresh(target.id, "reset")
         nodes = target.count_nodes()
         job.log(
             "ok", f"Reset: {nodes} nodes in {round(time.time() - t0)} s (v{version})"

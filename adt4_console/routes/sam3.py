@@ -105,8 +105,7 @@ def _refresh(svc, src: str | None, out: dict | None = None) -> list[str]:
                 # openset_query answers the map version its commit bumped to
                 graph.apply_change(sid, "sam3", out.get("map_version"), [out["symbol"]])
             else:
-                graph.sources[sid].invalidate()
-                graph.notify_version(sid, "sam3")
+                graph.refresh(sid, "sam3")
         except Exception:  # noqa: BLE001
             log.exception("refreshing %s after SAM3 commit", sid)
     return ids

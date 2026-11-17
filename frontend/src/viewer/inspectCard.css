@@ -1,0 +1,86 @@
+/* The inspect card (InspectCard.tsx): a node picked on the map while the chat
+   is open, over the map instead of in the Inspect tab. Loaded with ViewerPage. */
+
+/* ---------- inspect card (InspectCard.tsx): a picked node over the map while
+   the chat keeps its pane / sheet ---------- */
+.inspect-card {
+  position: absolute;
+  z-index: 42;
+  left: 10px;
+  bottom: 36px;
+  width: min(380px, calc(100% - 20px));
+  max-height: calc(100% - 132px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.inspect-card-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.inspect-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inspect-card-name {
+  font-weight: 650;
+}
+.inspect-card-body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 10px 12px 12px;
+}
+/* the card's head already names the node and inserts it */
+.inspect-card .insp-head,
+.inspect-card .insert-sym-btn {
+  display: none;
+}
+.viewer.phone .inspect-card {
+  left: max(8px, env(safe-area-inset-left));
+  right: max(8px, env(safe-area-inset-right));
+  width: auto;
+  bottom: calc(var(--sheet-h, 0px) + 8px);
+  /* under the two phone toolbar rows (8 + 44 + 6 + 44), at least its head */
+  max-height: max(60px, calc(100% - var(--sheet-h, 0px) - 112px));
+}
+/* a phone held sideways: just the head (name, insert, expand, close) */
+@media (max-height: 480px) and (pointer: coarse) {
+  .viewer.phone .inspect-card-body {
+    display: none;
+  }
+  .viewer.phone .inspect-card {
+    left: auto;
+    width: min(460px, calc(100% - 16px));
+  }
+}
+
+/* tablets <= 900 px: a side panel lies over the map; the card keeps to the
+   map that is left */
+@media (max-width: 900px) {
+  .viewer.right-open:not(.phone) .inspect-card {
+    width: min(380px, calc(100% - min(360px, 92vw) - 20px));
+  }
+  .viewer.left-open:not(.phone) .inspect-card {
+    left: 290px;
+    width: min(380px, calc(100% - 300px));
+  }
+}
+@media (pointer: coarse) {
+  .inspect-card-head .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+}

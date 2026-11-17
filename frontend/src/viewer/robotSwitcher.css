@@ -1,0 +1,56 @@
+/* The robot switcher (RobotFocusPicker) must always be reachable: it stays in
+   the map toolbar on a narrow map, the toolbars never overlap it, and a long
+   roster scrolls inside its menu. Loaded with ViewerPage. */
+
+/* a long roster scrolls inside the menu instead of running off the screen;
+   on a narrow map it stays inside the map (the canvas clips overflow) */
+.vcanvas {
+  container-type: inline-size;
+}
+.focus-menu {
+  max-height: min(60vh, calc(100dvh - 140px));
+  max-width: calc(100vw - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.vcanvas .focus-menu {
+  min-width: min(220px, calc(100cqw - 20px));
+  max-width: calc(100cqw - 20px);
+}
+.vtoolbar.top-left .focus-picker {
+  flex: none;
+}
+/* phone, map tool armed: only the switcher stays, so the row must not block the map */
+.vtoolbar.phone-bar2.tool-armed {
+  right: auto;
+}
+
+/* too narrow for both toolbars side by side: the left toolbar (layers, robot
+   switcher, search) goes under the right one (--tr-h: its measured height)
+   instead of running underneath it */
+.vcanvas.map-tight .vtoolbar.top-left {
+  right: 10px;
+  top: calc(var(--tr-h, 44px) + 18px);
+}
+.vcanvas.map-edit-on.map-tight .vtoolbar.top-left {
+  top: calc(var(--tr-h, 44px) + 50px);
+}
+/* tablets <= 900 px: a side panel lies over the map and the map toolbars were
+   drawn over it; they keep to the map that is left */
+@media (max-width: 900px) {
+  .viewer:not(.phone) .vtoolbar.top-left {
+    top: calc(var(--tr-h, 44px) + 18px);
+  }
+  .viewer.right-open:not(.phone) .vtoolbar.top-right,
+  .viewer.right-open:not(.phone) .vtoolbar.top-left {
+    right: calc(min(360px, 92vw) + 10px);
+  }
+  .viewer.right-open:not(.phone) .vtoolbar.top-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: calc(100% - min(360px, 92vw) - 20px);
+  }
+  .viewer.left-open:not(.phone) .vtoolbar.top-left {
+    left: 290px;
+  }
+}

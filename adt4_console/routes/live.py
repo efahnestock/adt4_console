@@ -189,6 +189,14 @@ def auto(robot: str, body: AutoBody, request: Request):
 # ----------------------------------------------------------------------------
 
 
+@robots_router.get("/{robot}/readiness")
+def readiness(robot: str, request: Request):
+    """Ready to map / ready to localize checklists and what is broken first
+    (``readiness.py``); the ``robot/<r>/state`` topic carries the same as
+    ``readiness``."""
+    return services(request).live.robot_readiness(robot)
+
+
 @robots_router.get("/{robot}/cameras")
 def cameras(robot: str, request: Request):
     """Camera names the robot's fleetlink agent advertises."""

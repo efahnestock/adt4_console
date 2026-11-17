@@ -1,6 +1,6 @@
-import {Suspense, useEffect, useMemo, useRef, type CSSProperties} from "react";
+import {Suspense, useEffect, useMemo, useRef, useState, type CSSProperties} from "react";
 import * as THREE from "three";
-import {Canvas, useThree} from "@react-three/fiber";
+import {Canvas, useFrame, useThree} from "@react-three/fiber";
 import {CameraControls, Html, Line} from "@react-three/drei";
 import CameraControlsImpl from "camera-controls";
 import {useViewer, type SourceView} from "../stores/viewer";
@@ -32,8 +32,12 @@ import {pickRadius, TapTracker} from "../lib/tap";
 import {useMission} from "../stores/mission";
 import {usePlanPreview} from "../stores/planPreview";
 import {planCleared, useClearedPaths} from "../stores/clearedPaths";
+import {robotCleared, STALE_MS, trimTrajectory, useMapCleared} from "../stores/mapCleared";
 import {EditOverlay} from "./EditOverlay";
 import {fitTopView} from "../lib/fitView";
+import {useRobotStatus} from "../stores/robotStatus";
+import {ringColor, ringLabel} from "../lib/readiness";
+import {useRobotReadiness, useTick} from "./RobotStatusCard";
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
@@ -65,6 +69,9 @@ function SourceContent({src, cb}: {src: SourceView; cb: SceneCallbacks}) {
   const colors = useColorOpts();
   const bg = useBackground();
   const edgeInk = contrastFor(bg, vizStyle).edge;
+  // "Clear map": only the trajectory drawn since (stores/mapCleared.ts)
+  const trajHidden = useMapCleared(s => s.traj[src.id]);
+  const trajectory = useMemo(() => trimTrajectory(src.trajectory, trajHidden), [src.trajectory, trajHidden]);
   const layout = useMemo(
     () => (src.model ? layoutGraph(src.model, {hiddenLayers, edgeKinds, flat, stackHeight, style: vizStyle, text: showText, placeLabels, heights, colors, regionHulls}) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -97,7 +104,7 @@ function SourceContent({src, cb}: {src: SourceView; cb: SceneCallbacks}) {
           layout={layout}
           showBBoxes={showBBoxes}
           showTrajectory={showTrajectory}
-          trajectory={src.trajectory}
+          trajectory={trajectory}
           trajectoryRobots={src.trajectoryRobots}
           edgeKinds={edgeKinds}
           style={vizStyle}
@@ -120,6 +127,29 @@ function SourceContent({src, cb}: {src: SourceView; cb: SceneCallbacks}) {
   );
 }
 
+/** How close (screen px) to a robot's position a tap opens its status card. */
+const ROBOT_PICK_PX = 28;
+
+/** The drawn robot nearest a screen point within `radius` px (global pose,
+ *  hidden robots skipped), or null. */
+function robotAt(camera: THREE.Camera, rect: DOMRect, x: number, y: number, radius: number): string | null {
+  const {state} = useRobots.getState();
+  const {focus, focusOthers} = useViewer.getState();
+  const v = new THREE.Vector3();
+  let best: {r: string; d: number} | null = null;
+  for (const [r, st] of Object.entries(state)) {
+    const p = st.pose;
+    if (!p || !Number.isFinite(p.x)) continue;
+    if (focusOthers === "hide" && focus && focus !== "all" && focus !== r) continue;
+    const g = poseInGlobal(p, frameAlignOf(r));
+    v.set(g.x, g.y, g.z).project(camera);
+    if (v.z > 1 || v.z < -1) continue;
+    const d = Math.hypot(((v.x + 1) / 2) * rect.width - x, ((1 - v.y) / 2) * rect.height - y);
+    if (d < radius && (!best || d < best.d)) best = {r, d};
+  }
+  return best?.r ?? null;
+}
+
 /** Click picking: nearest projected node within a few pixels, else the mesh surface. */
 function Picker({cb}: {cb: SceneCallbacks}) {
   const {gl, camera, scene} = useThree();
@@ -139,6 +169,14 @@ function Picker({cb}: {cb: SceneCallbacks}) {
       const y = e.clientY - rect.top;
       const enabled = useViewer.getState().sources;
       const v = new THREE.Vector3();
+      // inspect: a tap on (or right next to) a robot opens its status card
+      if (useViewer.getState().pickMode === "inspect") {
+        const r = robotAt(camera, rect, x, y, Math.max(radius, ROBOT_PICK_PX));
+        if (r) {
+          useRobotStatus.getState().show(r);
+          return;
+        }
+      }
       let best: {src: string; sym: string; d: number; depth: number} | null = null;
       for (const [src, layers] of pickRegistry) {
         if (!enabled[src]?.enabled || !enabled[src]?.showGraph) continue;
@@ -226,11 +264,48 @@ function RobotGlyph({robot, children}: {robot: string; children: React.ReactNode
 function GlyphTag({robot, color, stale}: {robot: string; color: string; stale: boolean}) {
   const look = useFocusLook(robot);
   const focused = useViewer(s => s.focus) === robot;
+  const toggle = useRobotStatus(s => s.toggle);
   return (
-    <div className={`robot-tag ${look === "dim" ? "dim" : ""} ${focused ? "focused" : ""}`} style={{borderColor: color}}>
+    <div
+      role="button"
+      tabIndex={0}
+      className={`robot-tag clickable ${look === "dim" ? "dim" : ""} ${focused ? "focused" : ""}`}
+      style={{borderColor: color}}
+      title={`${robot}: open its status`}
+      data-testid={`robot-tag-${robot}`}
+      onClick={e => {
+        e.stopPropagation();
+        toggle(robot);
+      }}
+      onPointerDown={e => e.stopPropagation()}
+      onKeyDown={e => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle(robot);
+        }
+      }}
+    >
       {robot}
       {stale ? " (stale)" : ""}
     </div>
+  );
+}
+
+/** A halo outside the robot's colour ring: its localization state
+ *  (lib/readiness.ts): green relocalized, amber relocalizing / waiting, red
+ *  blocked (no odometry, no state, suspect placement), grey no data. Wider while its card is open. */
+function ReadinessHalo({robot, ring, z}: {robot: string; ring: number; z: number}) {
+  const now = useTick(2000);
+  const {tone, staleS} = useRobotReadiness(robot, now);
+  const open = useRobotStatus(s => s.open) === robot;
+  const light = contrastFor(useBackground()).light;
+  const color = ringColor(tone, light);
+  const outer = ring + (open ? 0.7 : 0.5);
+  return (
+    <mesh position={[0, 0, z]} renderOrder={3} userData={{readiness: tone, label: ringLabel(tone, staleS)}}>
+      <ringGeometry args={[ring + 0.14, outer, 48]} />
+      <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent opacity={tone === "none" ? 0.45 : 0.9} depthWrite={false} />
+    </mesh>
   );
 }
 
@@ -277,6 +352,7 @@ function RobotBody({robot, color, stale, x, y, yaw, at}: {robot: string; color: 
         <ringGeometry args={[ring - 0.08, ring + 0.07, 40]} />
         <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent opacity={stale ? 0.3 : 0.85} />
       </mesh>
+      <ReadinessHalo robot={robot} ring={ring} z={groundZ - 0.005} />
       <Html position={[0, 0, (spec?.topZ ?? 0.6) + 0.8]} center zIndexRange={[20, 0]} className="robot-tag-wrap">
         <GlyphTag robot={robot} color={color} stale={stale} />
       </Html>
@@ -288,15 +364,17 @@ function RobotGlyphs() {
   const states = useRobots(s => s.state);
   const stateAt = useRobots(s => s.stateAt);
   const robotColor = useRobotColor3D();
+  const cleared = useMapCleared(s => s.robots);
   const now = Date.now();
   return (
     <>
       {Object.entries(states).map(([r, st]) => {
         const p = st.pose;
         if (!p || !Number.isFinite(p.x)) return null;
+        if (robotCleared({robots: cleared}, r, stateAt[r])) return null; // stale at "Clear map"
         const yaw = quatYaw(p.qw ?? 1, p.qx ?? 0, p.qy ?? 0, p.qz ?? 0);
         const color = robotColor(r);
-        const stale = now - (stateAt[r] ?? 0) > 5000;
+        const stale = now - (stateAt[r] ?? 0) > STALE_MS;
         return (
           <RobotGlyph key={r} robot={r}>
           <AlignedGroup robot={r} frame={p.frame}>
@@ -515,9 +593,70 @@ function Markers() {
   );
 }
 
+/** The top view renders through an orthographic camera (no perspective: what is
+ *  straight below the camera and what is at the edge of the view line up with the
+ *  satellite imagery alike, whatever their height). The controls keep driving the
+ *  perspective camera; every frame this copies its pose onto the orthographic one
+ *  and sizes the view to what the perspective camera sees at the orbit target, so
+ *  pan / zoom / fly-to / fit behave as before. Picking and the satellite footprint
+ *  use R3F's default camera, which is the orthographic one while the top view is on. */
+function OrthoTopView({persp, controls}: {persp: THREE.PerspectiveCamera; controls: React.RefObject<CameraControlsImpl | null>}) {
+  const topDown = useViewer(s => s.topDown);
+  const set = useThree(s => s.set);
+  const size = useThree(s => s.size);
+  const invalidate = useThree(s => s.invalidate);
+  const ortho = useMemo(() => {
+    // near < 0: also draw what sits above the camera's own height (tall structures)
+    const c = new THREE.OrthographicCamera(-1, 1, 1, -1, -2000, 6000);
+    c.up.set(0, 0, 1);
+    return c;
+  }, []);
+  const target = useMemo(() => new THREE.Vector3(), []);
+  const sync = () => {
+    const aspect = size.width / Math.max(size.height, 1);
+    // R3F only resizes its default camera: keep the controlled one's aspect current
+    if (Math.abs(persp.aspect - aspect) > 1e-6) {
+      persp.aspect = aspect;
+      persp.updateProjectionMatrix();
+    }
+    controls.current?.getTarget(target);
+    const d = Math.max(persp.position.distanceTo(target), 0.01);
+    const halfH = d * Math.tan(THREE.MathUtils.degToRad(persp.fov) / 2);
+    ortho.position.copy(persp.position);
+    ortho.quaternion.copy(persp.quaternion);
+    ortho.left = -halfH * aspect;
+    ortho.right = halfH * aspect;
+    ortho.top = halfH;
+    ortho.bottom = -halfH;
+    ortho.zoom = 1;
+    ortho.updateProjectionMatrix();
+    ortho.updateMatrixWorld();
+  };
+  useEffect(() => {
+    if (!topDown) return;
+    sync();
+    set({camera: ortho});
+    invalidate();
+    return () => {
+      set({camera: persp});
+      invalidate();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topDown, ortho, persp]);
+  // after the controls' own update (drei runs it at priority -1)
+  useFrame(() => {
+    if (topDown) sync();
+  });
+  return null;
+}
+
 function CameraRig({bounds}: {bounds: {min: number[]; max: number[]} | null}) {
   const ref = useRef<CameraControlsImpl>(null);
   const {topDown, flyTo, follow} = useViewer();
+  // the controlled camera is always the perspective one the canvas was made with;
+  // the top view only swaps the camera that renders (OrthoTopView)
+  const getThree = useThree(s => s.get);
+  const [persp] = useState(() => getThree().camera as THREE.PerspectiveCamera);
   const fitted = useRef(false);
   // initial framing once something with bounds is loaded
   useEffect(() => {
@@ -586,7 +725,8 @@ function CameraRig({bounds}: {bounds: {min: number[]; max: number[]} | null}) {
   // of the canvas the overlays leave free; 3D keeps its angle and fits a sphere
   const fitTo = useViewer(s => s.fitTo);
   const fitNonce = useRef(fitTo?.nonce ?? 0);
-  const {camera, size} = useThree();
+  const size = useThree(s => s.size);
+  const camera = persp;
   useEffect(() => {
     const c = ref.current;
     if (!c || !fitTo || fitTo.nonce === fitNonce.current || !fitTo.pts.length) return;
@@ -627,7 +767,12 @@ function CameraRig({bounds}: {bounds: {min: number[]; max: number[]} | null}) {
     apply();
     return useRobots.subscribe(apply);
   }, [follow]);
-  return <CameraControls ref={ref} makeDefault maxPolarAngle={Math.PI * 0.49} dollyToCursor minDistance={1} maxDistance={2000} />;
+  return (
+    <>
+      <CameraControls ref={ref} camera={persp} makeDefault maxPolarAngle={Math.PI * 0.49} dollyToCursor minDistance={1} maxDistance={2000} />
+      <OrthoTopView persp={persp} controls={ref} />
+    </>
+  );
 }
 
 /** RViz look for the hydra style: grey background, light grid. */
@@ -716,7 +861,7 @@ export function Scene({sources, bounds, cb}: {sources: SourceView[]; bounds: {mi
       <Background />
       <CaptureBridge />
       <Ground bounds={bounds} />
-      <SatelliteGround floorZ={bounds ? bounds.min[2] : null} />
+      <SatelliteGround floorZ={bounds ? bounds.min[2] : null} bounds={bounds} />
       {sources.map(s => (
         <SourceContent key={s.id} src={s} cb={cb} />
       ))}
