@@ -9,6 +9,7 @@ import {NetworkPage} from "./pages/Network";
 import {DrivesPage} from "./pages/Drives";
 import {ConfigPage} from "./pages/Config";
 import {ManipulationApprovalHost} from "./viewer/ManipulationApproval";
+import {GoalEventToasts} from "./viewer/GoalEventToasts";
 import {PickResultHost} from "./viewer/PickResult";
 import {TokenDialogHost} from "./components/TokenDialog";
 
@@ -48,5 +49,5 @@ const router = createHashRouter([
 ]);
 
 export function App() {
-  return <><RouterProvider router={router} /><ManipulationApprovalHost /><PickResultHost /><TokenDialogHost /></>;
+  return <><RouterProvider router={router} /><ManipulationApprovalHost /><GoalEventToasts /><PickResultHost /><TokenDialogHost /></>;
 }
