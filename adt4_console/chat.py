@@ -1586,11 +1586,8 @@ class ChatService:
                 version = bump_map_counters(src.db())
             except Exception as e:  # noqa: BLE001
                 log.warning("write ran but the map version bump failed: %s", e)
-            try:
-                src.invalidate()
-            except Exception:  # noqa: BLE001
-                pass
-            self.graph.notify_version(w["src"], "chat write")
+            # free Cypher: what it touched is unknown -- reload, push the difference
+            self.graph.refresh(w["src"], "chat write")
         return {"ok": True, "query": w["query"], "map_version": version, **out}
 
     # ----------------------------------------------------------- transcript

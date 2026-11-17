@@ -451,7 +451,7 @@ class MissionService:
             out = add_object(src, c["label"], c["pos"], image_path=str(path) if path else None,
                              bbox_2d=c.get("bbox"), source="quad")  # fmt: skip
             sym = out["sym"]
-            self.graph.notify_version(src.id, "quad detection")
+            self.graph.apply_change(src.id, "quad detection", out.get("map_version"), [sym])
         cand = run.decide(cid, approve, sym)
         return {**cand, **({"map_version": out.get("map_version")} if out else {})}
 
