@@ -14,6 +14,7 @@ live from the database so it cannot drift from what heracles writes.
 
 from __future__ import annotations
 
+import re
 import time
 
 MAX_ROWS = 200
@@ -54,12 +55,33 @@ def _driver(src):
     return src.db().driver
 
 
+# A nodeSymbol compared with a string or a list of strings (property map, =, <>, IN).
+_SYMBOL_CMP = re.compile(
+    r"(nodeSymbol\s*(?::|=|<>|\bIN\b)\s*)(\[[^\]]*\]|'[^']*'|\"[^\"]*\")", re.I
+)
+_LOWER_SYMBOL = re.compile(r"(['\"])([a-z]\d+)\1")
+
+
+def upper_symbol_literals(query: str) -> str:
+    """The query with lowercase node symbols compared to ``nodeSymbol`` upper
+    cased: symbols are stored "T3349" / "O710", but operators type them as the
+    planner prints them ("t3349"), and an exact match then finds nothing."""
+
+    def fix(m):
+        lits = _LOWER_SYMBOL.sub(lambda s: s[1] + s[2].upper() + s[1], m[2])
+        return m[1] + lits
+
+    return _SYMBOL_CMP.sub(fix, query)
+
+
 def run_read(
     src, query: str, max_rows: int = MAX_ROWS, timeout_s: float = READ_TIMEOUT_S
 ) -> dict:
     """``{columns, rows, row_count, truncated}`` or ``{error}`` (sent back to the
     model so it can correct the query, like heracles_agents)."""
     import neo4j
+
+    query = upper_symbol_literals(query)
 
     @neo4j.unit_of_work(timeout=timeout_s)
     def work(tx):
@@ -129,9 +151,10 @@ mapping natural-language questions to Cypher queries for it.
 - Answer questions about the map by calling run_cypher. If a query is invalid or \
 returns nothing useful, correct the Cypher and retry (up to about 6 queries). \
 Briefly say what you are looking up before each query.
-- Node symbols in the database have NO parentheses or quotes: object O(12) is \
-nodeSymbol "O12", mesh place P(850) is "P850". Write them that way in Cypher; show \
-them to the operator as O(12) / P(850).
+- Node symbols in the database have NO parentheses or quotes and are UPPER CASE: \
+object O(12) is nodeSymbol "O12", mesh place P(850) is "P850", mesh place t3349 (as \
+the planner prints it) is "T3349". Write them that way in Cypher; show them to the \
+operator as O(12) / P(850) / T(3349).
 - Never write with run_cypher (it is read-only). To change the map, prefer \
 propose_map_edit (reclassify / rename / move / remove / add objects, connect or \
 disconnect nodes, mark places blocked, make a named region from a polygon or a set of \
