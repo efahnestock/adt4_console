@@ -85,7 +85,9 @@ def _row_txt(row: dict) -> str:
     return f"{_label(row)}{f': {note}' if note else ''}"
 
 
-def _item(key, name, state, reason, source, age_s=None, blocking=True, info=False) -> dict:
+def _item(
+    key, name, state, reason, source, age_s=None, blocking=True, info=False
+) -> dict:
     return {
         "key": key,
         "name": name,
@@ -151,7 +153,10 @@ class ReadinessTracker:
                 row = find_row(state.get("health"), robot, "hydra_multi")
                 m = HYDRA_LC_RE.search(_note(row))
                 if m:
-                    mem.hydra_count, mem.hydra_count_at = (int(m.group(1)), int(m.group(2))), now
+                    mem.hydra_count, mem.hydra_count_at = (
+                        (int(m.group(1)), int(m.group(2))),
+                        now,
+                    )
                 opt = parse_hydra_optimization(_note(row))
                 if opt:
                     mem.opt, mem.opt_at = opt, now
@@ -200,21 +205,43 @@ def _checklist(items: list[dict], no_data: bool = False) -> dict:
 # ------------------------------------------------------------- link + odometry
 def _link_item(mem: _Memory, now: float) -> dict:
     if mem.state_at is None:
-        return _item("link", "Robot link", "unknown", "No state received from the robot yet (fleetlink)", "fleetlink C1")
+        return _item(
+            "link",
+            "Robot link",
+            "unknown",
+            "No state received from the robot yet (fleetlink)",
+            "fleetlink C1",
+        )
     age = now - mem.state_at
     if age > STATE_STALE_S:
         return _item("link", "Robot link", "fail", f"No state from the robot for {_fmt_s(age)}: fleetlink link down or agent stopped",
                      "fleetlink C1", age)  # fmt: skip
-    return _item("link", "Robot link", "ok", "Robot state arriving over fleetlink", "fleetlink C1", age)
+    return _item(
+        "link",
+        "Robot link",
+        "ok",
+        "Robot state arriving over fleetlink",
+        "fleetlink C1",
+        age,
+    )
 
 
-def _odom_item(robot: str, state: dict, mem: _Memory, now: float, link_ok: bool) -> dict:
+def _odom_item(
+    robot: str, state: dict, mem: _Memory, now: float, link_ok: bool
+) -> dict:
     name = "Odometry (odom -> base_link)"
     pose = state.get("pose")
     frame = (pose or {}).get("frame") or f"{robot}/odom"
     src = f"fleetlink pose ({frame} -> base_link TF)"
-    hydra, fastsam = find_row(state.get("health"), robot, "hydra"), find_row(state.get("health"), robot, "fastsam")
-    hints = [f"{n} reports {_note(r)!r}" for n, r in (("hydra", hydra), ("fastsam", fastsam)) if r and _TF_FAIL_RE.search(_note(r))]
+    hydra, fastsam = (
+        find_row(state.get("health"), robot, "hydra"),
+        find_row(state.get("health"), robot, "fastsam"),
+    )
+    hints = [
+        f"{n} reports {_note(r)!r}"
+        for n, r in (("hydra", hydra), ("fastsam", fastsam))
+        if r and _TF_FAIL_RE.search(_note(r))
+    ]
     hint = f" ({'; '.join(hints)})" if hints else ""
     if not isinstance(pose, dict):
         return _item("odom", name, "fail",
@@ -224,14 +251,25 @@ def _odom_item(robot: str, state: dict, mem: _Memory, now: float, link_ok: bool)
         return _item("odom", name, "unknown", f"The agent sends no pose stamp (older fleetlink): cannot tell if odometry is live{hint}", src)  # fmt: skip
     age = now - (mem.pose_seen_at or now)
     if not link_ok:
-        return _item("odom", name, "unknown", "No fresh robot state: odometry unknown", src, age)
+        return _item(
+            "odom", name, "unknown", "No fresh robot state: odometry unknown", src, age
+        )
     if age > ODOM_STALE_S:
         return _item("odom", name, "fail",
                      f"Odometry frozen: the {frame} -> base_link TF has not advanced for {_fmt_s(age)} (Spot driver / DLIO stopped?){hint}",
                      src, age)  # fmt: skip
     if mem.pose_samples < 2:
-        return _item("odom", name, "unknown", "One pose sample so far: waiting for the TF stamp to advance", src, age)
-    return _item("odom", name, "ok", "Odometry TF is live (pose stamp advancing)", src, age)
+        return _item(
+            "odom",
+            name,
+            "unknown",
+            "One pose sample so far: waiting for the TF stamp to advance",
+            src,
+            age,
+        )
+    return _item(
+        "odom", name, "ok", "Odometry TF is live (pose stamp advancing)", src, age
+    )
 
 
 # ------------------------------------------------------------- ready to localize
@@ -244,7 +282,11 @@ def hydra_multi_summary(robot: str, state: dict, mem: _Memory, now: float) -> di
     count = current or mem.hydra_count
     opt_now = parse_hydra_optimization(note)
     opt = opt_now or mem.opt
-    count_age = 0.0 if current else (now - mem.hydra_count_at if mem.hydra_count_at is not None else None)
+    count_age = (
+        0.0
+        if current
+        else (now - mem.hydra_count_at if mem.hydra_count_at is not None else None)
+    )
     opt_age = 0.0 if opt_now else (now - mem.opt_at if mem.opt_at is not None else None)
     return {
         "accepted": count[0] if count else None,
@@ -263,7 +305,9 @@ def hydra_multi_summary(robot: str, state: dict, mem: _Memory, now: float) -> di
     }
 
 
-def _localize_items(robot: str, state: dict, mem: _Memory, now: float, hm: dict) -> list[dict]:
+def _localize_items(
+    robot: str, state: dict, mem: _Memory, now: float, hm: dict
+) -> list[dict]:
     health = state.get("health")
     need = RELOC_MIN_HYDRA_LCS
     items = []
@@ -272,14 +316,27 @@ def _localize_items(robot: str, state: dict, mem: _Memory, now: float, hm: dict)
     if hm["accepted"] is not None:
         acc, tot = hm["accepted"], hm["total"]
         if acc >= need:
-            st, reason = "ok", f"Relocalized: {acc} / {tot} inter-robot loop closures accepted (needs {need})"
+            st, reason = (
+                "ok",
+                f"Relocalized: {acc} / {tot} inter-robot loop closures accepted (needs {need})",
+            )
         elif acc > 0:
-            st, reason = "warn", f"Relocalizing: {acc} of the {need} needed loop closures accepted ({tot} proposed)"
+            st, reason = (
+                "warn",
+                f"Relocalizing: {acc} of the {need} needed loop closures accepted ({tot} proposed)",
+            )
         else:
-            st, reason = "warn", f"No prior-map match yet: 0 / {tot} loop closures accepted (needs {need})"
+            st, reason = (
+                "warn",
+                f"No prior-map match yet: 0 / {tot} loop closures accepted (needs {need})",
+            )
         if hm["count_stale"]:
             reason += f"; last reported {_fmt_s(hm['count_age_s'] or 0)} ago (hydra_multi now {hm['status'] or 'missing'}"
-            reason += ": it reports only when a scene graph arrives)" if hm["note"] and "spin" in hm["note"] else ")"
+            reason += (
+                ": it reports only when a scene graph arrives)"
+                if hm["note"] and "spin" in hm["note"]
+                else ")"
+            )
         items.append(_item("hydra_multi", name, st, reason, src, hm["count_age_s"]))
     elif not hm["in_table"]:
         items.append(_item("hydra_multi", name, "unknown",
@@ -302,7 +359,16 @@ def _localize_items(robot: str, state: dict, mem: _Memory, now: float, hm: dict)
         sus = _suspect(state.get("reloc"))
         age = fa.get("age_s") if fa.get("stamp") else None
         if sus:
-            items.append(_item("frame_align", fa_name, "fail", f"Suspect placement: {sus.removeprefix('suspect: ')}", "fleetlink reloc", age))
+            items.append(
+                _item(
+                    "frame_align",
+                    fa_name,
+                    "fail",
+                    f"Suspect placement: {sus.removeprefix('suspect: ')}",
+                    "fleetlink reloc",
+                    age,
+                )
+            )
         else:
             items.append(_item("frame_align", fa_name, "ok", f"{fa.get('parent')} -> {fa.get('child')} available", "fleetlink frame_align", age))  # fmt: skip
 
@@ -347,11 +413,25 @@ def compute_readiness(robot: str, state: dict | None, mem: _Memory, now: float) 
     loc = _checklist([link, *_localize_items(robot, state, mem, now, hm)])
     broken = []
     if odom["state"] == "fail":
-        broken.append({"key": "odom", "name": odom["name"], "state": "fail", "reason": odom["reason"]})
+        broken.append(
+            {
+                "key": "odom",
+                "name": odom["name"],
+                "state": "fail",
+                "reason": odom["reason"],
+            }
+        )
     for st in ("fail", "warn", "unknown"):
         for i in loc["items"]:
             if i["blocking"] and i["state"] == st:
-                broken.append({"key": i["key"], "name": i["name"], "state": st, "reason": i["reason"]})
+                broken.append(
+                    {
+                        "key": i["key"],
+                        "name": i["name"],
+                        "state": st,
+                        "reason": i["reason"],
+                    }
+                )
     verdict = "fail" if odom["state"] == "fail" else loc["state"]
     return {"robot": robot, "state": verdict, "localize": loc, "odometry": odom, "hydra_multi": hm, "broken": broken,
             "summary": broken[0]["reason"] if broken else "Relocalized"}  # fmt: skip

@@ -7,7 +7,12 @@ from adt4_console.readiness import ReadinessTracker, find_row
 
 
 def _row(nick, status, notes=""):
-    return {"nickname": nick, "node_name": nick.split("/")[-1], "status": status, "notes": notes}
+    return {
+        "nickname": nick,
+        "node_name": nick.split("/")[-1],
+        "status": status,
+        "notes": notes,
+    }
 
 
 def _state(rows, *, t=100.0, pose=True, dsg=None, fa=None, reloc=None, epoch=1):
@@ -16,7 +21,17 @@ def _state(rows, *, t=100.0, pose=True, dsg=None, fa=None, reloc=None, epoch=1):
         "stats": {"epoch": epoch, **({"dsg": dsg} if dsg is not None else {})},
     }
     if pose:
-        st["pose"] = {"x": 0, "y": 0, "z": 0, "qw": 1, "qx": 0, "qy": 0, "qz": 0, "frame": "gauss/odom", "t": t}
+        st["pose"] = {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "qw": 1,
+            "qx": 0,
+            "qy": 0,
+            "qz": 0,
+            "frame": "gauss/odom",
+            "t": t,
+        }
     if fa is not None:
         st["frame_align"] = fa
     if reloc is not None:
@@ -35,17 +50,32 @@ NO_ODOM_ROWS = [
     _row("gauss/roman_lc", "no_hb", ""),
     _row("gauss/tf_network", "warning", "No TF received on /gauss/tf"),
     _row("gauss/relocalization_monitor", "warning", "TF map->gps not available"),
-    _row("gauss/depth_correction", "warning", "not calibrated within 300 s: using the fallback correction"),
+    _row(
+        "gauss/depth_correction",
+        "warning",
+        "not calibrated within 300 s: using the fallback correction",
+    ),
     _row("gauss/zed_depth_quality", "nominal", "not measured (no lidar)"),
     _row("gauss/gps_monitor", "warning", "Fix (No RTK)"),
     _row("gauss/ntrip_monitor", "startup", "Waiting for first NTRIP"),
 ]
 
-FA_OK = {"parent": "map", "child": "gauss/odom", "ok": True, "T": [0, 0, 0, 1, 0, 0, 0], "stamp": 5.0, "age_s": 0.2}
+FA_OK = {
+    "parent": "map",
+    "child": "gauss/odom",
+    "ok": True,
+    "T": [0, 0, 0, 1, 0, 0, 0],
+    "stamp": 5.0,
+    "age_s": 0.2,
+}
 
 
 def _good_rows(hydra_multi_note, hm_status="nominal"):
-    rows = [r for r in NO_ODOM_ROWS if r["nickname"] not in ("gauss/hydra", "gauss/fastsam", "gauss/hydra_multi")]
+    rows = [
+        r
+        for r in NO_ODOM_ROWS
+        if r["nickname"] not in ("gauss/hydra", "gauss/fastsam", "gauss/hydra_multi")
+    ]
     return rows + [
         _row("gauss/hydra", "nominal", ""),
         _row("gauss/fastsam", "nominal", ""),
@@ -76,7 +106,14 @@ def test_no_pose_is_no_odometry_and_blocks():
     assert r["summary"].startswith("No odometry")
     keys = [i["key"] for i in r["localize"]["items"]]
     assert keys[:3] == ["link", "hydra_multi", "frame_align"]
-    for gone in ("hydra", "fastsam", "depth_correction", "zed_depth_quality", "semantic_inference", "dsg"):
+    for gone in (
+        "hydra",
+        "fastsam",
+        "depth_correction",
+        "zed_depth_quality",
+        "semantic_inference",
+        "dsg",
+    ):
         assert gone not in keys
 
 
@@ -86,7 +123,9 @@ def test_frozen_pose_stamp_is_frozen_odometry():
     tr.observe("gauss", _state(NO_ODOM_ROWS, t=100.1), now=0.25)
     r = tr.observe("gauss", _state(NO_ODOM_ROWS, t=100.1), now=9.0)
     odom = r["odometry"]
-    assert odom["state"] == "fail" and "frozen" in odom["reason"] and odom["age_s"] == 8.8
+    assert (
+        odom["state"] == "fail" and "frozen" in odom["reason"] and odom["age_s"] == 8.8
+    )
     assert r["state"] == "fail"
 
 
@@ -104,34 +143,64 @@ def test_link_goes_down_without_state():
 def test_relocalized_and_remembered_count_and_optimization():
     tr = ReadinessTracker()
     note = "7 / 9 valid interrobot loop closures; last optimization took 0.412 s"
-    r = tr.observe("gauss", _state(_good_rows(note), t=1.0, fa=FA_OK, reloc={"prior_lcs": 3}), now=0.0)
+    r = tr.observe(
+        "gauss",
+        _state(_good_rows(note), t=1.0, fa=FA_OK, reloc={"prior_lcs": 3}),
+        now=0.0,
+    )
     loc = r["localize"]
     hm = _item(loc, "hydra_multi")
     assert hm["state"] == "ok" and hm["reason"].startswith("Relocalized: 7 / 9")
     assert r["hydra_multi"]["took_s"] == 0.412 and r["hydra_multi"]["ago_s"] is None
     assert _item(loc, "frame_align")["state"] == "ok"
     # informational rows never block
-    for key in ("relocalization_monitor", "tf_network", "roman_lc", "roman_map", "gps_monitor", "ntrip_monitor"):
+    for key in (
+        "relocalization_monitor",
+        "tf_network",
+        "roman_lc",
+        "roman_map",
+        "gps_monitor",
+        "ntrip_monitor",
+    ):
         assert not _item(loc, key)["blocking"], key
     assert loc["state"] == "ok" and r["state"] == "ok"
     # hydra_multi idles: ERR "time since last spin" drops the counts -> keep the last ones, labelled
     idle = _good_rows("time since last spin: 20.0 [s]", "error")
     r = tr.observe("gauss", _state(idle, t=1.5, fa=FA_OK), now=20.0)
     hm = _item(r["localize"], "hydra_multi")
-    assert hm["state"] == "ok" and "last reported 20 s ago" in hm["reason"] and hm["age_s"] == 20.0
+    assert (
+        hm["state"] == "ok"
+        and "last reported 20 s ago" in hm["reason"]
+        and hm["age_s"] == 20.0
+    )
     assert "only when a scene graph arrives" in hm["reason"]
     s = r["hydra_multi"]
-    assert s["accepted"] == 7 and s["count_stale"] and s["took_s"] == 0.412 and s["opt_stale"]
+    assert (
+        s["accepted"] == 7
+        and s["count_stale"]
+        and s["took_s"] == 0.412
+        and s["opt_stale"]
+    )
     assert s["opt_age_s"] == 20.0 and s["status"] == "ERR"
 
 
 def test_relocalizing_and_not_relocalized_are_amber():
     tr = ReadinessTracker()
-    r = tr.observe("gauss", _state(_good_rows("2 / 4 valid interrobot loop closures"), fa=FA_OK), now=0.0)
-    assert _item(r["localize"], "hydra_multi")["reason"].startswith("Relocalizing: 2 of the 5")
+    r = tr.observe(
+        "gauss",
+        _state(_good_rows("2 / 4 valid interrobot loop closures"), fa=FA_OK),
+        now=0.0,
+    )
+    assert _item(r["localize"], "hydra_multi")["reason"].startswith(
+        "Relocalizing: 2 of the 5"
+    )
     assert r["localize"]["state"] == "warn"
     tr = ReadinessTracker()
-    r = tr.observe("gauss", _state(_good_rows("time since last spin: 5 [s]", "error"), fa=FA_OK), now=0.0)
+    r = tr.observe(
+        "gauss",
+        _state(_good_rows("time since last spin: 5 [s]", "error"), fa=FA_OK),
+        now=0.0,
+    )
     assert "idle" in _item(r["localize"], "hydra_multi")["reason"]
     rows = [x for x in _good_rows("") if x["nickname"] != "gauss/hydra_multi"]
     r = tr.observe("gauss", _state(rows, fa=FA_OK), now=0.0)
@@ -149,14 +218,26 @@ def test_suspect_placement_fails():
 
 def test_agent_restart_forgets():
     tr = ReadinessTracker()
-    tr.observe("gauss", _state(_good_rows("6 / 6 valid interrobot loop closures"), epoch=1), now=0.0)
-    r = tr.observe("gauss", _state(_good_rows("time since last spin: 1 [s]", "error"), epoch=2), now=1.0)
+    tr.observe(
+        "gauss",
+        _state(_good_rows("6 / 6 valid interrobot loop closures"), epoch=1),
+        now=0.0,
+    )
+    r = tr.observe(
+        "gauss",
+        _state(_good_rows("time since last spin: 1 [s]", "error"), epoch=2),
+        now=1.0,
+    )
     assert r["hydra_multi"]["accepted"] is None
 
 
 def test_no_state_is_unknown():
     r = ReadinessTracker().compute("gauss", None, now=0.0)
-    assert r["state"] == "unknown" and r["localize"]["state"] == "unknown" and r["odometry"] is None
+    assert (
+        r["state"] == "unknown"
+        and r["localize"]["state"] == "unknown"
+        and r["odometry"] is None
+    )
 
 
 class _Hub:
