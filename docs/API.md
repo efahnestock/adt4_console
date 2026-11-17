@@ -1069,6 +1069,11 @@ fixes against the Hydra trajectory by `scripts/geo/anchor_from_gps.py`. The scri
     160 tiles.
   * Zoomed in past that, the ground in view also gets close-up tiles, up to `zmax` (≤ 64 tiles).
   * Offline, only tiles inside the manifest's `bbox_lonlat` are requested.
+  * On by default, in the robot viewer and the mission planner, for any map with an anchor; the
+    viewer's own show / hide and layer pick are kept per browser (localStorage) and win.
+  * The anchor is that of the mission map (`/api/missions/world`), else of the first map the
+    viewer shows (a bag's live map), looked up again when the shown maps change. The map extent
+    is the mission world's, else the scene's, else 100 m around the anchor's fit point.
 
 ## 15. Missions (multi-agent, chat-first; simulate, then execute)
 
