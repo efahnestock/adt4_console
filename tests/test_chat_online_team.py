@@ -249,3 +249,163 @@ def test_a_goal_that_does_not_name_a_held_object_gets_a_warning_on_the_card():
         chat(), "(visited-object-by hamilton o31)", "hamilton go to O31"
     )
     assert "warning" not in card
+
+
+# ---------- a goal naming no robot while robots are executing ----------
+
+
+def executing(c, *robots):
+    from types import SimpleNamespace as NS
+
+    c.ros.goals = NS(
+        busy_robots=lambda: {r: "(visited-object-by %s o1)" % r for r in robots},
+        summary_lines=lambda n=3: [],
+    )
+    return c
+
+
+ALL_ONLINE = {
+    "euclid": {"connected": True},
+    "hamilton": {"connected": True},
+    "gauss": {"connected": True},
+}
+
+
+@needs_heracles_agents
+def test_a_goal_naming_no_robot_while_robots_execute_suggests_the_free_robots():
+    c = executing(chat(Live(ALL_ONLINE)), "euclid", "hamilton")
+    [card], out = propose(c, "(visited-object o31)", "also go look at O31")
+    assert card["warning"] == (
+        "euclid and hamilton are executing a goal and this goal has a task naming no "
+        "robot: the planner plans it for the whole team and may interrupt them. To "
+        "leave them alone, limit it to the free robot: use-robots gauss"
+    )
+    assert out["warning"] == card["warning"]
+    assert out["suggest_to_operator"].startswith(card["warning"])
+    assert (
+        "Do not propose it again until the operator says so"
+        in out["suggest_to_operator"]
+    )
+    # the goal is still proposed, as asked
+    assert out["proposed"] is True and card["body"]["goal"] == "(visited-object o31)"
+
+
+@needs_heracles_agents
+def test_no_suggestion_when_the_goal_already_says_which_robots():
+    # a -by task
+    c = executing(chat(Live(ALL_ONLINE)), "euclid", "hamilton")
+    [card], out = propose(c, "(visited-object-by gauss o31)", "gauss go look at O31")
+    assert "warning" not in card and "suggest_to_operator" not in out
+    # use-robots
+    c = executing(chat(Live(ALL_ONLINE)), "euclid", "hamilton")
+    [card], out = propose(
+        c,
+        "(visited-object o31)",
+        "go look at O31",
+        constraints=[{"predicate": "use-robots", "symbols": ["gauss"]}],
+    )
+    assert "warning" not in card and "suggest_to_operator" not in out
+
+
+@needs_heracles_agents
+def test_no_suggestion_when_no_robot_is_executing():
+    [card], out = propose(chat(Live(ALL_ONLINE)), "(visited-object o31)", "look at O31")
+    assert "warning" not in card and "suggest_to_operator" not in out
+
+
+@needs_heracles_agents
+def test_no_suggestion_when_the_operator_asks_for_the_whole_team():
+    for message in (
+        "all robots go look at O31",
+        "have the whole team visit O31",
+        "every spot visits O31",
+        "new mission: visit O31",
+        "any free robot can visit O31",
+    ):
+        c = executing(chat(Live(ALL_ONLINE)), "euclid")
+        [card], out = propose(c, "(visited-object o31)", message)
+        assert "suggest_to_operator" not in out, message
+
+
+@needs_heracles_agents
+def test_with_every_robot_executing_it_asks_to_name_one():
+    c = executing(chat(Live(ALL_ONLINE)), "euclid", "hamilton", "gauss")
+    [card], out = propose(c, "(visited-object o31)", "also go look at O31")
+    assert "No robot is free: name the robot that should do it" in card["warning"]
+    assert "use-robots gauss" not in card["warning"]
+
+
+@needs_heracles_agents
+def test_an_offline_robot_is_neither_busy_nor_free():
+    # gauss is offline (never connected); only euclid executes
+    c = executing(chat(), "euclid", "gauss")
+    [card], _ = propose(c, "(visited-object o31)", "also go look at O31")
+    assert card["warning"].startswith("euclid is executing a goal")
+    assert card["warning"].endswith("limit it to the free robot: use-robots hamilton")
+
+
+@needs_heracles_agents
+def test_a_mixed_goal_with_a_robot_free_task_is_suggested_too():
+    c = executing(chat(Live(ALL_ONLINE)), "euclid")
+    [card], out = propose(
+        c,
+        "(and (visited-object-by hamilton o29) (visited-object o31))",
+        "hamilton to O29, and someone look at O31",
+    )
+    assert "suggest_to_operator" in out
+    assert card["warning"].endswith("free robots: use-robots gauss hamilton")
+
+
+@needs_heracles_agents
+def test_the_put_down_warning_and_the_suggestion_are_both_on_the_card():
+    from types import SimpleNamespace as NS
+
+    c = executing(chat(Live(ALL_ONLINE)), "euclid")
+    c.ros.planner_state = NS(holding=lambda: {"hamilton": ["O58"]})
+    [card], _ = propose(c, "(visited-object o31)", "also go look at O31")
+    assert "hamilton is holding O58" in card["warning"]
+    assert "euclid is executing a goal" in card["warning"]
+
+
+def test_the_roster_says_which_robots_are_executing():
+    c = executing(chat(Live(ALL_ONLINE)), "hamilton")
+    text = c._system(None, "euclid")
+    line = {x.split(":")[0]: x for x in text.splitlines() if x.startswith("- ")}
+    assert "EXECUTING a goal now" in line["- hamilton"]
+    assert "EXECUTING" not in line["- euclid"] and "EXECUTING" not in line["- gauss"]
+
+
+def test_a_broken_goal_tracker_never_blocks_a_goal():
+    from types import SimpleNamespace as NS
+
+    c = chat(Live(ALL_ONLINE))
+
+    def boom():
+        raise RuntimeError("tracker gone")
+
+    c.ros.goals = NS(busy_robots=boom, summary_lines=lambda n=3: [])
+    assert c._busy() == {}
+
+
+class NoLinks(Live):
+    """No fleetlink state at all; the console has poses from euclid and hamilton."""
+
+    def __init__(self):
+        super().__init__(links={})
+
+    def robots(self):
+        return ["euclid", "hamilton"]
+
+    def state(self, robot):
+        pose = {"x": 1.0, "y": 2.0, "z": 0.0}
+        return {"pose": pose} if robot in ("euclid", "hamilton") else None
+
+
+@needs_heracles_agents
+def test_without_link_state_only_robots_with_a_pose_are_called_free():
+    """The topology also lists robots that are not out (2026-11-17 rig: the
+    suggestion named apollo, lewis and samoyed, and the goal limited to them
+    was refused)."""
+    c = executing(chat(NoLinks()), "euclid")
+    [card], _ = propose(c, "(visited-object o31)", "also go look at O31")
+    assert card["warning"].endswith("limit it to the free robot: use-robots hamilton")

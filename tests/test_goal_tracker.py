@@ -442,3 +442,63 @@ def test_after_a_newer_goal_manager_goal_replans_go_to_it_not_the_earlier_goal()
     _assert_a_replaced(tr, a, pushed)
     eb = tr.view(b)["robots"]["euclid"]
     assert eb["plan_id"] == "aa000009" and eb["stage"] == "planned"
+
+
+# ---------- which robots are on a plan now (the chat's goal warning) ----------
+
+
+def test_busy_robots_are_those_whose_latest_plan_is_not_over():
+    tr, clock, _ = make()
+    assert tr.busy_robots() == {}
+    tr.goal_sent("euclid", kind="pddl", summary="(visited-object-by euclid o6)")
+    assert tr.busy_robots() == {}  # no plan yet
+    tr.on_plan("euclid", plan("p1", "FOLLOW", "FOLLOW"))
+    tr.on_plan_status({"robot": "euclid", "ok": True})
+    assert tr.busy_robots() == {"euclid": "(visited-object-by euclid o6)"}  # planned
+    clock.step()
+    tr.on_teleop("euclid", teleop(executing=True))
+    assert list(tr.busy_robots()) == ["euclid"]  # executing
+    tr.on_teleop("euclid", teleop(executing=False, paused=True))
+    assert list(tr.busy_robots()) == ["euclid"]  # paused is still on its plan
+    tr.on_teleop("euclid", teleop(executing=True))
+    tr.on_result("euclid", result("p1", 0))
+    tr.on_result("euclid", result("p1", 1))
+    assert tr.busy_robots() == {}  # done
+
+
+def test_a_robot_that_stopped_or_failed_is_not_busy():
+    tr, clock, _ = make()
+    tr.goal_sent("euclid", kind="pddl")
+    tr.on_plan("euclid", plan("p1", "FOLLOW", "PICK"))
+    tr.on_plan_status({"robot": "euclid", "ok": True})
+    tr.on_teleop("euclid", teleop(executing=True))
+    tr.on_result("euclid", result("p1", 0))
+    tr.on_result("euclid", result("p1", 1, status="FAILED", typ="PICK"))
+    assert tr.busy_robots() == {}
+
+
+def test_a_plan_never_heard_from_stops_counting_after_the_match_window():
+    from adt4_console.goal_tracker import MATCH_WINDOW_S
+
+    tr, clock, _ = make()
+    tr.goal_sent("euclid", kind="pddl")
+    tr.on_plan("euclid", plan("p1", "FOLLOW"))
+    tr.on_plan_status({"robot": "euclid", "ok": True})
+    assert list(tr.busy_robots()) == ["euclid"]
+    clock.step(MATCH_WINDOW_S + 1)
+    assert tr.busy_robots() == {}
+
+
+def test_only_a_robots_newest_plan_decides():
+    tr, clock, _ = make()
+    tr.goal_sent("euclid", kind="pddl", summary="first")
+    tr.on_plan("euclid", plan("p1", "FOLLOW"))
+    tr.on_plan_status({"robot": "euclid", "ok": True})
+    tr.on_teleop("euclid", teleop(executing=True))
+    tr.on_result("euclid", result("p1", 0))
+    clock.step(10)
+    tr.goal_sent("hamilton", kind="pddl", summary="second")
+    tr.on_plan("hamilton", plan("p2", "FOLLOW"))
+    tr.on_plan_status({"robot": "hamilton", "ok": True})
+    tr.on_teleop("hamilton", teleop(executing=True))
+    assert tr.busy_robots() == {"hamilton": "second"}
