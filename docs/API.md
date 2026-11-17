@@ -512,7 +512,7 @@ The RViz `nlu_interface_rviz` panel answers the same protocol; the console is a 
 The protocol has no request id: the console assigns one, keeps only the newest request per robot
 answerable, expires it after 5 min, and drops the images once answered.
 
-* `GET /api/manipulation/pending` → `{available, error, requests: [{id, robot, status, simulated,
+* `GET /api/manipulation/pending` → `{available, error, requests: [{id, robot, status,
   received_at, expires_at, images: [{index, name, url, width, height, depth_url?, point_query_url?,
   ground_estimate, ground_estimate_warning?, error?, depth_error?}], depth_range_m, walk_to:
   {standoff_m, max_distance_m}, has_detection, selection: {image_index, x, y} | null}]}`.
@@ -527,7 +527,7 @@ answerable, expires it after 5 min, and drops the images once answered.
   carry `ground_estimate_warning`: the gripper camera's floor estimates are unreliable.
 * `POST /api/manipulation/requests/{id}/respond` `{approve, image_index?, image_x?, image_y?,
   walk_to?, stand_x?, stand_y?}` (strict types; pixels default to the suggested detection) →
-  `{ok, status: "published" | "simulated", request_id, robot, response, subscribers?, via?,
+  `{ok, status: "published", request_id, robot, response, subscribers?, via?,
   delivered?, link?}`. `approve: true` grasps at the pixel; `approve: false` abandons the attempt;
   `approve: false, walk_to: true` walks toward the pixel's ground/object point (the executor stops
   `walk_to_standoff` short of it, moves at most `walk_to_max_distance`) and then sends a fresh
@@ -538,9 +538,6 @@ answerable, expires it after 5 min, and drops the images once answered.
   fleetlink mode the relay is always the local subscriber, so the bridge waits for the robot's
   ack instead (`publish_to_robot`); a missing ack closes the request as `publish_failed` rather
   than invite a duplicate approval. The message goes out exactly once.
-* `POST /api/manipulation/demo[?robot=]` → a simulated request (two synthetic cameras with depth
-  and geometry; `simulated: true`) whose answers are recorded and never published; 409 while a
-  live request is open.
 * fleetlink mode needs `relay.yaml` to carry `manipulation_request` up and `pick_confirmation`
   down (both `platform: [spot]`); router mode (robot topics on the base graph) needs nothing.
   `nlu_interface_rviz` must be importable in `spark_env` (it is where the RViz panel is built),
@@ -1711,6 +1708,101 @@ and a **Correct** button. Correct opens "holds nothing / holds [O22]", then **Ap
 confirm with **Confirm** / **Cancel**. Above the table are the map and planner versions and
 epochs (flagged when the epochs differ), and the last plan error. The Chat panel shows the
 same view folded under one line (`Planner believes: euclid holds O11 · hamilton —`).
+
+## 22. USB bag drives (`drives.py`, `routes/drives.py`)
+
+Robots run the `bag-drive` helper: a udev rule and a systemd unit mount any USB
+drive at `/mnt/bag_drives/<label or UUID>`. The console only talks to it over the
+fleet's ssh. A copy runs `rsync` on the robot itself, from its output root
+straight onto the drive, so bag data never crosses the radio.
+
+* `GET /api/drives` → `{updated, machines: [{name, role, online, installed,
+  drives, error}]}`. One ssh `bag-drive status --json` per online machine, in
+  parallel. `installed: false` = the helper is not on that machine. Each drive:
+  `{name, label, uuid, fstype, mountpoint, write_dir, mounted, managed,
+  size_bytes, free_bytes, usb_speed_mbps, slow_link, error, copy_job}`.
+  `write_dir` is where the machine's user can write (the drive root, or its
+  `bags/` folder on a drive whose root is root-owned; `""` = read-only).
+  `slow_link` = a USB 2.0 link (under 5000 Mbit/s): wrong port or cable.
+  `copy_job` = the copy job writing to the drive now, else null.
+* `POST /api/drives/eject` `{machine, drive}` → `{ok, message}`. Runs
+  `sudo -n bag-drive eject` (sync, unmount, power down). 409 while a copy to
+  that drive is running; 502 with the helper's message when it fails (drive busy).
+* `GET /api/drives/bags?machine=&drive=` → `{machine, drive, root, runs: [{name,
+  mtime, bytes, dest_bytes, recording, on_drive, bags: [{name, bytes, files,
+  metadata, recording, dest_bytes, on_drive}]}]}`, newest first. A bag is a
+  directory with `*.mcap` / `*.db3` files directly inside a run of the output
+  root (`drives.BAG_SCAN`: the one place that decides what a bag is).
+  A trial's `console` folder (with its `trial.json`) is listed the same way.
+  `recording` = a file changed in the last minute and the bag is not closed
+  (closed: `metadata.yaml` as new as the newest bag file; for a `console`
+  folder, its `trial.json` says the trial ended); a
+  copy of such a run is refused with 409. With `drive`, `on_drive` says what of
+  the run is already there: `"verified"` (every byte, and the hash manifest of a
+  finished check), `"copied"` (every byte, not hashed), `"partial"` (an
+  interrupted copy, `dest_bytes` of `bytes`), `""` (nothing).
+* `POST /api/drives/copy` `{machine, drive, runs, remove_source=false}` →
+  `{job_id, bytes, to_copy}`; job kind `drive_copy`. Each bag goes to
+  `<write_dir>/<machine>/<run>/<bag>/`. 400 bad names / no runs, 404 unknown
+  drive or run, 409 not mounted, read-only, a run still recording, not enough
+  free space for what is not on the drive yet, or a copy already running to
+  that drive.
+  * Copy: `rsync --append` on the machine. Progress key `<machine> copy`, by
+    bytes over all selected bags.
+  * Verify: straight after each bag, the SHA-256 of every file is computed on
+    the machine for the original and for the copy at the same time (the copy is
+    dropped from the page cache first, so the drive itself is read). It takes one
+    read of the drive, about 2 minutes per 100 GB on a 10 Gbit/s link; the hash
+    is not the limit. Progress key `<machine> verify`. On success the hashes are
+    written beside the copy as `<bag>.sha256` (`sha256sum -c` format), which is
+    what marks the bag `verified`. A file whose hash differs is removed from the
+    drive and the job fails; copy again to rewrite it.
+  * Interrupt and resume: `POST /api/jobs/{id}/cancel` stops the rsync and keeps
+    what is on the drive (state `cancelled`); the drive can be ejected. The same
+    copy request later, on any machine-and-drive pair holding that data,
+    continues each file where it stopped and skips bags that are `verified`.
+  * With `remove_source`, once every selected bag is verified the job asks
+    (a *Delete from robot* button, nothing to type), and only on a yes are the bags removed from the machine.
+    The Drives page sends `remove_source: true` unless the switch at the top of
+    the machine's card is turned off.
+  * **Run output.** A trial's `trial.json` names the folder the stack wrote
+    during the run (`run.output_dir`: scene graph, ROMAN map, logs). In the
+    bag listing a run then has `output` = `{name, path, bytes, files,
+    dest_bytes, on_drive, live, stack, confirmed, missing, note}`, or `null`.
+    Only a folder directly under the output root counts; anything else is
+    `missing` with a `note`. So does a folder whose `run_info.json` does not
+    carry the `run.run_id` the trial recorded (the stack was launched again
+    under the same experiment name, which clears the folder). A trial that
+    recorded no run id (a robot's launch writes no `run_info.json`) is checked
+    by what is in the folder: it is `missing` when none of the files listed at
+    the trial's stop (`run_output_at_stop`) are left; it is the trial's launch
+    when a file in it is as old as the trial's stop (`stop_time_unix`, else when
+    the bag was closed), or when the stack running on it was started before
+    that; otherwise it is copied with `confirmed: false` and a `note` (every
+    file is newer than the trial). The copy job copies it after the bags, to
+    `<write_dir>/<machine>/<run>/run_output/<name>/` with its manifest
+    `<name>.sha256` beside it (paths relative to the folder), and counts it in
+    the space check. It is **never deleted** from the machine. `live` means a
+    copy may be incomplete: the running stack writes to this folder (`stack`:
+    the `adt4_system` tmux session is up and its `ADT4_OUTPUT_DIR` is this
+    folder, or it names none), or a file in it changed in the last minute. The
+    folders of launches that ended are not live, whatever runs now. The copy
+    still runs, with a warning. A problem with the run
+    output (files that changed while being copied, a failed copy) is a warning
+    in the log and in `result.outputs[].state` (`verified`, `changed`,
+    `failed`, `missing`), never a failed job; the delete question names the
+    runs whose output is not fully on the drive.
+* `POST /api/drives/delete` `{machine, runs, drive=null}` → `{job_id, bytes,
+  not_on_drive}`; job kind `bag_delete`. Deletes the bag folders of `runs`
+  from the machine's disk, with or without a drive plugged in (the Drives page
+  lists a machine's bags either way). Nothing is copied first, so the job asks
+  with a typed `delete` (confirm kind `bag_delete`) and its message says what is
+  known about copies: with `drive`, which runs are not on it with checked
+  hashes; without, that no drive was checked. The bags are scanned again after
+  the answer, and a run being recorded is refused (409 before the job, an
+  error in it). A run folder left empty is removed (`rmdir`, also after a
+  move); a run's output folder is never touched. 400 bad names / no runs, 404
+  unknown run.
 
 ## Deviations
 

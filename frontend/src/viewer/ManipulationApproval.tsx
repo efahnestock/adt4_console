@@ -38,7 +38,6 @@ export interface ManipulationRequest {
   expires_at: number;
   images: ManipulationImage[];
   selection: GraspSelection | null;
-  simulated?: boolean;
   status?: string;
   /** Near and far ends of the depth colour scale, metres. */
   depth_range_m?: [number, number];
@@ -137,16 +136,6 @@ function detail(error: unknown): string {
   return error instanceof ApiError ? error.detail : error instanceof Error ? error.message : String(error);
 }
 
-/** The "Test manipulation dialog" button (a simulated request, no robot command) is a
- *  developer tool: shown only with `?manipulation-demo` in the console URL. */
-export function manipulationDemoEnabled(): boolean {
-  try {
-    return new URLSearchParams(window.location.search).has("manipulation-demo");
-  } catch {
-    return false;
-  }
-}
-
 /** Global host: pending requests are independent of the currently selected console page. */
 export function ManipulationApprovalHost() {
   const [pending, setPending] = useState<Pending>({available: false, error: null, requests: []});
@@ -154,7 +143,6 @@ export function ManipulationApprovalHost() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [answered, setAnswered] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
-  const [demoBusy, setDemoBusy] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -186,9 +174,9 @@ export function ManipulationApprovalHost() {
   const openId = useManipulation(s => s.openId);
   const viewerBadges = useManipulation(s => s.badges);
   const active = requests.find(request => request.id === openId);
-  const pendingKey = requests.map(request => `${request.id}:${request.robot}:${request.simulated ? 1 : 0}`).join(",");
+  const pendingKey = requests.map(request => `${request.id}:${request.robot}`).join(",");
   useEffect(() => {
-    useManipulation.getState().setPending(requests.map(({id, robot, simulated}) => ({id, robot, simulated})));
+    useManipulation.getState().setPending(requests.map(({id, robot}) => ({id, robot})));
     // the open request was answered elsewhere or expired: close its panel
     const st = useManipulation.getState();
     if (st.openId && connected && !requests.some(request => request.id === st.openId)) st.close();
@@ -202,33 +190,11 @@ export function ManipulationApprovalHost() {
       `api/manipulation/requests/${encodeURIComponent(request.id)}/respond`, body);
     setAnswered(old => new Set([...old, request.id]));
     if (useManipulation.getState().openId === request.id) useManipulation.getState().close();
-    if (result.status !== "simulated") void graspCamera(request, body);
+    void graspCamera(request, body);
     const kind = body.approve ? "approval" : body.walk_to ? "walk-to" : "rejection";
-    setNotice(result.status === "simulated"
-      ? "Simulation response recorded. No robot message was sent."
-      : body.walk_to
-        ? `${request.robot}: walk-to request published. The robot will move, take new images and ask again.`
-        : `${request.robot}: ${kind} response published. This does not confirm action completion.`);
-  };
-
-  const demo = async () => {
-    setDemoBusy(true);
-    try {
-      const before = new Set(pending.requests.map(request => request.id));
-      const made = await postJSON<{id?: string} | null>("api/manipulation/demo");
-      const state = await getJSON<Pending>("api/manipulation/pending");
-      setPending(state);
-      setConnected(true);
-      setFetchError(null);
-      // the test dialog opens at once (it is what the operator asked for)
-      const fresh = state.requests.find(request => request.id === made?.id)
-        ?? state.requests.find(request => request.simulated && !before.has(request.id));
-      if (fresh) useManipulation.getState().open({id: fresh.id});
-    } catch (error) {
-      setNotice(detail(error));
-    } finally {
-      setDemoBusy(false);
-    }
+    setNotice(body.walk_to
+      ? `${request.robot}: walk-to request published. The robot will move, take new images and ask again.`
+      : `${request.robot}: ${kind} response published. This does not confirm action completion.`);
   };
 
   return <>
@@ -242,13 +208,9 @@ export function ManipulationApprovalHost() {
       onClick={() => useManipulation.getState().open()}>
       {pendingLabel(requests)}
     </button>}
-    {!active && requests.length === 0 && manipulationDemoEnabled() && <button type="button" className="manipulation-demo btn"
-      disabled={demoBusy} onClick={() => void demo()} title="Open a simulated manipulation request; no robot command is sent">
-      {demoBusy ? "Opening test…" : "Test manipulation dialog"}
-    </button>}
     {active && <ManipulationApprovalDialog key={active.id} request={active}
-      available={connected && (pending.available || Boolean(active.simulated))}
-      serviceError={fetchError || (!active.simulated ? pending.error : null)}
+      available={connected && pending.available}
+      serviceError={fetchError || pending.error}
       onDismiss={() => useManipulation.getState().close()}
       onRespond={body => respond(active, body)}
       headingSelection={WALK_TO_HEADING_SELECTION} />}
@@ -421,7 +383,6 @@ export function ManipulationApprovalDialog({request, available = true, serviceEr
         <button type="button" ref={close} className="icon-btn" aria-label="Close without responding"
           disabled={busy} onClick={onDismiss}>×</button>
       </header>
-      {request.simulated && <div className="manipulation-simulation">SIMULATION — no robot response</div>}
       <div className="manipulation-body">
         <p>Approving lets the waiting robot action continue, including pick or drag.
           Walk To instead moves the robot toward the selected ground/object point, then asks again with new images.</p>

@@ -1,0 +1,673 @@
+"""USB bag drives on fleet machines: status, eject, and copying bags onto them.
+
+Each robot runs the ``bag-drive`` helper (a udev rule + systemd unit mount any
+USB drive at ``/mnt/bag_drives/<label or UUID>``).  The console only talks to it
+over ssh:
+
+* ``bag-drive status --json``   drives, free space, USB link speed, where to write
+* ``sudo -n bag-drive eject N`` sync, unmount and power the drive down
+
+A copy runs ``rsync`` on the robot itself, from its run directory straight onto
+the drive, so the data never crosses the radio; the console only starts it and
+follows its progress.
+
+What counts as a bag (``BAG_SCAN``) is deliberately in one place: a directory
+with a ``metadata.yaml`` next to ``*.mcap`` / ``*.db3`` files, inside a run of
+the output root.  A trial's ``console`` folder (``trial.json``, the event log
+and the screen video) is listed and copied the same way, though it has no bag
+file.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shlex
+import subprocess
+import threading
+
+from .terminal import SSH_OPTS
+
+BAG_DRIVE = "/usr/local/sbin/bag-drive"
+STATUS_CMD = f"{BAG_DRIVE} status --json"
+STATUS_TIMEOUT_S = 10
+EJECT_TIMEOUT_S = 90  # a sync of a busy drive can take a while
+SCAN_TIMEOUT_S = 30
+
+# drive names are bag-drive's sanitized labels / UUIDs; runs are directory names
+DRIVE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+RUN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+BAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+
+# usb_speed_mbps below this is a USB 2.0 link (wrong port or cable)
+FAST_LINK_MBPS = 5000
+
+
+def valid_drive(name: str | None) -> bool:
+    return bool(name) and DRIVE_RE.match(name) is not None and ".." not in name
+
+
+def valid_run(name: str | None) -> bool:
+    return bool(name) and RUN_RE.match(name) is not None and ".." not in name
+
+
+def valid_file(name: str | None) -> bool:
+    """A plain file name inside a bag directory (no path separators)."""
+    return (
+        bool(name)
+        and "/" not in name
+        and name not in (".", "..")
+        and "\x00" not in name
+    )
+
+
+def valid_bag(name: str | None) -> bool:
+    return bool(name) and BAG_RE.match(name) is not None and ".." not in name
+
+
+# ------------------------------------------------------------------ status
+def parse_status(rc: int, out: str, err: str = "") -> dict:
+    """``{"installed", "drives", "error"}`` from a ``bag-drive status --json`` run."""
+    text = (out or "").strip()
+    if rc == 127 or "No such file" in (err or "") or "not found" in (err or ""):
+        return {
+            "installed": False,
+            "drives": [],
+            "error": "bag-drive is not installed on this machine",
+        }
+    start = text.find("{")
+    if rc != 0 or start < 0:
+        detail = (err or out or "").strip()[-300:]
+        return {
+            "installed": True,
+            "drives": [],
+            "error": f"bag-drive status failed (rc {rc}): {detail}",
+        }
+    try:
+        data = json.loads(text[start:])
+    except ValueError as e:
+        return {"installed": True, "drives": [], "error": f"bad status output: {e}"}
+    drives = []
+    for d in data.get("drives") or []:
+        if not isinstance(d, dict) or not d.get("name"):
+            continue
+        speed = int(d.get("usb_speed_mbps") or 0)
+        drives.append(
+            {
+                "name": str(d["name"]),
+                "label": d.get("label") or "",
+                "uuid": d.get("uuid") or "",
+                "fstype": d.get("fstype") or "",
+                "model": d.get("model") or "",
+                "mountpoint": d.get("mountpoint") or "",
+                "write_dir": d.get("write_dir") or "",
+                "mounted": bool(d.get("mounted")),
+                "managed": bool(d.get("managed")),
+                "size_bytes": int(d.get("size_bytes") or 0),
+                "free_bytes": int(d.get("free_bytes") or 0),
+                "usb_speed_mbps": speed,
+                "slow_link": 0 < speed < FAST_LINK_MBPS,
+                "error": d.get("error") or "",
+            }
+        )
+    return {"installed": True, "drives": drives, "error": ""}
+
+
+def eject_command(drive: str) -> str:
+    if not valid_drive(drive):
+        raise ValueError(f"bad drive name {drive!r}")
+    return f"sudo -n {BAG_DRIVE} eject {shlex.quote(drive)}"
+
+
+# -------------------------------------------------------------------- bags
+# Runs under the output root that hold rosbags.  One JSON object on stdout:
+# {"root": abs path, "runs": [{name, mtime, bytes, recording, on_drive, bags: [...]}]}
+# "recording": the bag is still being written: a file changed in the last minute
+# and the bag is not closed.  Closed = its metadata.yaml (rosbag2 writes it when
+# the recorder stops) is as new as its newest bag file; for a trial's console
+# folder, its trial.json says the trial ended.
+# With a second argument (the drive folder bags of this machine are copied to),
+# each bag also says what is there already: "dest_bytes" and "on_drive" =
+# "verified" (all bytes there and a hash manifest written by VERIFY), "copied"
+# (all bytes there, not hashed yet), "partial" (an interrupted copy) or "".
+# "output": the run output folder the stack wrote during a trial (hydra, roman,
+# ...), named by run.output_dir of the trial.json beside the bag.  Only a folder
+# directly under the output root is taken.
+# "live": a copy of the folder may be incomplete, because the stack that writes
+# it is still up ("stack": the running stack's ADT4_OUTPUT_DIR is this folder;
+# every folder when a running stack does not say which one is its own) or a file
+# in it changed in the last minute.  The folders of launches that ended are not
+# live, whatever runs now.
+# A later launch under the same experiment name clears the folder, and its
+# output must not be filed under the earlier trial:
+# * a trial that recorded the launch's run id (run.run_id) only takes a folder
+#   whose run_info.json has the same id;
+# * one without (a robot's launch writes no run_info.json) is "confirmed" when
+#   the folder holds a file as old as the trial (it was not cleared since), or
+#   when the stack running on it was started before the trial stopped; it is not
+#   taken when none of the files listed at the trial's stop (run_output_at_stop)
+#   are left; otherwise it is copied with "confirmed": false and a "note".
+# "missing"/"note" why there is nothing to copy.  It is copied to
+# <dest>/<run>/run_output/<name>/ and never deleted from the machine.
+BAG_SCAN = r"""
+import json, os, stat, sys, time
+root = os.path.expanduser(sys.argv[1])
+dest = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
+now = time.time()
+runs = []
+stops = {}
+try:
+    names = sorted(os.listdir(root))
+except OSError as e:
+    print(json.dumps({"root": root, "runs": [], "error": str(e)}))
+    sys.exit(0)
+def stack():
+    # (up, the running launch's output folder or None, when it was started or 0)
+    fake = os.environ.get("ADT4_SCAN_STACK")  # tests: "<output dir>|<start unix>"
+    if fake is not None:
+        d, _, t = fake.partition("|")
+        return True, (os.path.normpath(d) if d else None), float(t or 0)
+    import subprocess
+    def tmux(*args):
+        try:
+            p = subprocess.run(("tmux",) + args, capture_output=True, text=True, timeout=5)
+            return p.returncode, p.stdout.strip()
+        except Exception:
+            return 1, ""
+    if tmux("has-session", "-t", "=adt4_system")[0] != 0:
+        return False, None, 0.0
+    rc, env = tmux("show-environment", "-t", "=adt4_system", "ADT4_OUTPUT_DIR")
+    d = env.partition("=")[2].strip() if rc == 0 and "=" in env else ""
+    born = 0.0
+    rc, rows = tmux("list-sessions", "-F", "#{session_name} #{session_created}")
+    for row in rows.splitlines() if rc == 0 else []:
+        sname, _, t = row.rpartition(" ")
+        if sname == "adt4_system":
+            try:
+                born = float(t)
+            except ValueError:
+                pass
+    return True, (os.path.normpath(os.path.expanduser(d)) if d else None), born
+STACK_UP, STACK_DIR, STACK_BORN = stack()
+def run_output(run, subs, name, stopped):
+    path = want = listing = None
+    for sub in subs:
+        try:
+            with open(os.path.join(run, sub, "trial.json")) as f:
+                trial = json.load(f)
+            info = trial.get("run") or {}
+            path, want = info.get("output_dir"), info.get("run_id")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if path:
+            stopped = trial.get("stop_time_unix") or stopped
+            listing = (trial.get("run_output_at_stop") or {}).get("files")
+            break
+    if not path or not isinstance(path, str):
+        return None
+    path = os.path.normpath(path)
+    out = {"name": os.path.basename(path), "path": path, "bytes": 0, "files": 0,
+           "dest_bytes": 0, "on_drive": "", "live": False, "stack": False,
+           "confirmed": True, "missing": False, "note": ""}
+    if os.path.dirname(path) != os.path.normpath(root) or out["name"] == name:
+        out.update(missing=True, note="not a folder directly under %s: not copied" % root)
+        return out
+    if not os.path.isdir(path) or os.path.islink(path):
+        out.update(missing=True, note="the folder is not on this machine")
+        return out
+    # the stack was launched again under the same experiment name since the
+    # trial: the folder was cleared and holds another run's output
+    if want:
+        try:
+            with open(os.path.join(path, "run_info.json")) as f:
+                have = json.load(f).get("run_id")
+        except (OSError, ValueError, AttributeError):
+            have = None
+        if have != want:
+            out.update(missing=True, note=(
+                "the folder now holds another launch's output (run %s, the trial "
+                "was recorded in run %s): not copied" % (str(have)[:8], str(want)[:8])
+                if have else
+                "the folder has no run_info.json to show it is the run the trial "
+                "was recorded in (%s): not copied" % str(want)[:8]))
+            return out
+    newest, oldest, there = 0.0, None, 0
+    base = os.path.join(dest, name, "run_output", out["name"]) if dest else None
+    for d, dirs, files in os.walk(path):
+        dirs[:] = sorted(x for x in dirs if not os.path.islink(os.path.join(d, x)))
+        for fn in files:
+            fp = os.path.join(d, fn)
+            try:
+                st = os.lstat(fp)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            out["files"] += 1
+            out["bytes"] += st.st_size
+            newest = max(newest, st.st_mtime)
+            oldest = st.st_mtime if oldest is None else min(oldest, st.st_mtime)
+            if base:
+                try:
+                    there += min(os.path.getsize(os.path.join(base, os.path.relpath(fp, path))), st.st_size)
+                except OSError:
+                    pass
+    # only the folder the running stack writes to; a stack that does not say
+    # which folder is its own leaves every folder in doubt
+    out["stack"] = STACK_UP and (STACK_DIR is None or STACK_DIR == path)
+    out["live"] = out["stack"] or now - newest < 60
+    if not want:
+        # no run id to compare: is this still the launch the trial was recorded in?
+        kept = [f for f in listing or []
+                if isinstance(f, dict) and os.path.isfile(os.path.join(path, str(f.get("path"))))]
+        if listing and not kept:
+            out.update(missing=True, note=(
+                "none of the %d files the folder held when the trial stopped are "
+                "left: the stack was launched again under this name, and the "
+                "folder now holds that launch's output: not copied" % len(listing)))
+            return out
+        same = bool(stopped) and (
+            (oldest is not None and oldest <= stopped)
+            or (STACK_UP and STACK_DIR == path and 0 < STACK_BORN <= stopped))
+        if not same:
+            out.update(confirmed=False, note=(
+                "every file in it was written after the trial stopped, and the "
+                "trial recorded no run id: it may be a later launch's output"
+                if stopped and oldest is not None else
+                "the trial recorded no run id and no stop time, so nothing shows "
+                "the folder is from the launch it was recorded in"))
+    out["dest_bytes"] = there
+    if base and out["files"] and there >= out["bytes"]:
+        out["on_drive"] = "verified" if os.path.isfile(base + ".sha256") else "copied"
+    elif there > 0:
+        out["on_drive"] = "partial"
+    return out
+def state(bags):
+    kinds = {b["on_drive"] for b in bags}
+    if kinds == {"verified"}:
+        return "verified"
+    if kinds <= {"verified", "copied"}:
+        return "copied"
+    return "partial" if kinds != {""} else ""
+def closed(d, files, stats):
+    mt = {f.name: st.st_mtime for f, st in zip(files, stats)}
+    data = [t for n, t in mt.items() if n.endswith((".mcap", ".db3"))]
+    if data:
+        return "metadata.yaml" in mt and mt["metadata.yaml"] >= max(data) - 2
+    try:
+        with open(os.path.join(d, "trial.json")) as f:
+            return json.load(f).get("state") not in ("starting", "recording", "stopping")
+    except (OSError, ValueError, AttributeError):
+        return False
+for name in names:
+    run = os.path.join(root, name)
+    if not os.path.isdir(run) or os.path.islink(run):
+        continue
+    bags = []
+    try:
+        subs = sorted(os.listdir(run))
+    except OSError:
+        continue
+    for sub in subs:
+        d = os.path.join(run, sub)
+        if not os.path.isdir(d) or os.path.islink(d):
+            continue
+        try:
+            files = [f for f in os.scandir(d) if f.is_file(follow_symlinks=False)]
+        except OSError:
+            continue
+        # a bag, or a trial's console folder (trial.json + events.jsonl + the
+        # screen video; no bag file in it)
+        if not any(f.name.endswith((".mcap", ".db3")) for f in files) and not (
+            sub == "console" and any(f.name == "trial.json" for f in files)
+        ):
+            continue
+        stats = [f.stat() for f in files]
+        total = sum(st.st_size for st in stats)
+        # when the bag was closed: the fallback for a trial.json without stop_time_unix
+        stops[name] = max(stops.get(name, 0.0), max(st.st_mtime for st in stats))
+        bag = {"name": sub, "bytes": total, "files": len(files),
+               "metadata": any(f.name == "metadata.yaml" for f in files),
+               "recording": now - max(st.st_mtime for st in stats) < 60
+                            and not closed(d, files, stats),
+               "dest_bytes": 0, "on_drive": ""}
+        if dest:
+            there = 0
+            for f, st in zip(files, stats):
+                try:
+                    there += min(os.path.getsize(os.path.join(dest, name, sub, f.name)), st.st_size)
+                except OSError:
+                    pass
+            bag["dest_bytes"] = there
+            if there >= total and total > 0:
+                done = os.path.isfile(os.path.join(dest, name, sub + ".sha256"))
+                bag["on_drive"] = "verified" if done else "copied"
+            elif there > 0:
+                bag["on_drive"] = "partial"
+        bags.append(bag)
+    if bags:
+        runs.append({"name": name, "mtime": os.path.getmtime(run),
+                     "bytes": sum(b["bytes"] for b in bags),
+                     "dest_bytes": sum(b["dest_bytes"] for b in bags),
+                     "recording": any(b["recording"] for b in bags),
+                     "on_drive": state(bags), "bags": bags,
+                     "output": run_output(run, subs, name, stops.get(name))})
+runs.sort(key=lambda r: -r["mtime"])
+print(json.dumps({"root": root, "runs": runs}))
+"""
+
+
+def bag_scan_command(root: str, dest: str | None = None) -> str:
+    """List the bags under ``root``; with ``dest`` (``machine_dir(...)``), also
+    what of each is already on the drive."""
+    cmd = f"python3 -c {shlex.quote(BAG_SCAN)} {shlex.quote(root)}"
+    return f"{cmd} {shlex.quote(dest)}" if dest else cmd
+
+
+def parse_bag_scan(rc: int, out: str, err: str = "") -> dict:
+    text = (out or "").strip()
+    start = text.rfind('{"root"')
+    if rc != 0 or start < 0:
+        raise RuntimeError(
+            f"bag listing failed (rc {rc}): {(err or out or '').strip()[-300:]}"
+        )
+    data = json.loads(text[start:])
+    if data.get("error"):
+        # no output root yet on this machine: nothing recorded, not a failure
+        return {"root": data.get("root", ""), "runs": [], "note": data["error"]}
+    runs = [
+        r
+        for r in data.get("runs") or []
+        if valid_run(r.get("name"))
+        and all(valid_bag(b.get("name")) for b in r.get("bags") or [])
+    ]
+    for r in runs:
+        o = r.get("output")
+        if o and not (valid_run(o.get("name")) and isinstance(o.get("path"), str)):
+            r["output"] = None
+    return {"root": data.get("root", ""), "runs": runs}
+
+
+# -------------------------------------------------------------------- copy
+RSYNC_PROGRESS = re.compile(r"([\d,]+)\s+(\d+)%\s+(\S+/s)")
+
+
+def parse_progress(line: str) -> tuple[int, float, str] | None:
+    """(bytes done, percent, rate) from an ``rsync --info=progress2`` line."""
+    m = RSYNC_PROGRESS.search(line)
+    if not m:
+        return None
+    return int(m.group(1).replace(",", "")), float(m.group(2)), m.group(3)
+
+
+def machine_dir(write_dir: str, machine: str) -> str:
+    """The folder on a drive that holds one machine's bags."""
+    return "/".join([write_dir.rstrip("/"), machine])
+
+
+def dest_dir(write_dir: str, machine: str, run: str, bag: str) -> str:
+    """Where a bag lands on the drive: ``<write dir>/<machine>/<run>/<bag>``."""
+    return "/".join([machine_dir(write_dir, machine), run, bag])
+
+
+OUTPUT_DIR = "run_output"
+
+
+def output_dest_dir(write_dir: str, machine: str, run: str, name: str) -> str:
+    """Where a trial's run output lands: ``<write dir>/<machine>/<run>/run_output/<name>``."""
+    return "/".join([machine_dir(write_dir, machine), run, OUTPUT_DIR, name])
+
+
+def copy_tree_command(src: str, dst: str) -> str:
+    """Copy the folder tree ``src`` to ``dst`` and flush it.  No ``--append``:
+    the stack may have rewritten a file since an earlier copy, so a file whose
+    size or time differs is written again whole (these folders are small next
+    to a bag).  Symbolic links are not followed or copied."""
+    s, d = shlex.quote(src.rstrip("/") + "/"), shlex.quote(dst.rstrip("/") + "/")
+    return (
+        f"mkdir -p {d} && "
+        f"rsync -rt --no-links --no-inc-recursive --info=progress2,name0 {s} {d} && "
+        f"sync -f {d}"
+    )
+
+
+def copy_command(src: str, dst: str) -> str:
+    """Copy bag directory ``src`` to ``dst`` on the same machine and flush it.
+
+    ``--append`` is what makes an interrupted copy resumable: a file that is
+    already partly on the drive continues where it stopped instead of starting
+    over (a local rsync otherwise rewrites the whole file).  It trusts the part
+    that is there; the hash check after the copy is what proves it.  ``-rt`` and
+    not ``-a``: an exFAT drive has no owners or permissions to preserve.
+    """
+    s, d = shlex.quote(src.rstrip("/") + "/"), shlex.quote(dst.rstrip("/") + "/")
+    return (
+        f"mkdir -p {d} && "
+        f"rsync -rt --append --no-inc-recursive --info=progress2,name0 {s} {d} && "
+        f"sync -f {d}"
+    )
+
+
+# Hash every file of a bag and of its copy and compare.  Source and copy are
+# read at the same time, one thread each, so the check takes as long as reading
+# the slower of the two once (SHA-256 runs at ~2.5 GB/s a core on the robots'
+# CPUs: the drive is the limit, not the hash).  The copy is dropped from the
+# page cache first, so what is hashed is what is on the drive, not what the
+# kernel still holds in memory from writing it.
+# stdout: "P <bytes done> <bytes total> <MB/s>" progress lines, "DIFF <file>:
+# <why>" for each mismatch, then "VERIFIED <files> <bytes> <seconds>" (exit 0)
+# or "FAILED <mismatches>" (exit 3).  On success the hashes are written to the
+# manifest (sha256sum format) next to the copy.  Files are taken from the whole
+# tree under the source (a bag is flat; a run output folder is not).
+# A fifth argument "lenient" is for a folder the stack may still be writing: a
+# file that differs is reported (DIFF, then "CHANGED <n>") but the check still
+# ends VERIFIED, and the manifest holds the hashes of what is on the drive.
+VERIFY = r"""
+import hashlib, os, sys, threading, time
+src, dst, manifest = sys.argv[1], sys.argv[2], sys.argv[3]
+lenient = len(sys.argv) > 4 and sys.argv[4] == "lenient"
+CHUNK = 16 << 20
+names = []
+for d_, dirs_, files_ in os.walk(src):
+    dirs_[:] = [x for x in dirs_ if not os.path.islink(os.path.join(d_, x))]
+    for f_ in files_:
+        p_ = os.path.join(d_, f_)
+        if os.path.isfile(p_) and not os.path.islink(p_):
+            names.append(os.path.relpath(p_, src))
+names.sort()
+total = sum(os.path.getsize(os.path.join(src, n)) for n in names)
+done = [0]
+lock = threading.Lock()
+t0 = time.time()
+def digest(path, count, out, key):
+    h = hashlib.sha256()
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            if not count:
+                try:
+                    os.fsync(fd)
+                except OSError:
+                    pass
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_SEQUENTIAL)
+            while True:
+                b = os.read(fd, CHUNK)
+                if not b:
+                    break
+                h.update(b)
+                if count:
+                    with lock:
+                        done[0] += len(b)
+        finally:
+            os.close(fd)
+        out[key] = h.hexdigest()
+    except OSError as e:
+        out[key] = "error: %s" % e
+stop = threading.Event()
+def report():
+    while not stop.wait(0.5):
+        with lock:
+            d = done[0]
+        print("P %d %d %.0f" % (d, total, d / 1e6 / max(time.time() - t0, 1e-3)), flush=True)
+threading.Thread(target=report, daemon=True).start()
+bad, sums = 0, []
+for n in names:
+    s, d = os.path.join(src, n), os.path.join(dst, n)
+    try:
+        if os.path.getsize(d) != os.path.getsize(s):
+            print("DIFF %s: size %d on the drive, %d on the robot" % (n, os.path.getsize(d), os.path.getsize(s)), flush=True)
+            bad += 1
+            with lock:
+                done[0] += os.path.getsize(s)
+            continue
+    except OSError as e:
+        print("DIFF %s: %s" % (n, e), flush=True)
+        bad += 1
+        continue
+    out = {}
+    a = threading.Thread(target=digest, args=(s, True, out, "s"))
+    b = threading.Thread(target=digest, args=(d, False, out, "d"))
+    a.start(); b.start(); a.join(); b.join()
+    if out["s"] != out["d"] or out["s"].startswith("error"):
+        print("DIFF %s: sha256 %s on the robot, %s on the drive" % (n, out["s"], out["d"]), flush=True)
+        bad += 1
+        if lenient and not out["d"].startswith("error"):
+            sums.append("%s  %s" % (out["d"], n))
+    else:
+        sums.append("%s  %s" % (out["s"], n))
+stop.set()
+if bad and not lenient:
+    print("FAILED %d" % bad, flush=True)
+    sys.exit(3)
+with open(manifest, "w") as f:
+    f.write("\n".join(sums) + "\n")
+    f.flush()
+    os.fsync(f.fileno())
+if bad:
+    print("CHANGED %d" % bad, flush=True)
+print("VERIFIED %d %d %.1f" % (len(names) - bad, total, time.time() - t0), flush=True)
+"""
+
+VERIFY_PROGRESS = re.compile(r"^P (\d+) (\d+) (\d+)$")
+VERIFY_DONE = re.compile(r"^VERIFIED (\d+) (\d+) ([\d.]+)$")
+
+
+def manifest_path(dst: str) -> str:
+    """The hash manifest of the copy at ``dst``: ``<dst>.sha256``, beside it."""
+    return dst.rstrip("/") + ".sha256"
+
+
+def verify_command(src: str, dst: str, lenient: bool = False) -> str:
+    """Hash ``src`` and its copy ``dst`` and compare (see ``VERIFY``)."""
+    args = " ".join(
+        shlex.quote(a) for a in (src.rstrip("/"), dst.rstrip("/"), manifest_path(dst))
+    )
+    return f"python3 -c {shlex.quote(VERIFY)} {args}" + (" lenient" if lenient else "")
+
+
+def parse_verify(line: str) -> tuple[str, tuple]:
+    """A VERIFY output line as (kind, values): ``("progress", (done, total, mbps))``,
+    ``("done", (files, bytes, seconds))``, ``("diff", (text,))`` or ``("other", (line,))``."""
+    m = VERIFY_PROGRESS.match(line)
+    if m:
+        return "progress", (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    m = VERIFY_DONE.match(line)
+    if m:
+        return "done", (int(m.group(1)), int(m.group(2)), float(m.group(3)))
+    if line.startswith("DIFF "):
+        return "diff", (line[5:],)
+    if line.startswith("CHANGED "):
+        return "changed", (line[8:],)
+    return "other", (line,)
+
+
+def remove_command(src: str) -> str:
+    return f"rm -rf -- {shlex.quote(src.rstrip('/'))}"
+
+
+def prune_command(run_dir: str) -> str:
+    """Remove a run folder if nothing is left in it (``rmdir`` refuses a folder
+    that still holds anything), so a moved or deleted trial leaves no empty
+    folder behind.  Always exits 0."""
+    return f"rmdir -- {shlex.quote(run_dir.rstrip('/'))} 2>/dev/null; true"
+
+
+# ---------------------------------------------------------- running things
+def run_cmd(svc, m: dict, cmd: str, timeout: float) -> tuple[int, str, str]:
+    """Run ``cmd`` on machine ``m``: (rc, stdout, stderr)."""
+    if m.get("local"):
+        try:
+            p = subprocess.run(
+                ["bash", "-c", cmd],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return 124, "", f"timed out after {timeout}s"
+        return p.returncode, p.stdout, p.stderr
+    return svc.helpers.ssh_cmd(m["user"], m["ip"], cmd, timeout=timeout)
+
+
+def stream_cmd(job, m: dict, cmd: str, on_line) -> int:
+    """Run ``cmd`` on ``m``, each output line (split on CR and LF, so rsync's
+    progress updates arrive as they happen) to ``on_line``; cancellable."""
+    import queue
+
+    if m.get("local"):
+        argv = ["bash", "-c", cmd]
+    else:
+        # a tty, so cancelling (killing ssh) hangs up the remote rsync too
+        argv = ["ssh", "-tt", *SSH_OPTS, f"{m['user']}@{m['ip']}", cmd]
+    p = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    lines: queue.Queue = queue.Queue()
+
+    def read():
+        buf = b""
+        while True:
+            chunk = p.stdout.read1(4096)
+            if not chunk:
+                break
+            buf += chunk
+            parts = re.split(rb"[\r\n]+", buf)
+            buf = parts.pop()
+            for part in parts:
+                if part.strip():
+                    lines.put(part.decode("utf-8", "replace").strip())
+        if buf.strip():
+            lines.put(buf.decode("utf-8", "replace").strip())
+        lines.put(None)
+
+    threading.Thread(target=read, daemon=True).start()
+    try:
+        while True:
+            try:
+                line = lines.get(timeout=0.5)
+            except queue.Empty:
+                job.check_cancelled()
+                continue
+            if line is None:
+                break
+            on_line(line)
+            job.check_cancelled()
+    except BaseException:
+        p.kill()
+        p.wait()
+        raise
+    return p.wait()
+
+
+def human(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"

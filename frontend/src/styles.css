@@ -5269,3 +5269,55 @@ input[type="checkbox"] {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* Drives page */
+.drive-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.drive-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.drive-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.bag-picker {
+  margin-top: 10px;
+}
+/* a run output badge carries a folder name: let it wrap instead of running out of the card */
+.bag-picker .badge {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.bag-picker tr.clickable {
+  cursor: pointer;
+}
+.bag-picker th.num,
+.bag-picker td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.bag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.bag-actions .btn-primary {
+  margin-left: auto;
+}
+.drives-offline {
+  margin-top: 12px;
+}

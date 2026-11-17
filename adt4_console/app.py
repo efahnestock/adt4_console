@@ -185,7 +185,6 @@ def build_services(
         hub,
         available=lambda: svc.ros.available,
         error=lambda: svc.ros.error,
-        default_robot=lambda: (settings.robots or fleet.robots() or ["euclid"])[0],
     )
     ros.manipulation = svc.manipulation
     from .planner_state import PlannerState
@@ -421,6 +420,7 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
     from .routes import (
         change_detection,
         chat,
+        drives,
         edit,
         fleet,
         geo,
@@ -443,7 +443,8 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
     )
 
     for mod in (fleet, launch, jobs, network, maps, graph, plan, live, chat, sam3, teleop, terminal,
-                geo, mission, quad, edit, change_detection, scene_repair, manipulation, planner_state, ws):  # fmt: skip
+                geo, mission, quad, edit, change_detection, scene_repair, manipulation, planner_state,
+                drives, ws):  # fmt: skip
         app.include_router(mod.router)
     app.include_router(live.robots_router)
 
