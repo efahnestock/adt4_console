@@ -548,3 +548,39 @@ def test_snapshot_restore_job_on_scratch(scratch):
     assert regs[0]["members"].get("Object") == 1
     # history survived; the restore is not undoable, the edits before it still list
     assert client.get(f"/api/edit/{S}/history").json()["history"]
+
+
+def test_edits_made_elsewhere_fold_in_as_one_delta(penn):
+    """Two graph_edit commits by another process (another console, plan repair)
+    land between two polls: each left a GraphMutation record naming its nodes, so
+    the poll folds both into the loaded map as one delta -- what a full reload
+    gives -- instead of reloading it."""
+    from adt4_console.graph_service import Neo4jSource, canonical_symbol
+
+    _, svc, _ = penn
+    src = svc.graph.get(SRC)
+    src.loaded()  # a viewer holds the map
+    assert src.poll_change() == (False, None)
+    v0 = src.version()
+    prov = {"source": "test", "via": "elsewhere"}
+    a = ge.apply_edit(src.db(), [{"op": "create_node", "layer": "Object", "class": "map edit test crate",
+                                  "pos": [FAR + 1.0, FAR + 1.0, 0.0]}], provenance=prov)  # fmt: skip
+    sym = a["affected"][0]
+    b = ge.apply_edit(src.db(), [{"op": "update_node", "symbol": sym,
+                                  "set": {"pos": [FAR + 2.0, FAR + 1.0, 0.0]}}], provenance=prov)  # fmt: skip
+    assert b["map_version"] == a["map_version"] + 1
+    changed, delta = src.poll_change()
+    assert changed and delta is not None, "reloaded instead of folding in"
+    d, v = delta
+    assert v == v0 + 1 and canonical_symbol(sym) in [r.sym for r in d.upserts]
+    full = Neo4jSource("full", EDIT_URI, *NEO4J_AUTH)
+    try:
+        ref = full.loaded()
+    finally:
+        full.close()
+    got = src.loaded()
+    assert got.version == v
+    assert {k: r.key() for k, r in got.records.items()} == {
+        k: r.key() for k, r in ref.records.items()
+    }
+    assert got.edges == ref.edges and got.labelspaces == ref.labelspaces

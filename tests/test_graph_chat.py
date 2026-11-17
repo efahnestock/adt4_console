@@ -89,6 +89,7 @@ def test_file_source_version_bumps_on_rewrite(gclient, run_dir):
     svc = gclient.app.state.services
     src = svc.graph.get("file:syn")
     assert src.version() == 1
+    loaded = src.loaded()  # a viewer holds v1: the push carries the difference
     dsg_file = run_dir / "hydra" / "backend" / "dsg.json"
     st = dsg_file.stat()
     os.utime(dsg_file, (st.st_atime, st.st_mtime + 5))
@@ -96,7 +97,17 @@ def test_file_source_version_bumps_on_rewrite(gclient, run_dir):
     svc.hub.subscribe(client, ["graph/"])
     svc.graph.poll_once()
     assert src.version() == 2
-    assert any(t == "graph/file:syn/version" for t, _ in client.queue)
+    import time
+
+    t0 = time.time()  # reloaded and diffed in a thread before the push
+    while not client.queue and time.time() - t0 < 5:
+        time.sleep(0.02)
+    ((t, frame),) = [(t, f) for t, f in client.queue if t == "graph/file:syn/version"]
+    msg = msgpack.unpackb(frame, raw=False)["data"]
+    assert msg["version"] == 2 and msg["base"] == loaded.version == 1
+    assert (
+        msg["delta"]["del"] == [] and msg["delta"]["up"]["ids"] == []
+    )  # same contents
 
 
 def test_register_map(client, run_dir):

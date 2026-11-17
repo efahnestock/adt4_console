@@ -56,10 +56,7 @@ def add_object(src, label: str, pos, *, size_m: float = 1.5, image_path: str | N
             **{"sym": sym, "p": str(image_path), "t": stamp_ns, "score": score,
                         "bb": [int(v) for v in bbox_2d] if bbox_2d else None, "source": source},
         )  # fmt: skip
-    try:
-        src.invalidate()
-    except Exception:  # noqa: BLE001
-        pass
+    # the caller folds the new object into the loaded map (GraphService.apply_change)
     return {
         "sym": sym,
         "map_version": out.get("map_version"),

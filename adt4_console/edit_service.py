@@ -155,11 +155,7 @@ class EditService:
                 src_id, reason, out.get("map_version"), out.get("affected")
             )
         except Exception:  # noqa: BLE001
-            try:
-                self.graph.get(src_id).invalidate()
-            except Exception:  # noqa: BLE001
-                pass
-            self.graph.notify_version(src_id, reason)
+            self.graph.refresh(src_id, reason)
         if self.hub is not None:
             self.hub.publish(f"edit/{src_id}", {"kind": "commit", "mutation_id": out["mutation_id"],
                                                 "revision": out["revision"], "summary": out["summary"],
@@ -399,8 +395,7 @@ class EditService:
                 return False
             job.log("info", f"Restoring {snap_id} into {src.uri} ...")
             counts = ge.restore_snapshot(db, d, log=lambda m: job.log("dim", m))
-            src.invalidate()
-            self.graph.notify_version(src.id, "snapshot restore")
+            self.graph.refresh(src.id, "snapshot restore")
             if self.hub is not None:
                 self.hub.publish(f"edit/{src.id}", {"kind": "restore", "id": snap_id})
             job.log("ok", f"Restored: {counts}")
