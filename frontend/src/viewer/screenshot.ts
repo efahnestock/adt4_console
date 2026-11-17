@@ -94,8 +94,11 @@ export function compositeLabels(ctx: CanvasRenderingContext2D, canvas: HTMLCanva
   return n;
 }
 
-/** Metres per output pixel at the orbit target (perspective camera). */
+/** Metres per output pixel at the orbit target (perspective camera), or anywhere
+ *  (orthographic: the top view). */
 function metresPerPixel(t: CaptureTarget, heightPx: number): number | null {
+  const ortho = t.camera as THREE.OrthographicCamera;
+  if (ortho.isOrthographicCamera) return (ortho.top - ortho.bottom) / ortho.zoom / heightPx;
   const cam = t.camera as THREE.PerspectiveCamera;
   if (!cam.isPerspectiveCamera) return null;
   const target = new THREE.Vector3();

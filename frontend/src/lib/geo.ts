@@ -49,6 +49,30 @@ export function liveAnchorText(l: LiveAnchorInfo): string {
   ].join(" · ");
 }
 
+/** Whether ``layer`` has imagery at ``at`` ([lon, lat]): live layers and layers
+ *  without a box (the manifest does not say) are taken to. */
+export function layerCovers(layer: TileLayer, at: [number, number] | null | undefined): boolean {
+  const bb = layer.bbox_lonlat;
+  if (!at || layer.live || !bb) return true;
+  return at[0] >= bb[0] && at[0] <= bb[2] && at[1] >= bb[1] && at[1] <= bb[3];
+}
+
+/** The imagery layer to draw: the viewer's pick when the server has it, else the
+ *  highest-priority layer (an orthophoto flown over the site: priority > 0) that
+ *  covers ``at`` (the map's centre, [lon, lat]), else the manifest's default,
+ *  else live Esri, else the first. */
+export function pickLayer(layers: TileLayer[], id: string | null | undefined, at?: [number, number] | null): TileLayer | undefined {
+  const picked = id ? layers.find(l => l.id === id) : undefined;
+  if (picked) return picked;
+  const ranked = layers.filter(l => (l.priority ?? 0) > 0 && layerCovers(l, at)).sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+  return ranked[0] ?? layers.find(l => l.default) ?? layers.find(l => l.id === "esri_world_imagery") ?? layers[0];
+}
+
+/** The map's centre (the point the anchor's affine is fitted around) as [lon, lat]. */
+export function geoCenter(g: GeoInfo | null | undefined): [number, number] | null {
+  return g ? mapToLonLat(g, g.affine.center[0], g.affine.center[1]) : null;
+}
+
 export interface TileLayer {
   id: string;
   attribution: string;
@@ -58,6 +82,12 @@ export interface TileLayer {
   cached: number | null;
   live: boolean;
   default: boolean; // the manifest's pick for the map's ground
+  /** "ortho" (an orthophoto, e.g. flown by the quad) or "satellite" */
+  kind?: string;
+  /** with no layer picked, the highest priority > 0 covering the map wins over ``default`` */
+  priority?: number;
+  /** the layer the server serves where this one has no tile of its own */
+  fallback?: string | null;
 }
 
 const apply = (m: number[][], a: number, b: number): [number, number] => [m[0][0] * a + m[0][1] * b + m[0][2], m[1][0] * a + m[1][1] * b + m[1][2]];

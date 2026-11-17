@@ -24,6 +24,7 @@ import {
   exportAllUrl,
   importMissionFiles,
   fitMission,
+  imageryLayer,
   MAX_AGENTS,
   missionRoutes,
   openMission,
@@ -701,7 +702,8 @@ function MissionFileButtons({current}: {current: Mission | null}) {
 function MissionPanelBody() {
   const plannerOnly = useContext(PlannerOnly);
   const s = useMission();
-  const {current, preview, run, list, error, geo, layers, satellite, satOpacity} = s;
+  const {current, preview, run, list, error, geo, layers, satellite, satOpacity, satLayer} = s;
+  const shownLayer = imageryLayer({layers, satLayer, geo});
   const grid = useViewStyle(v => v.grid);
   const patchStyle = useViewStyle(v => v.patch);
   const [omniText, setOmniText] = useState("");
@@ -929,7 +931,7 @@ function MissionPanelBody() {
             <div className="small muted">
               {geo.live ? "Estimated" : "Saved"} GPS anchor {utmZone(geo.anchor.epsg)}
               {!geo.live && geo.anchor.rms != null ? `, fit RMS ${geo.anchor.rms.toFixed(2)} m` : ""} · {layers.map(l => `${l.id}${l.cached ? ` (${l.cached} tiles)` : ""}${l.live ? " live" : ""}`).join(", ") || "no tiles cached"}
-              {layers[0]?.attribution ? ` · imagery © ${layers[0].attribution}` : ""}
+              {shownLayer?.attribution ? ` · imagery © ${shownLayer.attribution}` : ""}
             </div>
             <CursorReadout />
           </>
