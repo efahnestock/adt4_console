@@ -149,6 +149,21 @@ export function clampWidths(leftW: number, rightW: number, total: number, leftOp
   return {leftW: l, rightW: r};
 }
 
+/** Side panels' widths while they lie over the map (<= 900 px, styles.css:
+ *  .vleft 280 px, .vright min(360 px, 92vw)). */
+export const OVERLAY_LEFT_W = 280;
+export const overlayRightW = (vw: number) => Math.min(360, Math.round(0.92 * vw));
+/** Below this much visible map the two map toolbars do not fit side by side. */
+export const TIGHT_MAP_W = 560;
+
+/** The map width the toolbars can use: the canvas, minus a side panel that
+ *  lies over it (tablets <= 900 px wide). Side-by-side panels already shrink
+ *  the canvas. */
+export function visibleMapWidth(canvasW: number, overlayPanels: boolean, leftOpen: boolean, rightOpen: boolean, vw = typeof window === "undefined" ? canvasW : window.innerWidth): number {
+  if (!overlayPanels) return canvasW;
+  return Math.max(0, canvasW - (leftOpen ? OVERLAY_LEFT_W : 0) - (rightOpen ? overlayRightW(vw) : 0));
+}
+
 /** Keep a window fully inside a `bw`×`bh` area: shrink it if it is larger than
  *  the area, then move it in. A minimized window only needs its title bar in. */
 export function clampRect(r: WinRect, bw: number, bh: number, minimized = false): WinRect {
