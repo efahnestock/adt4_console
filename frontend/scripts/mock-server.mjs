@@ -484,6 +484,238 @@ route("POST", "/api/network/iperf", async (q, r) => {
   })});
 });
 
+// --- trials (API.md §23): a recording on every machine, flags, stop. hamilton
+// drops off the radio 20-40 s into a trial; lewis has two topics nobody publishes.
+const TRIAL_POLL_S = 2;
+const trialRates = {euclid: 86e6, hamilton: 92e6, lewis: 41e6, willow: 2e4};
+const trialFree = {euclid: 88e9, hamilton: 201e9, lewis: 33e9, willow: 412e9};
+let trial = null;
+let lastTrial = null;
+const trialEvents = [];
+const trialPayload = () => ({now: now(), poll_s: TRIAL_POLL_S, active: trial, last: lastTrial});
+const trialPush = () => broadcast("trial/state", trialPayload());
+const trialEvent = (type, f = {}) => {
+  const ev = {t: now(), iso: new Date().toISOString(), type, ...f};
+  trialEvents.push(ev);
+  if (trial) trial.events++;
+  return ev;
+};
+route("GET", "/api/trials", (q, r) => json(r, 200, trialPayload()));
+route("GET", "/api/trials/events", (q, r) => json(r, 200, {events: trialEvents.slice(-50)}));
+route("GET", "/api/trials/preflight", (q, r) =>
+  setTimeout(() => json(r, 200, {
+    updated: now(),
+    machines: machines.filter(m => m.online).map(m => {
+      const rate = lastTrial ? trialRates[m.name] : null;
+      return {name: m.name, role: m.role, ready: true, error: null, free_bytes: trialFree[m.name], total_bytes: 468e9,
+        rate_bps: rate, minutes: rate ? Math.round(trialFree[m.name] / rate / 6) / 10 : null,
+        notes: m.name === "hamilton" ? ["1 other recorder(s) running (the stack's recording window?)"] : []};
+    }),
+  }), 400),
+);
+route("POST", "/api/trials/start", async (q, r) => {
+  const b = await readBody(q);
+  if (!String(b.description ?? "").trim()) return json(r, 400, {detail: "a short mission description is required"});
+  if (trial) return json(r, 409, {detail: `${trial.trial_id} is still ${trial.state}`});
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
+  const slug = b.description.toLowerCase().match(/[a-z0-9]+/g)?.join("-").slice(0, 40) ?? "trial";
+  const id = `trial_${stamp}_${slug}`;
+  const names = b.machines ?? machines.filter(m => m.online).map(m => m.name);
+  trial = {trial_id: id, description: b.description.trim(), state: "starting", started: now(), stopped: null, events: 0, flags: 0, log_error: null,
+    console_dir: `/home/rrg/adt4_output/${id}/console`,
+    machines: Object.fromEntries(names.map(n => [n, {name: n, role: machines.find(m => m.name === n)?.role, state: "starting", message: "starting", dir: null, bytes: null, rate_bps: null,
+      free_bytes: trialFree[n], minutes_left: null, last_seen: null, warnings: [], clock_offset_s: null, topic_check: null}]))};
+  trialEvents.length = 0;
+  trialEvent("trial_start", {description: trial.description, machines: names});
+  json(r, 200, trialPayload());
+  trialPush();
+  setTimeout(() => {
+    if (!trial) return;
+    for (const m of Object.values(trial.machines))
+      Object.assign(m, {state: "recording", message: "recording", dir: `/home/swarm/adt4_output/${id}/${m.name}`, bytes: 4096, last_seen: now(), clock_offset_s: m.name === "lewis" ? 0.31 : 0.02,
+        warnings: m.name === "hamilton" ? ["1 other recorder(s) also running on this machine"] : []});
+    trial.state = "recording";
+    trialPush();
+  }, 2500);
+  setTimeout(() => {
+    if (trial?.machines.lewis) trial.machines.lewis.topic_check = {ok: true, topics: 20, published: 18, missing: ["/lewis/fix", "/lewis/rtcm"]};
+    trialPush();
+  }, 6000);
+});
+setInterval(() => {
+  if (!trial || trial.state !== "recording") return;
+  const age = now() - trial.started;
+  for (const m of Object.values(trial.machines)) {
+    const out = m.name === "hamilton" && age > 20 && age < 40;
+    if (out) {
+      if (m.state === "recording") Object.assign(m, {state: "unreachable", message: "no answer over ssh; last known: recording"});
+      continue;
+    }
+    if (m.state !== "recording" && m.state !== "unreachable") continue;
+    const rate = trialRates[m.name] ?? 5e7;
+    m.state = "recording";
+    m.message = "recording";
+    m.bytes = (m.bytes ?? 0) + rate * TRIAL_POLL_S;
+    m.rate_bps = rate;
+    m.free_bytes = Math.max(0, trialFree[m.name] - m.bytes);
+    m.minutes_left = Math.round(m.free_bytes / rate / 6) / 10;
+    m.last_seen = now();
+    m.warnings = (m.warnings ?? []).filter(w => !w.startsWith("disk:"));
+    if (m.minutes_left < 10) m.warnings.push(`disk: ${(m.free_bytes / 1e9).toFixed(1)} GB free, about ${Math.round(m.minutes_left)} min at this rate`);
+  }
+  trialPush();
+}, TRIAL_POLL_S * 1000);
+route("POST", "/api/trials/flag", async (q, r) => {
+  const b = await readBody(q);
+  if (!trial) return json(r, 409, {detail: "no trial is recording: start one to add flags"});
+  if (!String(b.text ?? "").trim()) return json(r, 400, {detail: "an empty flag"});
+  trial.flags++;
+  const ev = trialEvent("flag", {text: b.text.trim(), elapsed_s: Math.round((now() - trial.started) * 10) / 10});
+  json(r, 200, {ok: true, event: ev});
+  trialPush();
+});
+route("POST", "/api/trials/stop", async (q, r) => {
+  if (!trial) return json(r, 409, {detail: "no trial is recording"});
+  trial.state = "stopping";
+  for (const m of Object.values(trial.machines)) if (m.state !== "failed") Object.assign(m, {state: "stopping", message: "closing the bag"});
+  json(r, 200, trialPayload());
+  trialPush();
+  setTimeout(() => {
+    if (!trial) return;
+    for (const m of Object.values(trial.machines))
+      Object.assign(m, {state: "stopped", message: "stopped", rate_bps: null, warnings: m.name === "lewis" ? ["2 of 20 topics recorded no message"] : []});
+    Object.assign(trial, {state: "stopped", stopped: now()});
+    trialEvent("trial_end");
+    lastTrial = trial;
+    trial = null;
+    trialPush();
+  }, 2000);
+});
+route("POST", "/api/trials/close", (q, r) => json(r, 409, {detail: "stop the trial first"}));
+route("POST", "/api/trials/machines/([^/]+)/start", (q, r) => json(r, 200, trialPayload()));
+
+// --- USB bag drives (API.md §22): euclid has a fast drive with an interrupted copy
+// on it, hamilton one on a USB 2.0 link, lewis no helper ---
+const GBY = 1e9;
+const driveState = {
+  euclid: {
+    installed: true,
+    drives: [{name: "dcist_ssd3", label: "dcist_ssd3", uuid: "7DFF-FFAA", fstype: "exfat", model: "Extreme 55AE", mountpoint: "/mnt/bag_drives/dcist_ssd3", write_dir: "/mnt/bag_drives/dcist_ssd3", mounted: true, managed: true, size_bytes: 2000 * GBY, free_bytes: 1620 * GBY, usb_speed_mbps: 10000, slow_link: false, error: "", copy_job: null}],
+    runs: [
+      {name: "nov13_b45_field_v3", mtime: now() - 20, bytes: 6.1 * GBY, dest_bytes: 0, recording: true, on_drive: "", output: {name: "nov13_afternoon_test_v3", path: "/home/swarm/adt4_output/nov13_afternoon_test_v3", bytes: 6800000, files: 240, dest_bytes: 0, on_drive: "", live: true, stack: true, confirmed: true, missing: false, note: ""}},
+      {name: "nov13_b45_field_v2", mtime: now() - 5400, bytes: 77.5 * GBY, dest_bytes: 33.2 * GBY, recording: false, on_drive: "partial", output: {name: "ethan-try-to-create-issue-with-nathan-verbose", path: "/home/swarm/adt4_output/ethan-try-to-create-issue-with-nathan-verbose", bytes: 799000000, files: 240, dest_bytes: 0, on_drive: "", live: false, stack: false, confirmed: false, missing: false, note: "every file in it was written after the trial stopped, and the trial recorded no run id: it may be a later launch's output"}},
+      {name: "nov13_b45_field_v1", mtime: now() - 9000, bytes: 36.2 * GBY, dest_bytes: 36.2 * GBY, recording: false, on_drive: "verified", output: {name: "nov13_morning_map", path: "/home/swarm/adt4_output/nov13_morning_map", bytes: 1060000000, files: 240, dest_bytes: 0, on_drive: "", live: false, stack: false, confirmed: true, missing: false, note: ""}},
+      {name: "nov11_b45_v3_map_images_v7", mtime: now() - 190000, bytes: 21.8 * GBY, dest_bytes: 0, recording: false, on_drive: ""},
+      {name: "nov11_b45_v3_map_images_v5", mtime: now() - 200000, bytes: 3.3 * GBY, dest_bytes: 0, recording: false, on_drive: ""},
+    ],
+  },
+  hamilton: {
+    installed: true,
+    drives: [{name: "a2874190-9b4d-4d28-b9da-4b7eaa5a91a7", label: "", uuid: "a2874190-9b4d-4d28-b9da-4b7eaa5a91a7", fstype: "ext4", model: "Extreme 55AE", mountpoint: "/mnt/bag_drives/a2874190-9b4d-4d28-b9da-4b7eaa5a91a7", write_dir: "/mnt/bag_drives/a2874190-9b4d-4d28-b9da-4b7eaa5a91a7/bags", mounted: true, managed: true, size_bytes: 1968 * GBY, free_bytes: 1785 * GBY, usb_speed_mbps: 480, slow_link: true, error: "", copy_job: null}],
+    runs: [
+      {name: "nov13_b45_field_v2", mtime: now() - 5400, bytes: 47 * GBY, dest_bytes: 0, recording: false, on_drive: ""},
+      {name: "nov13_b45_field_v1", mtime: now() - 9000, bytes: 30.6 * GBY, dest_bytes: 0, recording: false, on_drive: ""},
+    ],
+  },
+  lewis: {installed: false, drives: [], runs: [], error: "bag-drive is not installed on this machine"},
+  willow: {installed: true, drives: [], runs: []},
+};
+const driveOf = (machine, name) => driveState[machine]?.drives.find(d => d.name === name);
+const copyJob = d => (d.copy_job && ["running", "waiting"].includes(jobs.get(d.copy_job)?.state) ? d.copy_job : null);
+route("GET", "/api/drives", (q, r) =>
+  json(r, 200, {
+    updated: now(),
+    machines: (EMPTY ? [] : machines).map(m => {
+      const st = driveState[m.name] ?? {installed: true, drives: []};
+      return {name: m.name, role: m.role, online: m.online, installed: m.online ? st.installed : null, drives: m.online ? st.drives.map(d => ({...d, copy_job: copyJob(d)})) : [], error: m.online ? (st.error ?? "") : ""};
+    }),
+  }),
+);
+route("GET", "/api/drives/bags", (q, r, m, url) => {
+  const machine = url.searchParams.get("machine");
+  const st = driveState[machine];
+  if (!st) return json(r, 404, {detail: `unknown machine ${machine}`});
+  const drive = url.searchParams.get("drive");
+  const runs = st.runs.map(x => ({...x, ...(drive ? {} : {dest_bytes: 0, on_drive: ""}), bags: [{name: "recorded_data", bytes: x.bytes, files: 2, metadata: true, recording: x.recording}]}));
+  setTimeout(() => json(r, 200, {machine, drive, root: "/home/swarm/adt4_output", runs}), 200);
+});
+route("POST", "/api/drives/eject", async (q, r) => {
+  const b = await readBody(q);
+  const st = driveState[b.machine];
+  const d = driveOf(b.machine, b.drive);
+  if (!d) return json(r, 404, {detail: `${b.machine} has no drive named ${b.drive}`});
+  if (copyJob(d)) return json(r, 409, {detail: `a copy to ${b.drive} is still running (${d.copy_job}): cancel it first`});
+  st.drives = st.drives.filter(x => x !== d);
+  setTimeout(() => json(r, 200, {ok: true, message: `ejected ${b.drive}: unmounted and powered down, safe to unplug`}), 600);
+});
+route("POST", "/api/drives/copy", async (q, r) => {
+  const b = await readBody(q);
+  const st = driveState[b.machine];
+  const d = driveOf(b.machine, b.drive);
+  if (!d) return json(r, 404, {detail: `${b.machine} has no drive named ${b.drive}`});
+  if (copyJob(d)) return json(r, 409, {detail: `a copy to ${b.drive} is already running (${d.copy_job})`});
+  const runs = st.runs.filter(x => (b.runs ?? []).includes(x.name));
+  const total = runs.reduce((n, x) => n + x.bytes, 0);
+  const todo = runs.reduce((n, x) => n + Math.max(0, x.bytes - x.dest_bytes), 0);
+  if (todo > d.free_bytes) return json(r, 409, {detail: `not enough space on ${b.drive}`});
+  const pct = n => (total ? (100 * n) / total : 100);
+  const speed = d.slow_link ? 0.04 * GBY : 0.6 * GBY; // bytes per mock second
+  d.copy_job = newJob("drive_copy", `Copy bags ${b.machine} -> ${b.drive}`, async c => {
+    c.log("heading", `${b.machine}: ${runs.length} bag(s), ${(total / GBY).toFixed(1)} GB -> ${b.drive} (${d.write_dir})`);
+    if (todo < total) c.log("info", `${((total - todo) / GBY).toFixed(1)} GB is already on the drive: continuing from there`);
+    if (d.slow_link) c.log("warn", `${b.drive} is on a USB 2.0 link (${d.usb_speed_mbps} Mbit/s): this will be slow.`);
+    let before = 0;
+    for (const x of runs) {
+      if (x.on_drive === "verified") {
+        c.log("ok", `${x.name}/recorded_data: already on the drive, hashes checked earlier`);
+        before += x.bytes;
+        c.progress(`${b.machine} copy`, pct(before));
+        c.progress(`${b.machine} verify`, pct(before));
+        continue;
+      }
+      c.log("info", `${x.name}/recorded_data (${(x.bytes / GBY).toFixed(1)} GB)`);
+      // sped up: 100 GB on a fast link takes ~40 s
+      while (x.dest_bytes < x.bytes) {
+        await c.sleep(250);
+        if (c.cancelled()) {
+          x.on_drive = x.dest_bytes > 0 ? "partial" : "";
+          c.log("warn", "Copy interrupted. What was written stays on the drive: start the copy again to continue from there. The drive can be ejected now.");
+          return;
+        }
+        const step = Math.min(speed, x.bytes - x.dest_bytes);
+        x.dest_bytes += step;
+        d.free_bytes -= step;
+        x.on_drive = "partial";
+        c.progress(`${b.machine} copy`, pct(before + x.dest_bytes));
+      }
+      x.on_drive = "copied";
+      c.log("dim", "copied; hashing both copies");
+      for (let k = 1; k <= 12; k++) {
+        await c.sleep(250);
+        if (c.cancelled()) return;
+        c.progress(`${b.machine} verify`, pct(before + (x.bytes * k) / 12));
+      }
+      x.on_drive = "verified";
+      before += x.bytes;
+      c.log("ok", `${x.name}/recorded_data: on the drive, SHA-256 of every file matches`);
+    }
+    const removed = [];
+    if (b.remove_source) {
+      const yes = await c.confirm({message: `Delete ${runs.length} bag(s) (${(total / GBY).toFixed(1)} GB) from ${b.machine}? The hashes of the copies on ${b.drive} match. This cannot be undone.`, yes_label: "Delete from robot", no_label: "Keep them", detail: {bags: runs.map(x => `${x.name}/recorded_data`)}});
+      if (yes) {
+        for (const x of runs) {
+          st.runs = st.runs.filter(y => y !== x);
+          removed.push(`${x.name}/recorded_data`);
+          c.log("ok", `deleted /home/swarm/adt4_output/${x.name}/recorded_data`);
+        }
+      } else c.log("info", "Bags left on the robot.");
+    }
+    c.log("ok", `Done. Eject ${b.drive} before unplugging it.`);
+    return {copied: runs.map(x => ({run: x.name, bag: "recorded_data"})), removed};
+  });
+  json(r, 200, {job_id: d.copy_job, bytes: total, to_copy: todo});
+});
+
 route("GET", "/api/maps", (q, r) => setTimeout(() => json(r, 200, EMPTY ? {machines: {}} : mapsData), 150));
 route("POST", "/api/maps/transfer", async (q, r) => {
   const b = await readBody(q);

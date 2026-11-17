@@ -97,6 +97,11 @@ def resolve_target(mission: Mission, world: World, t: Task):
                 if isinstance(o.target, list):
                     return [float(o.target[0]), float(o.target[1])], True, None, None
         return None, True, None, f"nothing in the mission searches for '{q}'"
+    from .mocks import position
+
+    xy = position(mission.planted, tgt)
+    if xy is not None:  # one of the mission's mock objects: where it was planted
+        return xy, False, tgt, None
     if world.graph is None:
         return None, False, tgt, "no scene graph to resolve symbols"
     pos = world.graph.symbol_pos(tgt)
@@ -430,10 +435,20 @@ def planted_unmatched(mission: Mission) -> list[dict]:
     if not mission.planted:
         return []
     from ..chat import _matches
+    from .mocks import position
 
     qs = search_queries(mission)
+    # a mock object a task targets by its symbol (a ground goal) is in use as an object
+    targeted = set()
+    for t in mission.tasks:
+        for v in (t.target, (t.params or {}).get("object")):
+            if isinstance(v, str) and position(mission.planted, v) is not None:
+                targeted.add(tuple(position(mission.planted, v)))
     out = []
-    for label in sorted({p.label.strip().lower() for p in mission.planted}):
+    used = {
+        p.label.strip().lower() for p in mission.planted if tuple(p.pos[:2]) in targeted
+    }
+    for label in sorted({p.label.strip().lower() for p in mission.planted} - used):
         if not any(_matches(q, label) for q in qs):
             what = (
                 f"its searches look for {', '.join(repr(q) for q in qs)}"

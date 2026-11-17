@@ -42,7 +42,13 @@ when the image search finds nothing (or fails), or the operator names an area th
 areas list or a place the map does not have, do not use something else in its place: ask one \
 short clarifying question instead and do not plan in that turn (neither propose_mission nor \
 plan_ground_mission; not even the other parts of the request), e.g. "There's no \
-area called 'courtyard': draw it on the map, or pick one of: A1, North lot." Whatever you still interpret (a synonym class, which of several matches, which agent does \
+area called 'courtyard': draw it on the map, or pick one of: A1, North lot." You cannot see the \
+operator's mouse or what they click, so never ask them to point at or click something. To show you a \
+spot they can: give its symbol (clicking a node shows it in the Inspect tab: an object O(12), a mesh place \
+T(4826), a region R(3)), draw and name an area in the Mission tab and use that name, or give map \
+coordinates [x, y] in metres. Before asking, try to work it out yourself from the map (e.g. "the end \
+of sidewalk R(2)": look up the places of R(2) and take the one farthest along it), and say which you \
+picked in `assumptions`. Whatever you still interpret (a synonym class, which of several matches, which agent does \
 what, a default you chose) goes in propose_mission's `assumptions`, one short line each; the \
 operator sees them on the card.
 Work in one go: look things up and call propose_mission in this same turn (unless you are asking \
@@ -175,11 +181,14 @@ region r3 -> r3) and robots are the agent ids in lower case:
 - (visited-object o12), (visited-place t40): some robot goes there (the planner picks which).
 - (visited-object-by spot1 o12), (visited-place-by spot1 t40), (inspected-by spot1 o12): that robot \
 does it. Use the -by forms whenever the operator says which robot does a task.
-- (safe o12): some robot inspects o12 (the console's inspect: go there and look).
+- (safe o12): some robot inspects o12 (the console's inspect: go there and look); the console plans it \
+as (or (inspected-by spot1 o12) (inspected-by husky1 o12) ...) over the mission's robots.
 - (at-object spot1 o12), (at-place spot1 t40): spot1 ends there.
 - (visited-region r3): some robot enters region r3 (its core, not a stray edge); (explored-region r3): every \
 place of r3 is visited (small regions only; use GRSTAPS-X to cover a big one). (visited-region-by spot1 r3), \
-(explored-region-by spot1 r3): that robot does it; (in-region spot1 r3): spot1 ends inside r3 (hold / block it).
+(explored-region-by spot1 r3): that robot does it; (in-region spot1 r3): spot1 ends inside r3 (hold / block it). \
+A mission area the operator drew is a region here too, by its symbol (area1, area2, ... in the Named areas list): \
+(visited-region area1), (explored-region area1) (visits about 8 m apart over it), (in-region spot1 area1) and the -by forms.
 - (object-in-place o4 t598): a robot with an arm picks o4 up, carries it and puts it down at mesh place \
 t598. Heavy objects (bags, sandbags, boxes, trash cans) are DRAGGED instead of carried; the planner \
 decides that from the object's class, so "drag the bag to X" and "bring the bag to X" are the same goal. \
@@ -204,8 +213,7 @@ it needs (a robot is not limited to one route); a husky takes part as a robot wi
 - regions: (visited-region r3) = one robot goes into r3's core; (explored-region r3) = robots \
 cover r3 at waypoints about 8 m apart (the planner splits them between robots); the -by forms pin \
 them to that robot. A mission area the operator drew is a region too, named by its symbol \
-(area1, area2, ... in the Named areas list): (explored-region area1). Only GRSTAPS-X plans drawn \
-areas. before works with regions: ['r3', 'o8'] = all of r3 first.
+(area1, area2, ... in the Named areas list): (explored-region area1). before works with regions: ['r3', 'o8'] = all of r3 first.
 - relocation: (object-in-place o4 t598) = pick o4 up, carry it, put it down at place t598 (the Spots \
 have arms; heavy objects -- bags, sandbags, boxes, trash cans -- are dragged instead, automatically). \
 Use it for "move X out of the way" / "put X at Y" / "drag X to Y" (pick a clear place you looked up). \
@@ -218,6 +226,16 @@ console's executor.
 
 PLAN_GRSTAPS_FORCED = """\
 The operator chose the GRSTAPS-X engine: call plan_ground_mission with engine 'grstaps'.
+"""
+
+PLAN_GROUND_FIRST = """\
+This is the mission planner: ground robots (spot, husky) are ALWAYS planned with plan_ground_mission, as \
+one PDDL goal, so the mission deploys to the robots' planner (plan repair's goal manager) as that goal and \
+is repaired there. Use propose_mission only when the mission gives the quad something to do (its \
+search legs); ground robots in such a mission still only visit, inspect and end somewhere. If the \
+operator asks a ground robot for something no goal can say (wait for, hand off, hold for a time), say \
+so in one line and plan the closest goal (e.g. end inside the region with in-region), listing it in \
+`assumptions`.
 """
 
 PLAN_FORCED = """\
@@ -341,7 +359,8 @@ def run_plan_tool(
         m, planned = omni_planner.plan_pddl(goal, agents, src, service, args.get("constraints"), geofences,
                                             text=text, name=str(args.get("name") or ""), engine=engine,
                                             areas=(cur.get("goal") or {}).get("areas") if revising and not ctx.get("areas")
-                                            else ctx.get("areas"))  # fmt: skip
+                                            else ctx.get("areas"),
+                                            planted=ctx.get("planted") or (cur.get("planted") if revising else None))  # fmt: skip
     except omni_planner.OmniUnavailable as e:
         return [], {
             "error": f"omniplanner is not available here ({e}); use propose_mission"
@@ -370,21 +389,37 @@ def run_plan_tool(
     return mission_card(m, service.put(m), assumptions, planned)
 
 
+AMBIGUOUS = "ambiguous"
+
+
 def _area_lookup(regions, ctx: dict | None = None) -> dict:
-    """symbol / lower-case name -> area with a polygon: map areas (Room nodes) and
-    the operator's mission-only areas (``ctx["areas"]``)."""
-    out = {}
+    """symbol / lower-case name -> area with a polygon: map areas (Room nodes, by
+    symbol) and the operator's mission-only areas (``ctx["areas"]``, by area1,
+    area2, ...). Names may repeat (two "loading dock" Rooms): a name shared by
+    several areas maps to ``{"ambiguous": [symbols]}``."""
+    from .omni_planner import area_symbols
+
+    out, by_name = {}, {}
     for r in regions or []:
         if not r.get("polygon"):
             continue
         if r.get("symbol"):
             out.setdefault(r["symbol"], r)
         if (r.get("name") or "").strip():
-            out.setdefault(r["name"].strip().lower(), r)
-    for a in (ctx or {}).get("areas") or []:
-        if isinstance(a, dict) and a.get("polygon") and (a.get("name") or "").strip():
-            out.setdefault(a["name"].strip().lower(), {"symbol": None, "name": a["name"].strip(),
-                                                        "polygon": a["polygon"]})  # fmt: skip
+            by_name.setdefault(r["name"].strip().lower(), []).append(
+                (r.get("symbol"), r)
+            )
+    for sym, a in area_symbols((ctx or {}).get("areas")).items():
+        area = {"symbol": None, "name": a["name"].strip(), "polygon": a["polygon"]}
+        out.setdefault(sym, area)
+        if a["name"].strip():
+            by_name.setdefault(a["name"].strip().lower(), []).append((sym, area))
+    for name, hits in by_name.items():
+        if name in out:
+            continue
+        out[name] = (
+            hits[0][1] if len(hits) == 1 else {AMBIGUOUS: [s for s, _ in hits if s]}
+        )
     return out
 
 
@@ -393,16 +428,15 @@ _region_lookup = _area_lookup  # the old name (tests, callers)
 
 def merged_areas(ctx: dict | None, regions=None) -> list[dict]:
     """One list of named areas for the model: the map's (Room nodes, with a
-    symbol) and the operator's mission-only ones.  A mission area with a map
-    area's name is the same thing (listed once, as the map's)."""
-    out, seen = [], set()
+    symbol) and the operator's mission-only ones (area1, area2, ...). Names may
+    repeat: each area is its own entry, told apart by its symbol."""
+    out = []
     for r in regions or []:
         if not (r.get("polygon") or r.get("name")):
             continue
         out.append({"name": r.get("name") or r["symbol"], "symbol": r["symbol"], "scope": "map",
                     "members": r.get("members"),
                     "polygon": [[round(x, 1), round(y, 1)] for x, y in (r.get("polygon") or [])]})  # fmt: skip
-        seen.add((r.get("name") or "").strip().lower())
     from .omni_planner import area_symbols
 
     # area1, area2, ...: what a GRSTAPS-X goal names a drawn area by (numbered as
@@ -412,9 +446,8 @@ def merged_areas(ctx: dict | None, regions=None) -> list[dict]:
                                            if isinstance(a, dict) and len(a.get("polygon") or []) >= 3])}  # fmt: skip
     for a in (ctx or {}).get("areas") or []:
         name = str(a.get("name") or "").strip() if isinstance(a, dict) else ""
-        if not name or name.lower() in seen or not a.get("polygon"):
+        if not name or not a.get("polygon"):
             continue
-        seen.add(name.lower())
         out.append({"name": name, "scope": "mission", **({"symbol": symbol_of[id(a)]} if id(a) in symbol_of else {}),
                     "polygon": [[round(x, 1), round(y, 1)] for x, y in a["polygon"]]})  # fmt: skip
     return out
@@ -442,6 +475,8 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
         parts.append(PLAN_PROMPT)
         if ctx.get("grstaps"):  # and GRSTAPS-X too
             parts.append(PLAN_GRSTAPS)
+        if ground_first(ctx):
+            parts.append(PLAN_GROUND_FIRST)
         if ctx.get("planner") == "omniplanner":
             parts.append(PLAN_FORCED)
             if ctx.get("engine") == "grstaps":
@@ -465,8 +500,8 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
                     + (
                         ": an end pose (at-place / in-region) or an or needs Fast Downward."
                         if ctx["engine"] == "grstaps"
-                        else ": ordering (before), a joint inspection, covering a big region or a drawn mission "
-                        "area (area1, ...) needs GRSTAPS-X. Fast Downward does plan moving and dragging "
+                        else ": ordering (before), a joint inspection or covering a big region "
+                        "needs GRSTAPS-X. Fast Downward does plan moving and dragging "
                         "objects (object-in-place)."
                     )  # fmt: skip
                 )
@@ -490,7 +525,7 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
             "Named areas (scope map: a Room node in the scene graph, MATCH (r:Room {name: ..})-[:CONTAINS]->(x) "
             "gives its places/objects, and its symbol works as a goto/inspect target = its centre; scope "
             "mission: drawn by the operator for this mission only; its symbol area1, area2, ... is a region "
-            "for GRSTAPS-X goals only). Use an area's name (or symbol) as an explore_area `area`: "
+            "in plan_ground_mission goals: visited-region, explored-region, in-region and their -by forms). Use an area's name (or symbol) as an explore_area `area`: "
             + json.dumps(areas, separators=(",", ":"))
         )
     else:
@@ -500,9 +535,14 @@ def context_text(ctx: dict | None, bounds=None, regions=None) -> str:
         parts.append("No-go zones (applied to the mission automatically): "
                      + json.dumps([{"id": z["id"], "polygon": z["polygon"]} for z in zones], separators=(",", ":")))  # fmt: skip
     if ctx.get("planted"):
-        parts.append("Rehearsal: mock objects are planted for the simulated quad camera "
-                     "(labels only; a search finds one only when its query matches the label): "
-                     + ", ".join(sorted({p["label"] for p in ctx["planted"]})))  # fmt: skip
+        mock = [p for p in ctx["planted"] if isinstance(p, dict)]
+        parts.append("Mock objects the operator planted for this mission (objects like any other: a "
+                     "plan_ground_mission goal names one by its symbol in lower case, e.g. (inspected-by spot1 "
+                     "o700) or (object-in-place o700 t42); they are staged for real before the mission "
+                     "runs on robots; the simulated quad camera also finds one when a search query matches "
+                     "its label): "
+                     + json.dumps([{"symbol": p.get("sym"), "label": p.get("label"), "pos": p.get("pos")} for p in mock],
+                                  separators=(",", ":")))  # fmt: skip
     cur = ctx.get("mission")
     if cur:
         slim = {k: cur.get(k) for k in ("id", "name", "agents", "tasks", "geofences")}
@@ -533,6 +573,14 @@ def request_text(history, message: str) -> str:
     return users[0] if users else message
 
 
+def ground_first(ctx: dict | None) -> bool:
+    """The mission planner with omniplanner available: ground robots are planned
+    with plan_ground_mission (PDDL) only; propose_mission is for missions with
+    quad work."""
+    ctx = ctx or {}
+    return bool(ctx.get("sim_only") and ctx.get("omniplanner"))
+
+
 def run_tool(
     args: dict,
     ctx: dict | None,
@@ -545,12 +593,33 @@ def run_tool(
     """(events, result for the model).  ``history``: the earlier turns (the
     mission's ``text`` is the request they started with, see :func:`request_text`)."""
     ctx = ctx or {}
+    if ground_first(ctx):
+        kinds = {str(a.get("id")): a.get("kind") for a in [*(ctx.get("roster") or []), *(args.get("agents") or [])]
+                 if isinstance(a, dict)}  # fmt: skip
+        if not any(
+            kinds.get(str(t.get("agent"))) == "quad"
+            for t in args.get("tasks") or []
+            if isinstance(t, dict)
+        ):
+            return [], {"error": "In the mission planner, ground robots are planned with plan_ground_mission "
+                                 "(one PDDL goal the robots' goal manager can take and repair). Plan this with "
+                                 "plan_ground_mission; propose_mission is only for missions with quad tasks."}  # fmt: skip
     lookup = _area_lookup(regions, ctx)
     for t in args.get("tasks") or []:  # an area named as `area` becomes its polygon
         if isinstance(t, dict) and isinstance(t.get("area"), str):
             r = lookup.get(t["area"]) or lookup.get(t["area"].strip().lower())
+            if r is not None and AMBIGUOUS in r:
+                return [], {"error": f"task {t.get('id')}: several areas are called {t['area']!r} "
+                                     f"({', '.join(r[AMBIGUOUS])}). Name the one meant by its symbol, "
+                                     "or ask the operator which."}  # fmt: skip
             if r is None:
-                known = sorted({x["name"] or x["symbol"] for x in lookup.values()})
+                known = sorted(
+                    {
+                        x["name"] or x["symbol"]
+                        for x in lookup.values()
+                        if AMBIGUOUS not in x
+                    }
+                )
                 return [], {"error": f"task {t.get('id')}: there is no area {t['area']!r}. Do not substitute "
                                      "another area: ask the operator to draw it on the map or to pick one of "
                                      f"{known or 'the areas they draw'}."}  # fmt: skip

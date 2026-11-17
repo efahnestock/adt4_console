@@ -16,7 +16,6 @@
 .manipulation-head h2 {font-size: 20px; margin: 0 0 4px;}
 .manipulation-head p {margin: 0;}
 .manipulation-body {padding: 0 18px 12px; overflow: auto; min-height: 0;}
-.manipulation-simulation {background: #583f0c; color: #ffdf84; padding: 9px 18px; font-weight: 700;}
 .manipulation-image-nav {display: flex; gap: 12px; align-items: center; justify-content: space-between; margin: 12px 0; font-size: 13px;}
 .manipulation-image-nav > span {text-align: center;}
 .manipulation-image-area {text-align: center; background: #080e16; border: 1px solid var(--line, #536071); border-radius: 6px; min-height: 100px; padding: 6px;}
@@ -40,7 +39,6 @@
 .manipulation-error {color: #ffb3a8; font-size: 13px;}
 .manipulation-foot {border-top: 1px solid var(--line, #536071); flex-wrap: wrap;}
 .manipulation-pending, .manipulation-notice {position: fixed; bottom: 20px; right: 20px; z-index: 2900; max-width: min(520px, calc(100vw - 40px));}
-.manipulation-demo {position: fixed; bottom: 20px; left: 72px; z-index: 2800; box-shadow: 0 2px 12px #0006;}
 .manipulation-notice {display: flex; align-items: center; gap: 10px; border-radius: 8px; padding: 10px 14px; background: var(--panel, #17212b); color: var(--text, #e5edf5); border: 1px solid var(--line, #536071); box-shadow: 0 4px 24px #0008; font-size: 13px;}
 @media (max-width: 640px) {
   .manipulation-backdrop {padding: 6px;}

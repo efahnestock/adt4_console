@@ -41,9 +41,12 @@ LATEST_VALUE_PREFIXES = (
     "manipulation/",
     "goal_track/",
     "awcd/",
+    "console/",
+    "trial/",
 )
 LATEST_VALUE_SUFFIXES = ("/version",)
 VIDEO_PREFIX = "video/"
+VIEWERS_TOPIC = "console/viewers"
 
 
 def is_video(topic: str) -> bool:
@@ -57,8 +60,9 @@ def is_latest_value(topic: str) -> bool:
 
 
 def default_match(topic: str) -> bool:
-    """Default subscription: everything except ``graph/*/delta`` and video."""
-    if is_video(topic):
+    """Default subscription: everything except ``graph/*/delta``, video and the
+    viewer count (asked for by name)."""
+    if is_video(topic) or topic == VIEWERS_TOPIC:
         return False
     return not (topic.startswith("graph/") and topic.endswith("/delta"))
 
@@ -80,6 +84,7 @@ class Client:
 
     def __init__(self, maxlen: int = 256, loop=None, video_maxlen: int = 32):
         self.id = next(self._ids)
+        self.who: str | None = None  # the viewer (address) behind it
         self.maxlen = maxlen
         self.video_maxlen = video_maxlen  # queued frames per video topic
         self.prefixes: list[str] | None = None  # None -> default_match
@@ -196,15 +201,33 @@ class Hub:
         self.on_video_starved = None
         self._lock = threading.Lock()
 
-    def add_client(self, loop=None) -> Client:
+    def add_client(self, loop=None, who: str | None = None) -> Client:
+        """``who``: the viewer behind the connection (its address), for
+        :meth:`viewers`; tabs of one browser count once."""
         client = Client(self.client_queue, loop)
+        client.who = who
         with self._lock:
             self._clients[client.id] = client
+        self._publish_viewers()
         return client
 
     def remove_client(self, client: Client) -> None:
         with self._lock:
             self._clients.pop(client.id, None)
+        self._publish_viewers()
+
+    def viewers(self) -> dict:
+        """Who has the console open now: ``viewers`` (distinct addresses) and
+        ``tabs`` (live connections)."""
+        with self._lock:
+            whos = [c.who for c in self._clients.values()]
+        return {
+            "viewers": len({w if w else f"#{i}" for i, w in enumerate(whos)}),
+            "tabs": len(whos),
+        }
+
+    def _publish_viewers(self) -> None:
+        self.publish(VIEWERS_TOPIC, self.viewers())
 
     def subscribe(self, client: Client, prefixes: list[str] | None) -> None:
         """Set ``client``'s topic prefixes and replay cached latest values, plus the
@@ -224,6 +247,12 @@ class Hub:
                     client.push_video(topic, frame, key)
 
     def publish(self, topic: str, data) -> int:
+        tap = getattr(self, "tap", None)  # trials.py: logs some topics during a trial
+        if tap is not None:
+            try:
+                tap(topic, data)
+            except Exception:  # noqa: BLE001
+                pass
         with self._lock:
             self._seq[topic] += 1
             seq = self._seq[topic]

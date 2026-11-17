@@ -10,6 +10,8 @@ import re
 import threading
 import time
 
+from pydantic import ValidationError
+
 from .model import NOT_LIVE, Mission
 from .paths import PlaceGraph
 from .planning import World, preview
@@ -275,7 +277,45 @@ class MissionService:
         giant = max(nx.connected_components(pg.nx), key=len)
         hint = pg.node_xy(pg.nearest((lo + hi) / 2, giant))
         return {"src": src_id, "bounds": [float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1])],
-                "start_hint": hint, "objects": len(pg.objects)}  # fmt: skip
+                "start_hint": hint, "objects": len(pg.objects),
+                "next_object": self.next_object(src_id)}  # fmt: skip
+
+    # ------------------------------------------------------------ mock objects
+    def _real_objects(self, src_id) -> dict:
+        """{symbol: {pos, ...}} of the map's objects (empty without a graph)."""
+        try:
+            pg = self.place_graph(src_id or self._default_src())
+        except Exception:  # noqa: BLE001
+            return {}
+        return dict(pg.objects) if pg is not None else {}
+
+    def next_object(self, src_id) -> int:
+        """The first object index after the map's real objects (mock objects
+        are numbered from here: O(700) on a map ending at O(699))."""
+        from . import mocks
+
+        return mocks.max_real(self._real_objects(src_id)) + 1
+
+    def fix_mock_symbols(self, planted, src_id) -> dict[str, str]:
+        """Give planted mock objects without a symbol the next free ones, and move
+        any whose symbol a real object took since (not the mock itself, staged
+        where it was planted); returns {old pddl: new pddl}."""
+        from . import mocks
+
+        if not planted:
+            return {}
+        real = self._real_objects(src_id)
+        nxt = mocks.max_real(real) + 1
+        mocks.fill_symbols(planted, nxt)
+        taken = set()
+        for i, (_, xy) in mocks.by_index(planted).items():
+            o = real.get(f"O({i})")
+            if o is None:
+                continue
+            p = o.get("pos") or [1e9, 1e9]
+            if ((p[0] - xy[0]) ** 2 + (p[1] - xy[1]) ** 2) ** 0.5 > mocks.STAGED_M:
+                taken.add(i)
+        return mocks.renumber(planted, taken, nxt)
 
     def robot_pose(self, robot: str):
         if self.live is None:
@@ -519,6 +559,8 @@ class MissionService:
         )
         world = self.world(m)
         plan = mission_plan(m, self._no_go_constraints(m, world))
+        if plan and plan.get("pddl"):
+            plan["pddl"] = self._stage_mocks(m, world, plan["pddl"])
         if plan and "fallback" in plan:
             log.info("mission %s: sending a goto per task (%s)", mid, plan["fallback"])
         with self._lock:
@@ -534,6 +576,63 @@ class MissionService:
             )
             self.runs[mid] = run
         return run.control("play")
+
+    def _stage_mocks(self, m, world, pddl: str) -> str:
+        """Mock objects the goal names go into the map under their own symbols
+        (O(900001), ...) before it is sent: the operator has staged the real
+        objects there, and the robots' planner must know them."""
+        from . import mocks
+
+        moved = self.fix_mock_symbols(m.planted, m.src)
+        if moved:  # a real object took a mock's symbol since planning
+            pddl = mocks.rewrite(pddl, moved)
+            log.info("mission %s: mock objects renumbered %s", m.id, moved)
+        objects = mocks.named(pddl, m.planted)
+        if not objects:
+            return pddl
+        sid = self._edit_src(m.src)
+        if sid is None:
+            raise ValueError(
+                "the goal names mock objects, which can only be staged in a Neo4j map"
+            )
+        have = (
+            (lambda sym: world.graph.symbol_pos(sym) is not None)
+            if world.graph is not None
+            else (lambda s: False)
+        )
+        ops = mocks.create_ops(objects, have)
+        if not ops:
+            return pddl
+        out = self.edits.apply(sid, ops, author={"via": "mission execute", "mission": m.id}, stage=False,
+                               summary="stage mock objects: " + ", ".join(o["symbol"] for o in ops))  # fmt: skip
+        log.info(
+            "mission %s: staged mock objects %s in %s",
+            m.id,
+            [o["symbol"] for o in ops],
+            sid,
+        )
+        self._await_planner_map((out or {}).get("map_version"))
+        return pddl
+
+    MAP_WAIT_S = 20.0
+
+    def _await_planner_map(self, version) -> None:
+        """The goal goes out only once the robots' planner has the map version the
+        staged objects are in (it plans on its own copy of the map): sequential,
+        not raced. No ROS or no version: nothing to wait for."""
+        ros = self.ros
+        if version is None or ros is None or not getattr(ros, "available", False):
+            return
+        import time
+
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < self.MAP_WAIT_S:
+            have = (ros.planner_view() or {}).get("map_version")
+            if have is not None and int(have) >= int(version):
+                return
+            time.sleep(0.2)
+        raise ValueError(f"the mock objects are in the map (version {version}) but the robots' planner has not "
+                         f"received it after {self.MAP_WAIT_S:.0f} s: check the heracles publisher, then Execute again")  # fmt: skip
 
     def _send_plan(self, robot, pddl, constraints, engine):
         """The mission's PDDL goal, through the robot's planner as the Plan tab sends it
@@ -594,3 +693,67 @@ class MissionService:
 
     def export(self, mid: str) -> str:
         return json.dumps(self.get(mid).model_dump(), indent=1)
+
+    BUNDLE_FORMAT = "adt4-missions"
+
+    def export_all(self, saved_only: bool = True) -> str:
+        """Every saved mission (``saved_only=False``: drafts too) in one JSON file:
+        ``{format, missions: [...]}``, oldest first; ``import_all`` reads it back."""
+        with self._lock:
+            ms = sorted(self.missions.values(), key=lambda m: m.created_at)
+            out = [m.model_dump() for m in ms if m.saved or not saved_only]
+        return json.dumps({"format": self.BUNDLE_FORMAT, "missions": out}, indent=1)
+
+    def import_all(self, data: object) -> dict:
+        """Several missions at once: a bundle from ``export_all``, or a JSON list of
+        exported missions. Each becomes a new saved mission (``import_mission``);
+        one that does not validate is skipped and reported, the rest still import.
+        Returns ``{imported: [{id, name}], errors: [{index, name, error}]}``."""
+        items = data.get("missions") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            raise ValueError(
+                "not a mission bundle: expected {missions: [...]} or a list"
+            )
+        imported, errors = [], []
+        for i, it in enumerate(items):
+            name = it.get("name") if isinstance(it, dict) else None
+            try:
+                r = self.import_mission(it)
+                imported.append(
+                    {"id": r["mission"]["id"], "name": r["mission"]["name"]}
+                )
+            except ValueError as e:
+                errors.append({"index": i, "name": name, "error": str(e)})
+        return {"imported": imported, "errors": errors}
+
+    # fields an import does not take from the file: it is a new mission here
+    _IMPORT_DROP = ("id", "revision", "parent", "created_at")
+
+    def import_mission(self, data: object) -> dict:
+        """A mission from an exported JSON file (``export``, or the ``{mission:
+        ...}`` of ``GET /api/missions/{id}``), stored as a new saved mission: a
+        fresh id, so an import never replaces a mission here; its name (made
+        unique), agents, tasks, areas, chat and saved run come along. A graph
+        source this console does not have falls back to its default map.
+        Raises ``ValueError`` for anything that is not a mission."""
+        if isinstance(data, dict) and isinstance(data.get("mission"), dict):
+            data = data["mission"]
+        if not isinstance(data, dict):
+            raise ValueError("not a mission: expected a JSON object")
+        body = {k: v for k, v in data.items() if k not in self._IMPORT_DROP}
+        try:
+            m = Mission.model_validate(body)
+        except ValidationError as e:
+            first = e.errors(include_url=False)[0]
+            where = ".".join(str(x) for x in first.get("loc", ()))
+            raise ValueError(
+                f"not a valid mission: {where}: {first.get('msg')}"
+            ) from None
+        known = (
+            {s["id"] for s in self.graph.list()} if self.graph is not None else set()
+        )
+        if m.src and m.src not in known:
+            m.src = None  # put() picks the default map
+        m.saved = True
+        m.name = (m.name or "").strip() or "Imported mission"
+        return self.put(m)
