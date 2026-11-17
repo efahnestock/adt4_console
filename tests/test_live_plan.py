@@ -144,7 +144,10 @@ def test_live_graph_source_snapshot_tiles_and_events(live):
         "changed": ["0_0_0"],
         "removed": [],
     }
-    assert frames["robot/euclid/state"]["data"] == {"pose": {"x": 1}}
+    st = frames["robot/euclid/state"]["data"]
+    # the console's readiness (readiness.py) rides along with the robot's state
+    assert st.pop("readiness")["robot"] == "euclid"
+    assert st == {"pose": {"x": 1}}
     assert frames["graph/live:euclid/version"]["data"]["reason"] == "snapshot"
 
 

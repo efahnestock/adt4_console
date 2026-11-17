@@ -11,7 +11,7 @@ import {Badge, Spinner} from "../components/ui";
 import {sendGoal} from "./PlanPanel";
 import {goalSendMessage, type SendTone} from "./PlanRepair";
 import {LeaseRefusalNotice} from "./LeaseControl";
-import {chatAbort, clearChat, setChatDraft, storable, useChat} from "../stores/chat";
+import {chatAbort, chatCaret, clearChat, noteChatCaret, setChatDraft, storable, useChat} from "../stores/chat";
 import {closeMission, fitMission, missionContext, openMission, saveCurrent, simCmd, useMission} from "../stores/mission";
 import {clearPreview, previewPddl, PreviewError, previewRobots, usePlanPreview, type PddlPreview} from "../stores/planPreview";
 import {FastDownwardDetails} from "./FastDownward";
@@ -349,6 +349,17 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     useChat.setState({prefill: null});
     window.setTimeout(() => inputRef.current?.focus(), 0);
   }, [prefill]);
+  // a symbol inserted from Inspect: the caret goes after it; a mouse user keeps
+  // typing there, a touch screen does not get its keyboard popped up
+  const insertSeq = useChat(s => s.insertSeq);
+  useEffect(() => {
+    const ta = inputRef.current;
+    const c = chatCaret();
+    if (!insertSeq || !ta || !c) return;
+    if (window.matchMedia?.("(pointer: fine)").matches) ta.focus({preventScroll: true});
+    ta.setSelectionRange(c.start, c.end);
+  }, [insertSeq]);
+  const noteCaret = (e: {currentTarget: HTMLTextAreaElement}) => noteChatCaret(e.currentTarget.selectionStart, e.currentTarget.selectionEnd);
   const [models, setModels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState<string | null>(null);
   const [model, setModelRaw] = useState(loadModel);
@@ -839,7 +850,11 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           rows={2}
           value={input}
           placeholder={planRobot ? `Message (robot ${planRobot})` : "Message"}
-          onChange={e => setInput(e.target.value)}
+          onChange={e => {
+            setInput(e.target.value);
+            noteCaret(e);
+          }}
+          onSelect={noteCaret}
           onKeyDown={e => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

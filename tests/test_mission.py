@@ -181,6 +181,98 @@ def test_tile_cache_manifest_layer(tmp_path):
     assert not layers["esri_world_imagery"]["default"]
 
 
+def _layer(root, name, manifest, tiles=()):
+    import json
+
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "tiles.json").write_text(json.dumps(manifest))
+    for z, x, y, data in tiles:
+        (d / str(z) / str(x)).mkdir(parents=True, exist_ok=True)
+        (d / str(z) / str(x) / f"{y}.jpg").write_bytes(data)
+
+
+def test_tile_cache_ortho_layer_falls_back(tmp_path):
+    """An ortho layer over a small area serves its fallback layer's tiles
+    where it has none, and reports the union of both areas."""
+    from adt4_console.geo import TileCache
+
+    _layer(
+        tmp_path,
+        "city",
+        {"zmin": 12, "zmax": 21, "bbox_lonlat": [-75.21, 39.93, -75.19, 39.95]},
+        [(18, 3, 4, b"\xff\xd8city"), (18, 3, 5, b"\xff\xd8city5")],
+    )
+    _layer(
+        tmp_path,
+        "quad",
+        {
+            "zmin": 15,
+            "zmax": 22,
+            "bbox_lonlat": [-75.202, 39.940, -75.198, 39.943],
+            "kind": "ortho",
+            "priority": 10,
+            "fallback": "city",
+        },
+        [(18, 3, 4, b"\xff\xd8quad")],
+    )
+    tc = TileCache(tmp_path, live=False)
+    assert tc.get("quad", 18, 3, 4) == b"\xff\xd8quad"  # its own tile wins
+    assert tc.get("quad", 18, 3, 5) == b"\xff\xd8city5"  # the city's around it
+    assert tc.get("quad", 18, 9, 9) is None  # neither has it (offline)
+    layers = {layer["id"]: layer for layer in tc.layers()}
+    q = layers["quad"]
+    assert q["kind"] == "ortho" and q["priority"] == 10 and q["fallback"] == "city"
+    assert q["zmin"] == 12 and q["zmax"] == 22 and not q["live"]
+    assert q["bbox_lonlat"] == [-75.21, 39.93, -75.19, 39.95]
+    c = layers["city"]
+    assert c["kind"] == "satellite" and c["priority"] == 0 and c["fallback"] is None
+
+
+def test_tile_cache_fallback_live_and_cycles(tmp_path):
+    from adt4_console.geo import TileCache
+
+    _layer(tmp_path, "a", {"fallback": "b"})
+    _layer(tmp_path, "b", {"fallback": "a"})
+    _layer(
+        tmp_path,
+        "ortho",
+        {"fallback": "esri_world_imagery", "bbox_lonlat": [0, 0, 1, 1]},
+    )
+    _layer(tmp_path, "lost", {"fallback": "nowhere"})
+    calls = []
+    tc = TileCache(
+        tmp_path, live=True, fetch=lambda url: calls.append(url) or b"\xff\xd8e"
+    )
+    assert tc.get("a", 5, 1, 1) is None  # a <-> b: no loop
+    assert tc.get("lost", 5, 1, 1) is None
+    # the fallback fetches live (and caches under its own layer, not the ortho's)
+    assert tc.get("ortho", 19, 1, 2) == b"\xff\xd8e" and len(calls) == 1
+    assert (tmp_path / "esri_world_imagery" / "19" / "1" / "2.jpg").is_file()
+    assert not (tmp_path / "ortho" / "19").exists()
+    layers = {layer["id"]: layer for layer in tc.layers()}
+    # a live fallback: the browser may ask anywhere
+    assert layers["ortho"]["live"] and layers["ortho"]["bbox_lonlat"] is None
+    assert layers["lost"]["fallback"] is None
+
+
+def test_geo_layers_route_reports_ortho(mission_settings, tmp_path):
+    _layer(tmp_path / "tiles", "city", {"default": True}, [(18, 3, 5, b"\xff\xd8c")])
+    _layer(
+        tmp_path / "tiles",
+        "quad",
+        {"kind": "ortho", "priority": 10, "fallback": "city"},
+    )
+    client, _ = make_client(mission_settings)
+    with client:
+        r = client.get("/api/geo/layers").json()["layers"]
+        layers = {layer["id"]: layer for layer in r}
+        assert layers["quad"]["kind"] == "ortho"
+        assert layers["quad"]["fallback"] == "city"
+        r = client.get("/api/geo/tiles/quad/18/3/5")
+        assert r.status_code == 200 and r.content == b"\xff\xd8c"
+
+
 def test_geo_routes(mission_settings, tmp_path):
     (tmp_path / "tiles" / "esri_world_imagery" / "18" / "3").mkdir(parents=True)
     (tmp_path / "tiles" / "esri_world_imagery" / "18" / "3" / "4.jpg").write_bytes(

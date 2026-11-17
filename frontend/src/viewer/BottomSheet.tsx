@@ -18,6 +18,7 @@ export function BottomSheet({
   onClose,
   children,
   initial = "half",
+  peek = false,
 }: {
   label: string;
   head?: ReactNode;
@@ -25,10 +26,16 @@ export function BottomSheet({
   onClose: () => void;
   children: ReactNode;
   initial?: Snap;
+  /** going true drops the sheet to its peek height (room for the inspect card
+   *  over the map on a short screen); the operator can drag it back up */
+  peek?: boolean;
 }) {
   const [snap, setSnap] = useState<Snap>(initial);
   const ref = useRef<HTMLElement>(null);
   const drag = useRef<{y: number; h: number; moved: boolean} | null>(null);
+  useEffect(() => {
+    if (peek) setSnap("peek");
+  }, [peek]);
 
   const publish = (px: number) => host.current?.style.setProperty("--sheet-h", `${Math.round(px)}px`);
   const hostH = () => host.current?.clientHeight ?? window.innerHeight;

@@ -149,6 +149,21 @@ export function clampWidths(leftW: number, rightW: number, total: number, leftOp
   return {leftW: l, rightW: r};
 }
 
+/** Side panels' widths while they lie over the map (<= 900 px, styles.css:
+ *  .vleft 280 px, .vright min(360 px, 92vw)). */
+export const OVERLAY_LEFT_W = 280;
+export const overlayRightW = (vw: number) => Math.min(360, Math.round(0.92 * vw));
+/** Below this much visible map the two map toolbars do not fit side by side. */
+export const TIGHT_MAP_W = 560;
+
+/** The map width the toolbars can use: the canvas, minus a side panel that
+ *  lies over it (tablets <= 900 px wide). Side-by-side panels already shrink
+ *  the canvas. */
+export function visibleMapWidth(canvasW: number, overlayPanels: boolean, leftOpen: boolean, rightOpen: boolean, vw = typeof window === "undefined" ? canvasW : window.innerWidth): number {
+  if (!overlayPanels) return canvasW;
+  return Math.max(0, canvasW - (leftOpen ? OVERLAY_LEFT_W : 0) - (rightOpen ? overlayRightW(vw) : 0));
+}
+
 /** Keep a window fully inside a `bw`×`bh` area: shrink it if it is larger than
  *  the area, then move it in. A minimized window only needs its title bar in. */
 export function clampRect(r: WinRect, bw: number, bh: number, minimized = false): WinRect {
@@ -238,6 +253,22 @@ export function stripTabs(drive: boolean, cameraFloats: boolean): PaneTab[] {
   return drive && !cameraFloats ? PANE_TABS.filter(t => t !== "camera") : PANE_TABS;
 }
 
+/** Viewer width from which the mission planner opens its side panel next to
+ *  the chat pane: chat 300 + side panel 280 + 480 px of map. A ~960 px tablet
+ *  in landscape gets the chat and the map; the side panel opens on demand. */
+export const MISSION_BOTH_PANES_W = 300 + 280 + 480;
+
+/** Which panes are open when the viewer opens on a `vw` px wide screen. */
+export function defaultPanes(vw: number, missionMode: boolean): {left: boolean; right: boolean} {
+  return {left: vw > (missionMode ? 900 : 1100), right: vw > (missionMode ? MISSION_BOTH_PANES_W : 900)};
+}
+
+/** One side panel at a time: phone sheets, and tablets <= 900 px where the
+ *  panels lie over the map (two would leave none of it). */
+export function onePanelAtATime(isPhone: boolean, wide: boolean): boolean {
+  return isPhone || !wide;
+}
+
 /** Camera pane height that leaves the tabs below at least `minBelow` px. */
 export function clampCameraH(h: number, panelH: number, minBelow = 220): number {
   return clamp(Math.round(h), CAM_H.min, Math.min(CAM_H.max, panelH - minBelow));
@@ -265,6 +296,32 @@ export function cameraPlacement(o: {
   // from the page) so the live video stream is not stopped and restarted
   return {pinned, folded, pip, mounted: pinned || folded || pip};
 }
+
+/** Where a node picked on the map is inspected. "tab": the Inspect tab (side
+ *  panel / phone sheet / its floating window). "card": a card over the map,
+ *  because bringing the Inspect tab forward would hide the chat the operator
+ *  is writing a mission in: the docked Chat tab (robot view), or the open chat
+ *  pane where only one panel shows at a time (phone sheets; tablets <= 900 px,
+ *  where the panels lie over the map). The mission planner's desktop chat is
+ *  its own pane beside the side panel, so Inspect goes there as before. */
+export function inspectPlacement(o: {
+  missionMode: boolean;
+  /** one side panel at a time (phones, overlay tablets) */
+  onePanel: boolean;
+  leftOpen: boolean;
+  rightOpen: boolean;
+  /** the tab the docked side panel shows */
+  dockTab: string | null;
+  /** the mission planner's left pane shows Layers instead of the chat */
+  layersInMission: boolean;
+  inspectFloats: boolean;
+  chatFloats: boolean;
+}): "tab" | "card" {
+  if (o.inspectFloats) return "tab";
+  if (o.missionMode) return o.onePanel && o.leftOpen && !o.layersInMission ? "card" : "tab";
+  return !o.chatFloats && o.rightOpen && o.dockTab === "chat" ? "card" : "tab";
+}
+
 
 const CAM_OVER_CHAT_KEY = "adt4.viewer.cameraOverChat";
 /** Drive layout: show the pinned camera above the Chat tab too (default: folded). */

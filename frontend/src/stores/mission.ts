@@ -8,7 +8,7 @@ import {create} from "zustand";
 import {ApiError, deleteJSON, errorText, getJSON, postJSON, putJSON} from "../lib/api";
 import {withToken} from "../lib/auth";
 import {fastDownwardOf, type FastDownwardInfo} from "../lib/fastDownward";
-import type {GeoInfo, TileLayer} from "../lib/geo";
+import {geoCenter, pickLayer, type GeoInfo, type TileLayer} from "../lib/geo";
 import {roundXY, startLockReason, type StartDrag} from "../lib/agentStart";
 import {ws} from "../ws";
 import {useViewer} from "./viewer";
@@ -214,6 +214,35 @@ export type AreaPurpose = "search" | "no_go";
 export type AreaScope = "mission" | "map";
 
 const ROSTER_KEY = "adt4.mission.roster.v1";
+const SAT_LAYER_KEY = "adt4.mission.satLayer.v1";
+const SAT_SHOW_KEY = "adt4.mission.satellite.v1";
+
+function loadSatLayer(): string | null {
+  try {
+    return window.localStorage.getItem(SAT_LAYER_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The viewer's own show / hide of the ground imagery (null: never chosen). */
+function loadSatShow(): boolean | null {
+  try {
+    const v = window.localStorage.getItem(SAT_SHOW_KEY);
+    return v === "1" ? true : v === "0" ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Ground imagery is on unless the viewer turned it off: it draws only where
+ *  the map has a GPS anchor and the server has a layer covering it (Penn maps
+ *  and bags), so "on" costs nothing elsewhere. */
+export const imageryOnByDefault = (saved: boolean | null): boolean => saved ?? true;
+
+/** The imagery layer drawn under the map (lib/geo pickLayer at the map's centre). */
+export const imageryLayer = (s: {layers: TileLayer[]; satLayer: string | null; geo: GeoInfo | null}): TileLayer | undefined =>
+  pickLayer(s.layers, s.satLayer, geoCenter(s.geo));
 
 function loadLocal(): {roster: Agent[]; areas: Area[]; planted: Planted[]; fences: Polygon[]} {
   try {
@@ -232,6 +261,8 @@ interface MissionStore {
   layers: TileLayer[];
   satellite: boolean;
   satOpacity: number;
+  /** imagery layer picked in the Satellite section (null: the manifest's default) */
+  satLayer: string | null;
   world: {src: string | null; bounds: number[] | null; start_hint: number[] | null; next_object?: number} | null;
   // operator inputs
   roster: Agent[];
@@ -268,8 +299,9 @@ export const useMission = create<MissionStore>(set => ({
   geo: null,
   geoSrc: null,
   layers: [],
-  satellite: true,
+  satellite: imageryOnByDefault(loadSatShow()),
   satOpacity: 1,
+  satLayer: loadSatLayer(),
   world: null,
   ...(() => {
     const l = loadLocal();
@@ -297,6 +329,26 @@ export const useMission = create<MissionStore>(set => ({
 if (typeof window !== "undefined") (window as unknown as {__adt4Mission?: unknown}).__adt4Mission = useMission;
 
 useMission.subscribe((s, p) => {
+  if (s.satLayer === p.satLayer) return;
+  try {
+    if (s.satLayer) window.localStorage.setItem(SAT_LAYER_KEY, s.satLayer);
+    else window.localStorage.removeItem(SAT_LAYER_KEY);
+  } catch {
+    /* quota / private window */
+  }
+});
+
+// only the show toggles set ``satellite``, so a change is the viewer's choice
+useMission.subscribe((s, p) => {
+  if (s.satellite === p.satellite) return;
+  try {
+    window.localStorage.setItem(SAT_SHOW_KEY, s.satellite ? "1" : "0");
+  } catch {
+    /* quota / private window */
+  }
+});
+
+useMission.subscribe((s, p) => {
   if (s.roster === p.roster && s.areas === p.areas && s.planted === p.planted && s.fences === p.fences) return;
   try {
     window.localStorage.setItem(ROSTER_KEY, JSON.stringify({roster: s.roster, areas: s.areas, planted: s.planted, fences: s.fences}));
@@ -315,7 +367,8 @@ export async function loadGeo(src: string | null): Promise<void> {
     st().set({layers: layers.layers});
     const world = await getJSON<{src: string | null; bounds: number[] | null; start_hint: number[] | null; next_object?: number}>(`api/missions/world${src ? `?src=${enc(src)}` : ""}`).catch(() => null);
     st().set({world});
-    const s = src ?? world?.src ?? null;
+    // no mission map (a console on a bag or a live robot map): the map the viewer shows
+    const s = src ?? world?.src ?? viewerGeoSrc();
     if (!s) return;
     const b = world?.bounds;
     const cx = b ? (b[0] + b[2]) / 2 : 0;
@@ -325,6 +378,27 @@ export async function loadGeo(src: string | null): Promise<void> {
   } catch (e) {
     st().set({error: `geo: ${errorText(e)}`});
   }
+}
+
+/** The first map the viewer shows (else its first source). */
+export function viewerGeoSrc(): string | null {
+  const v = useViewer.getState();
+  return v.order.find(id => v.sources[id]?.enabled) ?? v.order[0] ?? null;
+}
+
+/** Look the GPS anchor up again when the viewer's shown maps change while none
+ *  is loaded (a bag's live map turns up after the page did). Returns the
+ *  unsubscribe. */
+export function bindGeoToSources(): () => void {
+  let last = "";
+  return useViewer.subscribe(v => {
+    const k = v.order.filter(id => v.sources[id]?.enabled).join(",");
+    if (k === last) return;
+    last = k;
+    const m = st();
+    if (!k || (m.geo && m.geoSrc && v.sources[m.geoSrc])) return;
+    void loadGeo(null);
+  });
 }
 
 /** The live anchor (estimated from the robots' GPS while the map has no saved

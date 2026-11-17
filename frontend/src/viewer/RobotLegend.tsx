@@ -16,6 +16,7 @@ import {PhoenixChips} from "./PhoenixStatus";
 import type {FrameAlign, Pose} from "../types";
 import {useManipulation} from "../stores/manipulation";
 import {RelocPopover} from "./RelocPopover";
+import {ReadinessDot} from "./RobotStatusCard";
 
 /** A robot waiting for a grasp decision: a badge on its chip that opens the approval panel. */
 export function GraspChip({robot}: {robot: string}) {
@@ -160,6 +161,7 @@ export function RobotLegend() {
         >
           <span className="swatch" style={{background: colorOf(r)}} />
           {r}
+          <ReadinessDot robot={r} />
           <PhoenixChips robot={r} />
           <AlignStatus robot={r} details />
           <PlanExecStatus robot={r} />
