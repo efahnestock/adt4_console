@@ -36,6 +36,8 @@ import {ControlsHelpButton, TopViewHint} from "./ControlsHelp";
 import {FloatingWindow, Splitter, TabPortal, TabSlot, useElementSize, usePaneLayout, useTabHosts, useTabTearOff} from "./Panes";
 import {CAM_H, FLOAT_MQ, LEFT, MIN_CANVAS, PANE_TABS, RIGHT, clampCameraH, cameraPlacement, clampWidths, dock, driveOn, loadCamOverChat, saveCamOverChat, popOut, raise, stripTabs, toggleDrive, updateWin, type PaneTab} from "./paneLayout";
 import {RobotFocusPicker} from "./RobotFocusPicker";
+import {TIGHT_MAP_W, visibleMapWidth} from "./paneLayout";
+import "./robotSwitcher.css";
 import {useFocusedRobot, useRobotRoster} from "./useRobotFocus";
 import {cycleFocus} from "./robotFocus";
 import {DetectionToast, ImageViewer, MissionPanel} from "./MissionPanel";
@@ -104,7 +106,14 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const area = useElementSize(viewerRef);
   const canvasRef = useRef<HTMLDivElement>(null);
   const canvasSize = useElementSize(canvasRef);
-  const narrow = !isPhone && canvasSize.w > 0 && canvasSize.w < (missionMode ? NARROW_MISSION_MAP_W : NARROW_MAP_W);
+  // tablets <= 900 px: the side panels lie over the map (styles.css), so the
+  // map left for the toolbars is the canvas minus the open panel
+  const overlayPanels = !wide && !isPhone;
+  const mapW = visibleMapWidth(canvasSize.w, overlayPanels, leftOpen, rightOpen);
+  const narrow = !isPhone && mapW > 0 && mapW < (missionMode ? NARROW_MISSION_MAP_W : NARROW_MAP_W);
+  // too narrow for both toolbars side by side: the left one (with the robot
+  // switcher) goes under the right one instead of being overlapped by it
+  const tight = !isPhone && mapW > 0 && mapW < TIGHT_MAP_W;
   // the top-left toolbar stops short of the top-right one (--tr-w), whatever
   // buttons that one shows
   const topRightRef = useRef<HTMLDivElement>(null);
@@ -112,7 +121,11 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
     const tr = topRightRef.current;
     const canvas = canvasRef.current;
     if (!tr || !canvas) return;
-    const read = () => canvas.style.setProperty("--tr-w", `${Math.ceil(tr.getBoundingClientRect().width)}px`);
+    const read = () => {
+      const r = tr.getBoundingClientRect();
+      canvas.style.setProperty("--tr-w", `${Math.ceil(r.width)}px`);
+      canvas.style.setProperty("--tr-h", `${Math.ceil(r.height)}px`);
+    };
     read();
     const ro = new ResizeObserver(read);
     ro.observe(tr);
@@ -734,7 +747,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
           onReset={() => setLayout(l => ({...l, leftW: LEFT.def}))}
         />
       )}
-      <div className={`vcanvas ${editFrame}`} ref={canvasRef} onDoubleClick={() => void finishDrawing()}>
+      <div className={`vcanvas ${editFrame} ${tight ? "map-tight" : ""}`} ref={canvasRef} onDoubleClick={() => void finishDrawing()}>
         <LiveEditStrip phone={isPhone} />
         {enabled.length === 0 && (
           <div className="canvas-empty">
@@ -792,7 +805,8 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
               <button className="btn btn-sm panel-btn" onClick={() => setLeftOpen(o => !o)} aria-label="Toggle layers panel">
                 {leftOpen ? (narrow ? "Hide" : "Hide panel") : missionMode ? "Chat" : "Layers"}
               </button>
-              {!narrow && <RobotFocusPicker />}
+              {/* the robot switcher never folds into the "more" menu: compact on a narrow map */}
+              <RobotFocusPicker compact={narrow} />
               <SearchBox onPicked={showInspect} />
             </div>
             <div className="vtoolbar top-right" ref={topRightRef}>
@@ -812,7 +826,6 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
               {!isPhone && mapFullBtn}
               {narrow && (
                 <ToolbarMore>
-                  <RobotFocusPicker />
                   {follow}
                   <ClearPathsButton />
                   {driveBtn}
@@ -827,16 +840,21 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
             </div>
           </>
         )}
-        {/* the second phone toolbar row steps aside while a map tool needs the map */}
-        {isPhone && !searchOpen && armed.owner === "none" && (
-          <div className="vtoolbar phone-bar phone-bar2">
+        {/* the second phone toolbar row: while a map tool needs the map only the
+            robot switcher stays (it must always be reachable) */}
+        {isPhone && !searchOpen && (
+          <div className={`vtoolbar phone-bar phone-bar2 ${armed.owner === "none" ? "" : "tool-armed"}`}>
             <RobotFocusPicker compact />
-            <span className="grow" />
-            <ScreenshotButton onDone={setToast} compact />
-            <ClearPathsButton compact />
-            {follow}
-            {driveBtn}
-            {fullBtn}
+            {armed.owner === "none" && (
+              <>
+                <span className="grow" />
+                <ScreenshotButton onDone={setToast} compact />
+                <ClearPathsButton compact />
+                {follow}
+                {driveBtn}
+                {fullBtn}
+              </>
+            )}
           </div>
         )}
         {camPip && (
@@ -968,7 +986,7 @@ function ToolbarMore({children}: {children: ReactNode}) {
   }, [open]);
   return (
     <div className="vtoolbar-more" ref={ref}>
-      <button className={`btn btn-sm panel-btn ${open ? "on" : ""}`} aria-expanded={open} aria-label="More map tools" title="Robot focus, follow, drive layout, screenshot, help" onClick={() => setOpen(o => !o)} data-testid="toolbar-more">
+      <button className={`btn btn-sm panel-btn ${open ? "on" : ""}`} aria-expanded={open} aria-label="More map tools" title="Follow, clear paths, drive layout, screenshot, help" onClick={() => setOpen(o => !o)} data-testid="toolbar-more">
         <Icon name="more" size={16} />
       </button>
       {open && (
