@@ -284,6 +284,150 @@ def test_a_removed_place_brings_the_objects_it_held():
     assert _with_held_objects(loaded, ["O(1)"]) == ["O(1)"]
 
 
+# ------------------------------------------- a reload pushed as a diff (no database)
+def _records(n):
+    from adt4_console.codec import NodeRecord
+
+    return {
+        f"O({i})": NodeRecord(f"O({i})", 2, 0, (float(i), 0.0, 0.0)) for i in range(n)
+    }
+
+
+def test_diff_loaded_small_and_big():
+    from adt4_console.codec import NodeRecord
+    from adt4_console.graph_service import Loaded, diff_loaded
+
+    old = Loaded(1, _records(100), {("O(0)", "O(1)")}, {"2/0": {"1": "chair"}})
+    recs = dict(old.records)
+    recs["O(5)"] = NodeRecord("O(5)", 2, 0, (5.0, 1.0, 0.0))  # moved
+    del recs["O(6)"]
+    recs["O(200)"] = NodeRecord("O(200)", 2, 0, (0.0, 9.0, 0.0))
+    new = Loaded(2, recs, {("O(0)", "O(200)")}, old.labelspaces)
+    d = diff_loaded(old, new)
+    assert sorted(r.sym for r in d.upserts) == ["O(200)", "O(5)"]
+    assert d.deletes == ["O(6)"] and d.labelspaces is None
+    assert d.edges_add == [("O(0)", "O(200)")] and d.edges_del == [("O(0)", "O(1)")]
+    # another map: most nodes differ, the viewers load the snapshot
+    other = Loaded(
+        3, {k: NodeRecord(k, 2, 0, (0.0, 0.0, 1.0)) for k in recs}, set(), {}
+    )
+    assert diff_loaded(new, other) is None
+
+
+class _ReloadSource:
+    """A cacheable source whose next load is ``nxt``."""
+
+    def __init__(self, base, nxt):
+        from adt4_console.graph_service import Source
+
+        self.id, self.cacheable, self._mesh_key = "neo4j:t", True, None
+        self._loaded, self._version, self.nxt = base, base.version, nxt
+        self.version = lambda: self._version
+        self.invalidated = 0
+        assert Source  # the interface GraphService._changed relies on
+
+    def invalidate(self):
+        self.invalidated += 1
+        self._version += 1
+
+    def loaded(self):
+        if self._loaded.version != self._version:
+            self._loaded = self.nxt(self._version)
+        return self._loaded
+
+
+def _wait_frames(hub, n, timeout=5.0):
+    import time
+
+    t0 = time.time()
+    while len(hub.frames) < n and time.time() - t0 < timeout:
+        time.sleep(0.01)
+    return hub.frames
+
+
+def test_refresh_pushes_the_difference_against_what_viewers_hold(settings):
+    """A change only a reload can tell (a reset, a snapshot restore, free Cypher)
+    is reloaded on the server and pushed as a delta against the version viewers
+    hold: they do not download the whole snapshot again."""
+    from adt4_console.codec import NodeRecord
+    from adt4_console.graph_service import GraphService, Loaded
+
+    hub = FakeHub()
+    gs = GraphService(settings, hub=hub)
+    base = Loaded(3, _records(50), set(), {})
+
+    def nxt(v):
+        recs = dict(base.records)
+        recs["O(1)"] = NodeRecord("O(1)", 2, 0, (1.0, 5.0, 0.0))
+        return Loaded(v, recs, set(), {})
+
+    src = _ReloadSource(base, nxt)
+    gs.sources[src.id] = src
+    gs.refresh(src.id, "reset")
+    ((topic, msg),) = _wait_frames(hub, 1)
+    assert topic == f"graph/{src.id}/version" and src.invalidated == 1
+    assert msg["version"] == 4 and msg["base"] == 3 and msg["reason"] == "reset"
+    assert msg["delta"]["up"]["ids"] == ["O(1)"] and msg["delta"]["del"] == []
+
+
+def test_refresh_of_another_map_or_nothing_loaded_is_a_plain_push(settings):
+    from adt4_console.codec import NodeRecord
+    from adt4_console.graph_service import GraphService, Loaded
+
+    hub = FakeHub()
+    gs = GraphService(settings, hub=hub)
+    base = Loaded(3, _records(50), set(), {})
+
+    def other(v):
+        return Loaded(
+            v, {k: NodeRecord(k, 2, 0, (0, 0, 9.0)) for k in base.records}, set(), {}
+        )
+
+    src = _ReloadSource(base, other)
+    gs.sources[src.id] = src
+    gs.refresh(src.id, "reset")
+    ((_, msg),) = _wait_frames(hub, 1)
+    assert msg == {"version": 4, "reason": "reset"}
+    src._loaded = None  # nothing loaded: nothing to diff against, push at once
+    gs.refresh(src.id, "chat write")
+    assert hub.frames[-1][1] == {"version": 5, "reason": "chat write"}
+
+
+def test_refresh_with_no_viewer_subscribed_does_not_reload(settings):
+    """A map that changes all the time (a robot writing it) is not reloaded on the
+    server for nobody: with no viewer subscribed the push is plain, at once."""
+    import time
+
+    from adt4_console.graph_service import GraphService, Loaded
+    from adt4_console.hub import Hub
+
+    hub = Hub()
+    gs = GraphService(settings, hub=hub)
+    src = _ReloadSource(
+        Loaded(3, _records(5), set(), {}), lambda v: Loaded(v, _records(5), set(), {})
+    )
+    gs.sources[src.id] = src
+    loads = []
+    src.loaded = lambda: loads.append(1)
+    gs.refresh(src.id, "neo4j")
+    assert loads == [] and hub.latest(f"graph/{src.id}/version") == {
+        "version": 4,
+        "reason": "neo4j",
+    }
+    c = hub.add_client()
+    hub.subscribe(c, ["graph/"])
+    assert hub.wanted(f"graph/{src.id}/version") and not hub.wanted("video/x")
+    del src.loaded  # the class's: reloads, then pushes the (empty) difference
+    topic = f"graph/{src.id}/version"
+    gs.refresh(src.id, "neo4j")
+    t0 = time.time()
+    while (hub.latest(topic) or {}).get("version") != 5 and time.time() - t0 < 5:
+        time.sleep(0.01)
+    msg = hub.latest(topic)
+    # against the graph last loaded (v3): a viewer holding v4 never loaded it
+    assert msg["version"] == 5 and msg["base"] == 3 and msg["delta"]["del"] == []
+
+
 def test_apply_change_already_seen_sends_nothing(settings):
     from adt4_console.graph_service import GraphService
 
@@ -296,6 +440,22 @@ def test_apply_change_already_seen_sends_nothing(settings):
     assert len(hub.frames) == 1  # the delta
     assert gs.apply_change(src.id, "scene changes", 5, ["O1"]) is False
     assert len(hub.frames) == 1  # the echo: nothing new, no push, no reload
+
+
+def test_scene_changes_from_ros_name_their_nodes(settings):
+    """A batch on /scene_graph/changes_applied from someone else (change detection,
+    plan repair) reaches the graph with its map version and nodes."""
+    from adt4_console.scene_repair import SceneRepair
+
+    got = []
+    sr = SceneRepair(
+        map_changed=lambda mv, changes: got.append((mv, [c["symbol"] for c in changes]))
+    )
+    sr.on_applied(
+        "scene_change_detector", 12, [{"kind": 1, "symbol": "O4", "label": "chair"}]
+    )
+    sr.on_applied("sget/chat", 13, [], local=True)  # our own: already folded in
+    assert got == [(12, ["O4"])]
 
 
 # --------------------------------------------------------------------- database

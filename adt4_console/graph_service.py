@@ -1251,6 +1251,10 @@ MUTATION_AFFECTED_MAX = 500
 UNKNOWN_CHANGE_GRACE_S = 3.0
 # Announced changes kept per source (by map version).
 ANNOUNCED_KEEP = 64
+# A reload that differs from what viewers hold by at most this many nodes (or this
+# share of the map) is pushed as a delta instead of a snapshot (diff_loaded).
+DIFF_MAX_NODES = 2000
+DIFF_MAX_FRACTION = 0.25
 _MAP_LABELS = ("Object", "Place", "MeshPlace", "Room", "Building")
 _NODE_LABELS = _MAP_LABELS + ("Agent", "Retired")
 _EDGE_RULES = (
@@ -2226,6 +2230,30 @@ class LiveSource(Source):
         return len(state.records) if state is not None else None
 
 
+def diff_loaded(old: Loaded, new: Loaded):
+    """What turns ``old`` into ``new`` as a codec GraphDelta, or None when it is
+    too big to be worth pushing (:data:`DIFF_MAX_NODES` / :data:`DIFF_MAX_FRACTION`
+    of the map) -- the viewers then load the snapshot."""
+    codec = _codec()
+    cap = min(DIFF_MAX_NODES, max(1, int(DIFF_MAX_FRACTION * max(len(new.records), 1))))
+    up = []
+    for k, r in new.records.items():
+        if old.records.get(k) != r:
+            up.append(r)
+            if len(up) > cap:
+                return None
+    dels = [k for k in old.records if k not in new.records]
+    if len(up) + len(dels) > cap:
+        return None
+    return codec.GraphDelta(
+        upserts=up,
+        deletes=dels,
+        edges_add=sorted(new.edges - old.edges),
+        edges_del=sorted(old.edges - new.edges),
+        labelspaces=new.labelspaces if new.labelspaces != old.labelspaces else None,
+    )
+
+
 # ----------------------------------------------------------------------------
 # Service
 # ----------------------------------------------------------------------------
@@ -2240,6 +2268,7 @@ class GraphService:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
+        self._refreshing: dict[str, dict] = {}  # src id -> running refresh (refresh)
         from .mesh_lod import MeshDiskCache
 
         cache_dir = getattr(settings, "mesh_cache_dir", None)
@@ -2320,11 +2349,12 @@ class GraphService:
         ]
 
     def notify_version(self, src_id: str, reason: str, delta=None) -> None:
-        """Push ``graph/<src>/version``.  With ``delta`` (a fleetlink GraphDelta from
-        Neo4jSource.apply_change) the frame also carries it and the version it
-        applies to (``base``): a viewer holding exactly ``base`` applies it in
-        place; any other viewer (or one that missed a frame: the topic is
-        latest-value) reloads the snapshot as before."""
+        """Push ``graph/<src>/version``.  With ``delta`` -- ``(GraphDelta, version)``
+        from Neo4jSource.apply_change / sync, or ``(GraphDelta, version, base)``
+        from :meth:`refresh` -- the frame also carries it and the version it
+        applies to (``base``, else ``version - 1``): a viewer holding exactly
+        ``base`` applies it in place; any other viewer (or one that missed a frame:
+        the topic is latest-value) reloads the snapshot as before."""
         src = self.sources.get(src_id)
         if src is None or self.hub is None:
             return
@@ -2334,23 +2364,113 @@ class GraphService:
             v = None
         msg = {"version": v, "reason": reason}
         if delta is not None:
-            d, dv = delta  # (GraphDelta, the version it produced)
-            msg.update(version=dv, base=dv - 1, delta=d.encode())
+            d, dv = delta[0], delta[1]
+            base = delta[2] if len(delta) > 2 else dv - 1
+            msg.update(version=dv, base=base, delta=d.encode())
         self.hub.publish(f"graph/{src_id}/version", msg)
 
     def apply_change(self, src_id: str, reason: str, map_version, affected) -> bool:
         """A write to Neo4j source ``src_id`` that touched ``affected`` and bumped
-        the map version to ``map_version``: fold it in (or invalidate) and tell
-        viewers.  Nothing is sent when the console had already seen the write (the
-        poll got there first).  True when it was applied incrementally."""
+        the map version to ``map_version``: fold it in and tell viewers; when it
+        cannot be folded in, the source is reloaded and viewers get the difference
+        (:meth:`refresh`).  Nothing is sent when the console had already seen the
+        write (the poll got there first).  True when it was applied incrementally."""
         src = self.sources.get(src_id)
         if not isinstance(src, Neo4jSource):
             return False
-        before = src._version
+        base, before = src._loaded, src._version
         delta = src.apply_change(map_version, affected)
-        if delta is not None or src._version != before:
+        if delta is not None:
             self.notify_version(src_id, reason, delta)
+        elif src._version != before:
+            self._changed(src, reason, base)
         return delta is not None
+
+    def refresh(self, src_id: str, reason: str) -> None:
+        """Source ``src_id`` changed in a way only a reload can tell (a reset, a
+        snapshot restore, a write that did not say what it touched): new version,
+        and viewers get what changed (:meth:`_changed`)."""
+        src = self.sources.get(src_id)
+        if src is None:
+            return
+        base = src._loaded
+        inv = getattr(src, "invalidate", None)
+        if callable(inv):
+            inv()
+        self._changed(src, reason, base)
+
+    def _changed(self, src: Source, reason: str, base: Loaded | None) -> None:
+        """``src`` has a new version that is not loaded yet.  Viewers that hold
+        ``base`` (the graph loaded before it) are sent the difference once the new
+        version is loaded (:func:`diff_loaded`, in a thread: a Neo4j map takes
+        seconds), so they do not download the whole snapshot again; with nothing
+        loaded before, no viewer subscribed, a mesh that changed, or a big
+        difference, they get the plain version push and reload.  Bursts
+        coalesce: one reload at a time per source, the next diffed against the
+        one before."""
+        wanted = getattr(self.hub, "wanted", None)
+        if (
+            base is None
+            or not src.cacheable
+            or self.hub is None
+            # nobody is looking: no reload until someone asks for the map
+            or (wanted is not None and not wanted(f"graph/{src.id}/version"))
+        ):
+            self.notify_version(src.id, reason)
+            return
+        with self._lock:
+            job = self._refreshing.get(src.id)
+            if job is not None:
+                job["again"], job["reason"] = True, reason
+                return
+            job = self._refreshing[src.id] = {"again": False, "reason": reason}
+
+        def run():
+            prev = base
+            while True:
+                msg = None
+                try:
+                    new = src.loaded()
+                    if new.version != prev.version and not self._mesh_moved(src):
+                        d = diff_loaded(prev, new)
+                        if d is not None:
+                            msg = (d, new.version, prev.version)
+                            log.info("%s: v%s -> v%s pushed as a %d-node delta", src.id,
+                                     prev.version, new.version, len(d.upserts) + len(d.deletes))  # fmt: skip
+                except Exception:  # noqa: BLE001
+                    log.warning("%s: reload for viewers failed", src.id, exc_info=True)
+                    new = None
+                if new is None or new.version != prev.version:
+                    self.notify_version(src.id, job["reason"], msg)
+                with self._lock:
+                    if not job["again"]:
+                        self._refreshing.pop(src.id, None)
+                        return
+                    job["again"] = False
+                prev = new if new is not None else src._loaded
+                if prev is None:
+                    with self._lock:
+                        self._refreshing.pop(src.id, None)
+                    self.notify_version(src.id, job["reason"])
+                    return
+
+        threading.Thread(
+            target=run, name=f"graph-refresh-{src.id}", daemon=True
+        ).start()
+
+    @staticmethod
+    def _mesh_moved(src: Source) -> bool:
+        """The mesh file differs from the one whose tiles viewers were served."""
+        held = src._mesh_key
+        if held is None:
+            return False
+        from .mesh_lod import MeshDiskCache
+
+        try:
+            path = src.mesh_file()
+        except Exception:  # noqa: BLE001
+            return True
+        return (MeshDiskCache.file_key(path) if path is not None else None) != held
 
     # -- live events (called from the fleetlink receiver thread) -----------
     def on_live(self, robot: str, kind: str, data) -> None:
@@ -2419,14 +2539,17 @@ class GraphService:
     def poll_once(self) -> None:
         for s in list(self.sources.values()):
             try:
+                base = s._loaded
                 if isinstance(s, Neo4jSource):
                     changed, delta = s.poll_change()
-                    if changed:
+                    if changed and delta is not None:
                         self.notify_version(s.id, "neo4j", delta)
+                    elif changed:
+                        self._changed(s, "neo4j", base)
                 elif isinstance(s, FileSource):
                     before = s._version
                     if s.version() != before and before:
-                        self.notify_version(s.id, "file")
+                        self._changed(s, "file", base)
             except Exception as e:  # noqa: BLE001
                 log.debug("poll %s: %s", s.id, e)
 

@@ -400,10 +400,10 @@ class SgetService:
         return src if hasattr(src, "creds") else None
 
     def _refresh(self, src) -> None:
-        """Reload the edited map at once (the map-version poll is the fallback)."""
+        """Reload the edited map at once (the map-version poll is the fallback);
+        viewers get the difference (GraphService.refresh)."""
         try:
-            src.invalidate()
-            self.graph.notify_version(src.id, "scene edit")
+            self.graph.refresh(src.id, "scene edit")
         except Exception as e:  # noqa: BLE001
             log.warning("scene edit applied; refresh failed: %s", e)
 

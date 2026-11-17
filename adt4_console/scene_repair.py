@@ -274,7 +274,7 @@ def pose_in_global(
 class SceneRepair:
     def __init__(self, hub=None, *, send=None, resume=None, active_goals=None, plan_of=None,
                  class_of=None, position_of=None, robot_xy=None, invalidate=None,
-                 clock=time.time, max_changes: int = 100, max_recs: int = 50,
+                 map_changed=None, clock=time.time, max_changes: int = 100, max_recs: int = 50,
                  planner_wait_s: float = 10.0):  # fmt: skip
         self.hub = hub
         self.send = send  # (robot, pddl, constraints, engine) -> result dict
@@ -287,6 +287,9 @@ class SceneRepair:
         self.position_of = position_of or (lambda sym: None)
         self.robot_xy = robot_xy or (lambda robot: None)
         self.invalidate = invalidate  # () -> None: a batch from ROS changed the map
+        # (map_version, changes) -> None: the same, told what changed (the console
+        # folds those nodes into the loaded map); used instead of invalidate when set
+        self.map_changed = map_changed
         self.clock = clock
         self._lock = threading.RLock()
         self._changes = collections.deque(maxlen=max_changes)
@@ -326,11 +329,14 @@ class SceneRepair:
                      "map_version": mv, "t": self.clock(), "summary": summary,
                      "changes": [normalize_change(c) for c in changes or []]}  # fmt: skip
             self._changes.append(batch)
-        if not local and self.invalidate is not None:
+        if not local and (self.map_changed or self.invalidate) is not None:
             try:
-                self.invalidate()
+                if self.map_changed is not None:
+                    self.map_changed(mv, batch["changes"])
+                else:
+                    self.invalidate()
             except Exception:  # noqa: BLE001
-                log.exception("graph invalidate after scene changes")
+                log.exception("graph refresh after scene changes")
         made = self._evaluate(batch)
         self._publish()
         return made
