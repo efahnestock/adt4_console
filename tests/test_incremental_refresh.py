@@ -172,7 +172,9 @@ def _known_source(mutations=None, last=(None, None, None)):
     db = {"count": 10, "map": 4}
     src.count_nodes = lambda: db["count"]
     src.read_map_version = lambda: db["map"]
-    src.read_map_change = lambda: last if last[0] is not None else (db["map"], None, None)
+    src.read_map_change = (
+        lambda: last if last[0] is not None else (db["map"], None, None)
+    )
     asked = []
 
     def mutation_changes(lo, hi):
