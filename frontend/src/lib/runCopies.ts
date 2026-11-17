@@ -100,3 +100,13 @@ export function pickDefaultSources(catalog: string[], defaults: string[]): {enab
   const have = new Set(catalog);
   return {enable: defaults.filter(id => have.has(id)), pending: defaults.filter(id => !have.has(id))};
 }
+
+/**
+ * The map source the Robot viewer and the Mission planner open with: the Neo4j map (the
+ * live heracles map the planner works on), alone; priors, live:<robot> and other sources
+ * start disabled. The first Neo4j source in catalog order (the one plannerSourceId picks);
+ * null without one (the caller then falls back to the active launch's defaults).
+ */
+export function neo4jDefaultSource(order: string[], kindOf: (id: string) => string | undefined): string | null {
+  return order.find(id => kindOf(id) === "neo4j") ?? null;
+}

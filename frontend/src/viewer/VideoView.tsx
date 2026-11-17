@@ -4,6 +4,8 @@
 // another machine) h264 decodes in a WASM worker instead, drawn with WebGL;
 // `?h264=wasm` forces that path. Keepalive every 2 s while the tab is visible;
 // unmounting releases the stream with a grace period (releaseStream).
+// `onUnavailable` (teleop: video first, stills as the backup): called once when
+// no frame has arrived for VIDEO_FALLBACK_MS while the page is visible.
 import {useEffect, useRef, useState} from "react";
 import {getToken} from "../lib/auth";
 import {ws} from "../ws";
@@ -16,6 +18,9 @@ const START_SPACING_MS = 1100;
 const WASM_BACKLOG = 4; // access units queued in the worker before dropping to the next key frame
 const forceWasm = () => typeof location !== "undefined" && new URLSearchParams(location.search).get("h264") === "wasm";
 const KEEPALIVE_MS = 2000;
+/** No video frame for this long (since the stream started, or since the last
+ *  frame) with the page visible: the stream counts as unavailable. */
+export const VIDEO_FALLBACK_MS = 10000;
 
 interface ServerStatus {
   params?: {fps: number; kbps: number; width: number; codec: VideoCodec};
@@ -95,8 +100,10 @@ function saveInfo(on: boolean) {
 type Tune = {fps: number; kbps: number; width: number};
 
 /** ``bare``: the picture only (full-screen drive view), no controls or stats.
- *  ``tune``: stream settings set by the parent (retunes the running stream). */
-export function VideoView({robot, cam, bare = false, initialFps = 5, tune}: {robot: string; cam: string; bare?: boolean; initialFps?: number; tune?: Tune}) {
+ *  ``tune``: stream settings set by the parent (retunes the running stream).
+ *  ``onUnavailable``: called once (with a reason) when no frame arrives for
+ *  VIDEO_FALLBACK_MS, so the parent can fall back to still frames. */
+export function VideoView({robot, cam, bare = false, initialFps = 5, tune, onUnavailable}: {robot: string; cam: string; bare?: boolean; initialFps?: number; tune?: Tune; onUnavailable?: (reason: string) => void}) {
   const [fps, setFps] = useState(tune?.fps ?? initialFps);
   const [kbps, setKbps] = useState(tune?.kbps ?? 300);
   const [width, setWidth] = useState(tune?.width ?? 640);
@@ -122,6 +129,27 @@ export function VideoView({robot, cam, bare = false, initialFps = 5, tune}: {rob
   const glCanvasRef = useRef<HTMLCanvasElement | null>(null); // WASM path (a canvas holds one context type)
   const [h264Path, setH264Path] = useState<H264Decoder | null>(null);
   const viewer = useRef(viewerId());
+  const lastFrameRef = useRef(0); // performance.now() of the newest frame received
+  const errRef = useRef<string | null>(null);
+  errRef.current = err;
+  const onUnavailableRef = useRef(onUnavailable);
+  onUnavailableRef.current = onUnavailable;
+  const watchdog = !!onUnavailable;
+
+  // no frames for VIDEO_FALLBACK_MS while visible: tell the parent (once)
+  useEffect(() => {
+    if (!watchdog || !visible) return;
+    const since = performance.now();
+    let fired = false;
+    const id = window.setInterval(() => {
+      const now = performance.now();
+      if (fired || now - Math.max(since, lastFrameRef.current) < VIDEO_FALLBACK_MS) return;
+      fired = true;
+      const got = lastFrameRef.current > since;
+      onUnavailableRef.current?.(errRef.current ?? (got ? "the video stalled" : "no video frames arrived"));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [watchdog, visible, robot, cam]);
 
   useEffect(() => {
     let alive = true;
@@ -278,6 +306,7 @@ export function VideoView({robot, cam, bare = false, initialFps = 5, tune}: {rob
       const fr = parseVideoFrame(d);
       if (!fr) return;
       const now = performance.now();
+      lastFrameRef.current = now;
       meter.add(fr.data.byteLength, now);
       last = fr;
       lagMs = frameLagMs(fr, Date.now(), consoleClockOffset());

@@ -4,7 +4,7 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {act} from "react";
 import {createRoot, type Root} from "react-dom/client";
-import {VideoView} from "../src/viewer/VideoView";
+import {VIDEO_FALLBACK_MS, VideoView} from "../src/viewer/VideoView";
 
 (globalThis as unknown as {IS_REACT_ACT_ENVIRONMENT: boolean}).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -65,5 +65,22 @@ describe("VideoView stream lifecycle", () => {
     expect(stop?.url).toBe("api/robots/euclid/video/rgb/stop");
     expect(stop?.body.grace).toBe(true);
     expect(calls.at(-1)?.url).toBe("api/robots/euclid/video/left/start");
+  });
+
+  it("onUnavailable fires once when no frame arrives for VIDEO_FALLBACK_MS (teleop falls back to stills)", async () => {
+    vi.useFakeTimers({toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"]});
+    try {
+      const failed = vi.fn();
+      act(() => root.render(<VideoView robot="euclid" cam="rgb" onUnavailable={failed} />));
+      await act(async () => await vi.advanceTimersByTimeAsync(VIDEO_FALLBACK_MS - 2000));
+      expect(failed).not.toHaveBeenCalled();
+      await act(async () => await vi.advanceTimersByTimeAsync(3000));
+      expect(failed).toHaveBeenCalledTimes(1);
+      expect(failed.mock.calls[0][0]).toMatch(/no video frames/);
+      await act(async () => await vi.advanceTimersByTimeAsync(3 * VIDEO_FALLBACK_MS));
+      expect(failed).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

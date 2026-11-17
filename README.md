@@ -140,7 +140,10 @@ The header shows the server, WebSocket ("live"), ROS and fleetlink status, plus 
   *verify* (hash comparison across machines), *load into Neo4j* (ingest), and *open in viewer*.
 * **Robot viewer** (`#/viewer`, formerly "Map viewer"). The 3D scene graph and mesh for any number of
   sources at once (`file:` run dirs, `neo4j:` databases and `live:` robots), plus each robot's
-  cameras, teleop, plans and link.
+  cameras, teleop, plans and link. It and the mission planner open with the **Neo4j map** alone
+  (the live heracles map the planner uses); priors, `live:<robot>` and other sources start
+  disabled (*Sources* turns them on; `?src=<id>` opens a given source; without a Neo4j source the
+  active launch's prior + robots, else the first prior).
   * **Robot focus** (toolbar, next to *Layers*): *All robots* or one robot, each with its colour and
     online / stale / offline state; `[` / `]` cycle it, clicking a legend chip or a robot's camera
     tile focuses that robot. Remembered per browser (a robot the console no longer knows reads as
@@ -158,7 +161,10 @@ The header shows the server, WebSocket ("live"), ROS and fleetlink status, plus 
     windows. Wide screens pin the camera above the side-panel tabs (drag the edge between them;
     ⧉ pops it out, the tabs below default to Teleop); phones show the camera as a
     picture-in-picture under the toolbar with Teleop in the bottom sheet. Teleop keys still drive
-    only while the Teleop panel has focus: clicking the map or the camera disarms it.
+    only while the Teleop panel has focus: clicking the map or the camera disarms it. The camera
+    opens as **live video**; stills are the backup: the *Still* button, or automatically when no
+    video frame arrives for 10 s (a note says so, *Try video* retries). Full-screen drive does the
+    same.
   Panels:
   * left: *Sources* (enable, mesh/graph toggles, tile progress), *Layers* and *Edges* toggles,
     *Live overlays* (below), *Display* (layer stacking, mesh opacity, bounding boxes, trajectory);

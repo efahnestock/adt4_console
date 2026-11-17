@@ -1,5 +1,5 @@
 import {describe, expect, it, vi} from "vitest";
-import {copyBadge, copyEntry, copyOfText, pickDefaultSources, preferBaseCopy, priorAvailability, verifyNames} from "../src/lib/runCopies";
+import {copyBadge, copyEntry, copyOfText, neo4jDefaultSource, pickDefaultSources, preferBaseCopy, priorAvailability, verifyNames} from "../src/lib/runCopies";
 import type {MapEntry, MapsResponse} from "../src/types";
 
 const robotRun = (state: "in_sync" | "outdated" | "not_copied"): MapEntry => ({
@@ -108,5 +108,17 @@ describe("viewer default sources for the active launch", () => {
     expect(useViewer.getState().pendingEnable).toEqual([]);
     vi.doUnmock("../src/lib/api");
     vi.doUnmock("../src/ws");
+  });
+});
+
+describe("Robot viewer / Mission planner default map", () => {
+  const kinds: Record<string, string> = {"file:prior:penn": "file", "neo4j:live": "neo4j", "live:gauss": "live", "neo4j:other": "neo4j"};
+  const kindOf = (id: string) => kinds[id];
+  it("is the Neo4j map alone (the first one, like plannerSourceId)", () => {
+    expect(neo4jDefaultSource(["file:prior:penn", "neo4j:live", "live:gauss", "neo4j:other"], kindOf)).toBe("neo4j:live");
+  });
+  it("is null without a Neo4j source (launch defaults / first prior apply)", () => {
+    expect(neo4jDefaultSource(["file:prior:penn", "live:gauss"], kindOf)).toBeNull();
+    expect(neo4jDefaultSource([], kindOf)).toBeNull();
   });
 });
