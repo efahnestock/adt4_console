@@ -20,6 +20,7 @@ import {PlaceKeyframes, usePlaceReturn} from "./PlaceKeyframes";
 import {placeLabelsKey, useViewStyle, type PlaceLabelsKey} from "../stores/viewStyle";
 import {BackgroundControl, HeightsControl, PathControls, RegionControls, RobotLookControl, ThemeControl} from "./StylePanels";
 import {ClearPathsRow} from "./ClearPaths";
+import {GroundImageryControls} from "./GroundImagery";
 
 const KIND_LABEL: Record<string, string> = {neo4j: "Neo4j", file: "file", live: "live"};
 
@@ -125,6 +126,7 @@ export function LayersPanel() {
       <header className="vsec-head">
         <h4>Layers</h4>
       </header>
+      <GroundImageryControls />
       {layers.some(([, l]) => l.kind === "rooms") && <RegionControls />}
       {(layers.some(([, l]) => l.kind === "agents") || order.some(id => sources[id]?.trajectory?.length)) && <PathControls />}
       <ul className="layer-list">

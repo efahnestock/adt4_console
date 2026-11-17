@@ -199,6 +199,15 @@ export type AreaPurpose = "search" | "no_go";
 export type AreaScope = "mission" | "map";
 
 const ROSTER_KEY = "adt4.mission.roster.v1";
+const SAT_LAYER_KEY = "adt4.mission.satLayer.v1";
+
+function loadSatLayer(): string | null {
+  try {
+    return window.localStorage.getItem(SAT_LAYER_KEY) || null;
+  } catch {
+    return null;
+  }
+}
 
 function loadLocal(): {roster: Agent[]; areas: Area[]; planted: Planted[]; fences: Polygon[]} {
   try {
@@ -217,6 +226,8 @@ interface MissionStore {
   layers: TileLayer[];
   satellite: boolean;
   satOpacity: number;
+  /** imagery layer picked in the Satellite section (null: the manifest's default) */
+  satLayer: string | null;
   world: {src: string | null; bounds: number[] | null; start_hint: number[] | null} | null;
   // operator inputs
   roster: Agent[];
@@ -255,6 +266,7 @@ export const useMission = create<MissionStore>(set => ({
   layers: [],
   satellite: true,
   satOpacity: 1,
+  satLayer: loadSatLayer(),
   world: null,
   ...(() => {
     const l = loadLocal();
@@ -280,6 +292,16 @@ export const useMission = create<MissionStore>(set => ({
 
 // e2e scripts read the mission state from here (like window.__adt4MapEdit)
 if (typeof window !== "undefined") (window as unknown as {__adt4Mission?: unknown}).__adt4Mission = useMission;
+
+useMission.subscribe((s, p) => {
+  if (s.satLayer === p.satLayer) return;
+  try {
+    if (s.satLayer) window.localStorage.setItem(SAT_LAYER_KEY, s.satLayer);
+    else window.localStorage.removeItem(SAT_LAYER_KEY);
+  } catch {
+    /* quota / private window */
+  }
+});
 
 useMission.subscribe((s, p) => {
   if (s.roster === p.roster && s.areas === p.areas && s.planted === p.planted && s.fences === p.fences) return;
