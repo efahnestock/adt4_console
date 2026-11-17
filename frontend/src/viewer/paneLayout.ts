@@ -238,6 +238,22 @@ export function stripTabs(drive: boolean, cameraFloats: boolean): PaneTab[] {
   return drive && !cameraFloats ? PANE_TABS.filter(t => t !== "camera") : PANE_TABS;
 }
 
+/** Viewer width from which the mission planner opens its side panel next to
+ *  the chat pane: chat 300 + side panel 280 + 480 px of map. A ~960 px tablet
+ *  in landscape gets the chat and the map; the side panel opens on demand. */
+export const MISSION_BOTH_PANES_W = 300 + 280 + 480;
+
+/** Which panes are open when the viewer opens on a `vw` px wide screen. */
+export function defaultPanes(vw: number, missionMode: boolean): {left: boolean; right: boolean} {
+  return {left: vw > (missionMode ? 900 : 1100), right: vw > (missionMode ? MISSION_BOTH_PANES_W : 900)};
+}
+
+/** One side panel at a time: phone sheets, and tablets <= 900 px where the
+ *  panels lie over the map (two would leave none of it). */
+export function onePanelAtATime(isPhone: boolean, wide: boolean): boolean {
+  return isPhone || !wide;
+}
+
 /** Camera pane height that leaves the tabs below at least `minBelow` px. */
 export function clampCameraH(h: number, panelH: number, minBelow = 220): number {
   return clamp(Math.round(h), CAM_H.min, Math.min(CAM_H.max, panelH - minBelow));

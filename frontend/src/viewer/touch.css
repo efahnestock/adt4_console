@@ -1,0 +1,71 @@
+/* Touch screens in the robot view / mission planner: Galaxy Tab S6 / Tab
+   Active3 tablets, iPhones, Galaxy S-series Ultra phones. Touch rules key on
+   the input device, not the width: a 1280 px tablet is as finger-driven as a
+   phone. Loaded with ViewerPage, after styles.css and panes.css, so
+   equal-specificity rules here win. */
+
+/* ---------- side-panel tab strip: wrap onto a second row instead of
+   squeezing labels together or scrolling the last tabs out of sight ---------- */
+.vright-head {
+  align-items: flex-start;
+}
+.vright-head .segmented {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+.vright-head .segmented button {
+  flex: 1 0 auto;
+  padding: 6px 8px;
+}
+
+/* the top-view hint: one line where it fits, not one word per line on a
+   narrow map */
+.top-hint {
+  width: max-content;
+}
+
+/* ---------- phones: notch / rounded corners / home bar ---------- */
+.viewer.phone .vstatus {
+  left: max(8px, env(safe-area-inset-left));
+}
+.viewer.phone .robot-legend {
+  right: max(8px, env(safe-area-inset-right));
+}
+
+/* ---------- touch screens (tablets and phones): 44 px targets ---------- */
+@media (pointer: coarse), (any-pointer: coarse) and (hover: none) {
+  .vtoolbar .segmented button,
+  .phone-bar .segmented button {
+    min-width: 52px;
+  }
+  .pop-btn,
+  .drive-cam .pop-btn {
+    width: 44px;
+    height: 44px;
+  }
+  .help-btn {
+    min-width: 44px;
+  }
+  .top-hint .icon-btn {
+    flex: none;
+  }
+  .vright-head .segmented button {
+    min-height: 44px;
+    padding: 0 12px;
+  }
+  .focus-menu li {
+    min-height: 44px;
+    padding: 0 12px;
+  }
+  .vtoolbar-menu > *,
+  .tab-more-menu > .btn {
+    min-height: 44px;
+  }
+  .robot-legend .robot-chip {
+    min-height: 44px;
+    padding: 0 10px;
+  }
+  .vleft-switch .segmented button {
+    min-height: 44px;
+  }
+}
