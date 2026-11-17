@@ -7,7 +7,7 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {Badge, Empty, Segmented, Spinner, Toggle} from "../components/ui";
 import {withToken} from "../lib/auth";
-import {fmtLonLat, liveAnchorText, mapToLonLat, mapToUtm, pickLayer, utmZone} from "../lib/geo";
+import {fmtLonLat, liveAnchorText, mapToLonLat, mapToUtm, utmZone} from "../lib/geo";
 import {toggleNavViz, useNavViz} from "../stores/navViz";
 import {useLiveRobots} from "../stores/robots";
 import {
@@ -20,6 +20,7 @@ import {
   dropTask,
   execute,
   fitMission,
+  imageryLayer,
   MAX_AGENTS,
   missionRoutes,
   openMission,
@@ -613,7 +614,7 @@ export function AgentIdInput({id, taken}: {id: string; taken: string[]}) {
 export function MissionPanel() {
   const s = useMission();
   const {current, preview, run, list, error, geo, layers, satellite, satOpacity, satLayer} = s;
-  const shownLayer = pickLayer(layers, satLayer);
+  const shownLayer = imageryLayer({layers, satLayer, geo});
   const grid = useViewStyle(v => v.grid);
   const patchStyle = useViewStyle(v => v.patch);
   const [omniText, setOmniText] = useState("");

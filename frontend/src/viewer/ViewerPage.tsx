@@ -41,7 +41,7 @@ import "./robotSwitcher.css";
 import {useFocusedRobot, useRobotRoster} from "./useRobotFocus";
 import {cycleFocus} from "./robotFocus";
 import {DetectionToast, ImageViewer, MissionPanel} from "./MissionPanel";
-import {fitMission, loadGeo, onMapClick, useMission} from "../stores/mission";
+import {bindGeoToSources, fitMission, loadGeo, onMapClick, useMission} from "../stores/mission";
 import {enterMissionView, leaveMissionView} from "../stores/missionView";
 import {useMapShortcuts} from "./shortcuts";
 import {exitMapFull, toggleMapFull, useMapFull} from "./mapFull";
@@ -230,13 +230,16 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // mission planner: satellite anchor + map extent, top view; tab requests from the chat
+  // GPS anchor + map extent for the ground imagery (robot view too; again when the
+  // shown maps change while none has an anchor); mission planner: top view; tab
+  // requests from the chat
   useEffect(() => {
     if (missionMode) {
       useViewer.getState().set({topDown: true});
       enterMissionView();
     }
     void loadGeo(null);
+    const unbindGeo = bindGeoToSources();
     // {tab, soft}: a soft request (a mission the chat just proposed) only
     // selects the tab on a phone, where opening it would fold the chat away
     const show = (e: Event) => {
@@ -248,6 +251,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
     window.addEventListener("adt4-show-tab", show);
     return () => {
       if (missionMode) leaveMissionView();
+      unbindGeo();
       window.removeEventListener("adt4-show-tab", show);
       if (useViewer.getState().pickMode === "mission") useViewer.getState().set({pickMode: idlePickMode()});
       useMission.getState().set({tool: {kind: "none"}, draft: [], pendingArea: null});

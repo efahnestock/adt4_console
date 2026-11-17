@@ -783,7 +783,7 @@ export function Scene({sources, bounds, cb}: {sources: SourceView[]; bounds: {mi
       <Background />
       <CaptureBridge />
       <Ground bounds={bounds} />
-      <SatelliteGround floorZ={bounds ? bounds.min[2] : null} />
+      <SatelliteGround floorZ={bounds ? bounds.min[2] : null} bounds={bounds} />
       {sources.map(s => (
         <SourceContent key={s.id} src={s} cb={cb} />
       ))}

@@ -1,5 +1,5 @@
-import {pickLayer, type TileLayer} from "../lib/geo";
-import {useMission} from "../stores/mission";
+import type {TileLayer} from "../lib/geo";
+import {imageryLayer, useMission} from "../stores/mission";
 import {Toggle} from "../components/ui";
 
 /** Picker label: the attribution up to its parenthesised details, else the layer id. */
@@ -19,7 +19,7 @@ export function GroundImageryControls() {
   const satLayer = useMission(s => s.satLayer);
   const set = useMission(s => s.set);
   if (!geo || !layers.length) return null;
-  const shown = pickLayer(layers, satLayer);
+  const shown = imageryLayer({layers, satLayer, geo});
   return (
     <div className="ground-imagery" data-testid="ground-imagery">
       <header className="vsec-head">

@@ -7,8 +7,8 @@ import * as THREE from "three";
 import {useFrame, useThree} from "@react-three/fiber";
 import {withToken} from "../lib/auth";
 import {fetchWithProgress} from "../lib/api";
-import {lonLatToTile, pickLayer, pickZoom, tilesForBox, type TileLayer, type TileQuad} from "../lib/geo";
-import {useMission} from "../stores/mission";
+import {lonLatToTile, pickZoom, tilesForBox, type TileLayer, type TileQuad} from "../lib/geo";
+import {imageryLayer, useMission} from "../stores/mission";
 import {beginTask, dropTask, endTask, progressTask} from "../stores/loading";
 
 const MARGIN_M = 60;
@@ -119,24 +119,39 @@ function Tile({q, layer, z, opacity, counted = true, order}: {q: TileQuad; layer
   );
 }
 
-export function SatelliteGround({floorZ}: {floorZ: number | null}) {
+// no map extent yet (a bag just started): the ground this far around the anchor's fit point, metres
+const START_HALF_M = 100;
+
+/** The map's xy extent for the detail tiles: the mission world's, else the
+ *  scene's (a bag's live map has no mission world) snapped out to 50 m so a
+ *  growing map re-tiles only now and then, else the ground around ``center``. */
+export function imageryBox(world: number[] | null | undefined, scene: {min: number[]; max: number[]} | null | undefined, center?: number[] | null): number[] | null {
+  if (world) return world;
+  if (!scene) return center ? [center[0] - START_HALF_M, center[1] - START_HALF_M, center[0] + START_HALF_M, center[1] + START_HALF_M] : null;
+  const s = 50;
+  return [Math.floor(scene.min[0] / s) * s, Math.floor(scene.min[1] / s) * s, Math.ceil(scene.max[0] / s) * s, Math.ceil(scene.max[1] / s) * s];
+}
+
+export function SatelliteGround({floorZ, bounds}: {floorZ: number | null; bounds?: {min: number[]; max: number[]} | null}) {
   const geo = useMission(s => s.geo);
   const on = useMission(s => s.satellite);
   const opacity = useMission(s => s.satOpacity);
   const layers = useMission(s => s.layers);
   const satLayer = useMission(s => s.satLayer);
   const world = useMission(s => s.world);
-  const layer = pickLayer(layers, satLayer);
+  const layer = imageryLayer({layers, satLayer, geo});
+  const b0 = imageryBox(world?.bounds, bounds, geo?.affine.center);
+  const boxKey = b0?.join(",") ?? "";
   // detail: the map's area (+ margin) at the finest zoom that stays within the tile budget
   const {tiles, detailZ} = useMemo(() => {
-    if (!geo || !layer || !world?.bounds) return {tiles: [], detailZ: 0};
-    const b = world.bounds;
+    const b = boxKey ? boxKey.split(",").map(Number) : null;
+    if (!geo || !layer || !b) return {tiles: [], detailZ: 0};
     const box = {min: [b[0] - MARGIN_M, b[1] - MARGIN_M], max: [b[2] + MARGIN_M, b[3] + MARGIN_M]};
     const zmax = layer.zmax ?? 19;
     const z = pickZoom(geo, box, zmax, Math.max(layer.zmin ?? 12, 10));
     // offline: only what the cache can have (its manifest's box), no 404 storm
     return {tiles: servable(tiles_(geo, box, z), layer, z), detailZ: z};
-  }, [geo, layer, world]);
+  }, [geo, layer, boxKey]);
   // context: the ground in view (zoomed out: beyond the map), coarser than the detail
   const camera = useThree(s => s.camera);
   const [view, setView] = useState<{min: number[]; max: number[]} | null>(null);
