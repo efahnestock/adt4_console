@@ -86,7 +86,10 @@ def parse_hydra_optimization(note: str | None) -> dict | None:
     m = HYDRA_OPT_RE.search(note or "")
     if not m:
         return None
-    return {"took_s": float(m.group(1)), "ago_s": float(m.group(2)) if m.group(2) else None}
+    return {
+        "took_s": float(m.group(1)),
+        "ago_s": float(m.group(2)) if m.group(2) else None,
+    }
 
 
 def hydra_optimization(health: dict | None) -> dict | None:
