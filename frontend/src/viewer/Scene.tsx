@@ -1,6 +1,6 @@
-import {Suspense, useEffect, useMemo, useRef, type CSSProperties} from "react";
+import {Suspense, useEffect, useMemo, useRef, useState, type CSSProperties} from "react";
 import * as THREE from "three";
-import {Canvas, useThree} from "@react-three/fiber";
+import {Canvas, useFrame, useThree} from "@react-three/fiber";
 import {CameraControls, Html, Line} from "@react-three/drei";
 import CameraControlsImpl from "camera-controls";
 import {useViewer, type SourceView} from "../stores/viewer";
@@ -587,9 +587,70 @@ function Markers() {
   );
 }
 
+/** The top view renders through an orthographic camera (no perspective: what is
+ *  straight below the camera and what is at the edge of the view line up with the
+ *  satellite imagery alike, whatever their height). The controls keep driving the
+ *  perspective camera; every frame this copies its pose onto the orthographic one
+ *  and sizes the view to what the perspective camera sees at the orbit target, so
+ *  pan / zoom / fly-to / fit behave as before. Picking and the satellite footprint
+ *  use R3F's default camera, which is the orthographic one while the top view is on. */
+function OrthoTopView({persp, controls}: {persp: THREE.PerspectiveCamera; controls: React.RefObject<CameraControlsImpl | null>}) {
+  const topDown = useViewer(s => s.topDown);
+  const set = useThree(s => s.set);
+  const size = useThree(s => s.size);
+  const invalidate = useThree(s => s.invalidate);
+  const ortho = useMemo(() => {
+    // near < 0: also draw what sits above the camera's own height (tall structures)
+    const c = new THREE.OrthographicCamera(-1, 1, 1, -1, -2000, 6000);
+    c.up.set(0, 0, 1);
+    return c;
+  }, []);
+  const target = useMemo(() => new THREE.Vector3(), []);
+  const sync = () => {
+    const aspect = size.width / Math.max(size.height, 1);
+    // R3F only resizes its default camera: keep the controlled one's aspect current
+    if (Math.abs(persp.aspect - aspect) > 1e-6) {
+      persp.aspect = aspect;
+      persp.updateProjectionMatrix();
+    }
+    controls.current?.getTarget(target);
+    const d = Math.max(persp.position.distanceTo(target), 0.01);
+    const halfH = d * Math.tan(THREE.MathUtils.degToRad(persp.fov) / 2);
+    ortho.position.copy(persp.position);
+    ortho.quaternion.copy(persp.quaternion);
+    ortho.left = -halfH * aspect;
+    ortho.right = halfH * aspect;
+    ortho.top = halfH;
+    ortho.bottom = -halfH;
+    ortho.zoom = 1;
+    ortho.updateProjectionMatrix();
+    ortho.updateMatrixWorld();
+  };
+  useEffect(() => {
+    if (!topDown) return;
+    sync();
+    set({camera: ortho});
+    invalidate();
+    return () => {
+      set({camera: persp});
+      invalidate();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topDown, ortho, persp]);
+  // after the controls' own update (drei runs it at priority -1)
+  useFrame(() => {
+    if (topDown) sync();
+  });
+  return null;
+}
+
 function CameraRig({bounds}: {bounds: {min: number[]; max: number[]} | null}) {
   const ref = useRef<CameraControlsImpl>(null);
   const {topDown, flyTo, follow} = useViewer();
+  // the controlled camera is always the perspective one the canvas was made with;
+  // the top view only swaps the camera that renders (OrthoTopView)
+  const getThree = useThree(s => s.get);
+  const [persp] = useState(() => getThree().camera as THREE.PerspectiveCamera);
   const fitted = useRef(false);
   // initial framing once something with bounds is loaded
   useEffect(() => {
@@ -658,7 +719,8 @@ function CameraRig({bounds}: {bounds: {min: number[]; max: number[]} | null}) {
   // of the canvas the overlays leave free; 3D keeps its angle and fits a sphere
   const fitTo = useViewer(s => s.fitTo);
   const fitNonce = useRef(fitTo?.nonce ?? 0);
-  const {camera, size} = useThree();
+  const size = useThree(s => s.size);
+  const camera = persp;
   useEffect(() => {
     const c = ref.current;
     if (!c || !fitTo || fitTo.nonce === fitNonce.current || !fitTo.pts.length) return;
@@ -699,7 +761,12 @@ function CameraRig({bounds}: {bounds: {min: number[]; max: number[]} | null}) {
     apply();
     return useRobots.subscribe(apply);
   }, [follow]);
-  return <CameraControls ref={ref} makeDefault maxPolarAngle={Math.PI * 0.49} dollyToCursor minDistance={1} maxDistance={2000} />;
+  return (
+    <>
+      <CameraControls ref={ref} camera={persp} makeDefault maxPolarAngle={Math.PI * 0.49} dollyToCursor minDistance={1} maxDistance={2000} />
+      <OrthoTopView persp={persp} controls={ref} />
+    </>
+  );
 }
 
 /** RViz look for the hydra style: grey background, light grid. */

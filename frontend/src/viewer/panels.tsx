@@ -20,6 +20,7 @@ import {PlaceKeyframes, usePlaceReturn} from "./PlaceKeyframes";
 import {placeLabelsKey, useViewStyle, type PlaceLabelsKey} from "../stores/viewStyle";
 import {BackgroundControl, HeightsControl, PathControls, RegionControls, RobotLookControl, ThemeControl} from "./StylePanels";
 import {ClearPathsRow} from "./ClearPaths";
+import {GroundImageryControls} from "./GroundImagery";
 
 const KIND_LABEL: Record<string, string> = {neo4j: "Neo4j", file: "file", live: "live"};
 
@@ -125,6 +126,7 @@ export function LayersPanel() {
       <header className="vsec-head">
         <h4>Layers</h4>
       </header>
+      <GroundImageryControls />
       {layers.some(([, l]) => l.kind === "rooms") && <RegionControls />}
       {(layers.some(([, l]) => l.kind === "agents") || order.some(id => sources[id]?.trajectory?.length)) && <PathControls />}
       <ul className="layer-list">
@@ -375,7 +377,7 @@ export function SearchBox({autoFocus, onPicked}: {autoFocus?: boolean; onPicked?
   );
 }
 
-export function Inspector({onVisit, onGoto}: {onVisit: (src: string, sym: string) => void; onGoto: (src: string, sym: string) => void}) {
+export function Inspector({onVisit, onGoto, onInsert}: {onVisit: (src: string, sym: string) => void; onGoto: (src: string, sym: string) => void; onInsert?: (sym: string) => void}) {
   const {selected, sources, fly, flat, stackHeight, select, vizStyle} = useViewer();
   const heights = useViewStyle(s => s.heights);
   const placeReturn = usePlaceReturn(s => s.from);
@@ -434,6 +436,11 @@ export function Inspector({onVisit, onGoto}: {onVisit: (src: string, sym: string
         </button>
       </div>
       <div className="row gap-sm wrap">
+        {onInsert && (
+          <button className="btn btn-sm insert-sym-btn" onClick={() => onInsert(node.sym)} title={`Type ${node.sym} into the chat message at the cursor (the chat cannot see map clicks)`} data-testid="insert-into-chat">
+            Insert {node.sym} in chat
+          </button>
+        )}
         <button className="btn btn-sm" onClick={() => fly(applyPoint(sourceMatrix(selected.src), displayPos(node, flat, stackHeight, vizStyle, heights)))}>
           Fly to
         </button>

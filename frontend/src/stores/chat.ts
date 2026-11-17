@@ -22,6 +22,8 @@ interface ChatStore {
    *  tab / pane switch); the docked tab and the mission planner's chat pane
    *  are the same conversation, so they share one draft */
   draft: string;
+  /** bumped by insertIntoChat: a mounted chat box moves its caret to `caret` */
+  insertSeq: number;
 }
 
 /** What is kept on disk: no busy flag, and no embedded candidate images (data
@@ -41,10 +43,46 @@ function load(): Pick<ChatStore, "items" | "transcript"> {
   return {items: [], transcript: []};
 }
 
-export const useChat = create<ChatStore>(() => ({...load(), busy: false, turnStart: 0, prefill: null, draft: ""}));
+export const useChat = create<ChatStore>(() => ({...load(), busy: false, turnStart: 0, prefill: null, draft: "", insertSeq: 0}));
 
 export function setChatDraft(draft: string): void {
   useChat.setState({draft});
+}
+
+/** Where the next insertion goes: the chat box's last caret / selection
+ *  (the box is unfocused by the time an Inspect button is pressed, and may be
+ *  unmounted). null: the end of the draft. */
+let caret: {start: number; end: number} | null = null;
+
+export function noteChatCaret(start: number, end: number): void {
+  caret = {start, end};
+}
+
+export function chatCaret(): {start: number; end: number} | null {
+  return caret;
+}
+
+/** `token` into `text` in place of [start, end), with a space on either side
+ *  unless one is already there (or it is the start / end of the text). */
+export function insertToken(text: string, token: string, start = text.length, end = start): {text: string; caret: number} {
+  const s = Math.max(0, Math.min(start, text.length));
+  const e = Math.max(s, Math.min(end, text.length));
+  const before = text.slice(0, s);
+  const after = text.slice(e);
+  const pre = before && !/\s$/.test(before) ? " " : "";
+  const post = after && !/^\s/.test(after) ? " " : after ? "" : " ";
+  const out = before + pre + token + post + after;
+  return {text: out, caret: (before + pre + token + post).length};
+}
+
+/** Insert a node symbol ("O(12)") into the chat draft at the caret: the chat
+ *  cannot see map clicks, so Inspect hands it the symbol. */
+export function insertIntoChat(token: string): void {
+  const draft = useChat.getState().draft;
+  const at = caret && caret.end <= draft.length ? caret : {start: draft.length, end: draft.length};
+  const r = insertToken(draft, token, at.start, at.end);
+  caret = {start: r.caret, end: r.caret};
+  useChat.setState(st => ({draft: r.text, insertSeq: st.insertSeq + 1}));
 }
 
 /** Put `text` in the chat's message box (the mission planner shows the chat pane). */

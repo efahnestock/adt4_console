@@ -258,7 +258,7 @@ def test_pending_state_is_pushed_on_the_hub(service):
     assert service.hub.frames[-1][1]["requests"] == []
 
 
-def test_transport_unavailable_blocks_live_answers_but_not_simulations():
+def test_transport_unavailable_blocks_answers():
     service = make_service(
         available=lambda: False, error=lambda: "ROS disabled (--no-ros)"
     )
@@ -272,9 +272,6 @@ def test_transport_unavailable_blocks_live_answers_but_not_simulations():
         service.respond(live["id"], False)
     assert error.value.status_code == 503 and "--no-ros" in error.value.detail
     assert service.pending()["requests"][0]["status"] == "pending"
-    service.now[0] += 31
-    demo = service.create_demo()
-    assert service.respond(demo["id"], True)["status"] == "simulated"
     assert not service.sent
 
 
@@ -296,31 +293,6 @@ def test_publish_failure_closes_the_request_but_a_refusal_keeps_it():
     assert failed.value.status_code == 503 and "duplicate" in failed.value.detail
     assert service.pending()["requests"] == []
     assert service._requests[current["id"]]["status"] == "publish_failed"
-
-
-@pytest.mark.parametrize("status", ["pending", "responding"])
-def test_simulation_refuses_to_overlap_a_live_request(service, status):
-    real = service.receive_request("euclid", request())
-    service._requests[real["id"]]["status"] = status
-    with pytest.raises(ApprovalError) as error:
-        service.create_demo()
-    assert error.value.status_code == 409
-    assert [item["id"] for item in service.pending()["requests"]] == [real["id"]]
-    assert not service.sent
-    # rechecked at insertion too: a live request may arrive while demo images encode
-    with pytest.raises(ApprovalError) as error:
-        service.receive_request("euclid", request(), simulated=True)
-    assert error.value.status_code == 409
-
-
-def test_simulation_does_not_publish_and_expired_live_request_allows_demo(service):
-    service.receive_request("euclid", request())
-    service.now[0] += 31
-    demo = service.create_demo()
-    assert demo["simulated"] is True and demo["robot"] == "euclid"
-    assert service.respond(demo["id"], True)["status"] == "simulated"
-    assert not service.sent
-    assert service.pending()["requests"] == []
 
 
 # -------------------------------------------------------------- images
@@ -424,13 +396,6 @@ def test_corrupt_compressed_image_marks_only_that_image(service):
         service.respond(current["id"], True, image_index=1, image_x=0, image_y=0)
 
 
-def test_demo_request_carries_depth(service):
-    current = service.create_demo()
-    assert current["images"][0]["depth_url"]
-    assert service.depth_value(current["id"], 0, 300, 210)["meters"] == 1.5
-    assert service.depth_value(current["id"], 0, 10, 10)["meters"] is None
-
-
 # ------------------------------------------------------- walk-to preview
 def test_quaternion_convention_matches_camera_axes():
     rotation = quaternion_matrix(0.5, -0.5, 0.5, -0.5)
@@ -509,12 +474,6 @@ def test_requests_without_geometry_still_answer_point_queries(service):
         "depth_m": None,
         "ground": None,
     }
-
-
-def test_demo_request_carries_ground_estimate(service):
-    current = service.create_demo()
-    info = service.point_info(current["id"], 0, 300, 300)
-    assert info["ground"]["distance_m"] == 2.7 and info["ground"]["walk_m"] == 1.7
 
 
 def test_hand_camera_estimates_are_flagged(service):
@@ -618,17 +577,6 @@ def test_http_depth_routes(client):
     assert client.get(base + "/point/0", params={"x": 9, "y": 1}).status_code == 422
 
 
-def test_http_demo_reports_conflict_for_pending_live_request(client):
-    client, service = client
-    service.receive_request("euclid", request())
-    result = client.post("/api/manipulation/demo")
-    assert result.status_code == 409
-    assert "live manipulation request" in result.json()["detail"]
-    service.now[0] += 31
-    demo = client.post("/api/manipulation/demo", params={"robot": "hamilton"}).json()
-    assert demo["simulated"] and demo["robot"] == "hamilton"
-
-
 def test_app_service_reports_the_bridge_state(settings):
     client, services = make_client(settings)
     state = client.get("/api/manipulation/pending").json()
@@ -638,15 +586,13 @@ def test_app_service_reports_the_bridge_state(settings):
         and state["requests"] == []
     )
     assert services.ros.manipulation is services.manipulation
-    demo = client.post("/api/manipulation/demo").json()
-    assert demo["simulated"] and demo["robot"] in services.fleet.robots()
     live = services.manipulation.receive_request("euclid", request())
     answer = client.post(
         f"/api/manipulation/requests/{live['id']}/respond", json={"approve": False}
     )
     assert answer.status_code == 503 and "--no-ros" in answer.json()["detail"]
-    assert client.post("/api/manipulation/demo").status_code == 409, (
-        "the live request is still open"
+    assert client.post("/api/manipulation/demo").status_code in (404, 405), (
+        "there is no simulated request any more"
     )
 
 

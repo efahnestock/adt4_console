@@ -7,7 +7,7 @@ import * as THREE from "three";
 import {useFrame, useThree} from "@react-three/fiber";
 import {withToken} from "../lib/auth";
 import {fetchWithProgress} from "../lib/api";
-import {lonLatToTile, pickZoom, tilesForBox, type TileLayer, type TileQuad} from "../lib/geo";
+import {lonLatToTile, pickLayer, pickZoom, tilesForBox, type TileLayer, type TileQuad} from "../lib/geo";
 import {useMission} from "../stores/mission";
 import {beginTask, dropTask, endTask, progressTask} from "../stores/loading";
 
@@ -124,8 +124,9 @@ export function SatelliteGround({floorZ}: {floorZ: number | null}) {
   const on = useMission(s => s.satellite);
   const opacity = useMission(s => s.satOpacity);
   const layers = useMission(s => s.layers);
+  const satLayer = useMission(s => s.satLayer);
   const world = useMission(s => s.world);
-  const layer = layers.find(l => l.default) ?? layers.find(l => l.id === "esri_world_imagery") ?? layers[0];
+  const layer = pickLayer(layers, satLayer);
   // detail: the map's area (+ margin) at the finest zoom that stays within the tile budget
   const {tiles, detailZ} = useMemo(() => {
     if (!geo || !layer || !world?.bounds) return {tiles: [], detailZ: 0};

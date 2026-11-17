@@ -3,7 +3,7 @@
 import {PALETTE_HEX} from "../lib/palette";
 import {create} from "zustand";
 import {decodeDelta, decodeGraph, unpack} from "../codec";
-import {GraphModel} from "../lib/graphModel";
+import {GraphModel, isAgentNode} from "../lib/graphModel";
 import {errorText, fetchWithProgress, getJSON} from "../lib/api";
 import {loadDetail, type MeshDetail} from "../lib/meshPlan";
 import {beginTask, dropTask, endTask, progressTask} from "./loading";
@@ -414,12 +414,21 @@ function subscribeSource(id: string): () => void {
       const msg = (data ?? {}) as {version?: number; base?: number; delta?: unknown};
       const v = msg.version ?? null;
       if (v === src.version) return;
-      // a known write (SAM3 commit, map edit) comes with its delta: applied in
-      // place when we hold exactly the version it was made against; otherwise
-      // (missed a frame, still loading) reload the snapshot
+      // a change the server knows (a map edit, SAM3 commit, scene change, or a
+      // reload it diffed) comes with its delta: applied in place when we hold
+      // exactly the version it was made against; otherwise (missed a frame,
+      // still loading) reload the snapshot. The mesh is untouched either way.
       if (msg.delta && msg.base != null && msg.base === src.version && src.model && src.status === "ready") {
-        src.model.applyDelta(decodeDelta(msg.delta));
-        st.patchSource(id, {version: v, rev: src.model.rev});
+        const d = decodeDelta(msg.delta);
+        const model = src.model;
+        // keyframes added or removed: the trajectory (drawn from them) follows
+        const agents = d.upserts.some(isAgentNode) || d.deletes.some(s => {
+          const n = model.nodes.get(s);
+          return !!n && isAgentNode(n);
+        });
+        model.applyDelta(d);
+        st.patchSource(id, {version: v, rev: model.rev});
+        if (agents) void loadTrajectory(id);
         return;
       }
       st.patchSource(id, {version: v});

@@ -61,10 +61,3 @@ def point(identifier: str, index: int, x: int, y: int, request: Request):
 @router.post("/requests/{identifier}/respond")
 def respond(identifier: str, body: ApprovalBody, request: Request):
     return _svc(request).respond(identifier, **body.model_dump())
-
-
-@router.post("/demo")
-def demo(request: Request, robot: str | None = None):
-    """A simulated request: answers are recorded, never published (409 while a
-    live request is open)."""
-    return _svc(request).create_demo(robot)

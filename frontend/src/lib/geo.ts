@@ -49,6 +49,12 @@ export function liveAnchorText(l: LiveAnchorInfo): string {
   ].join(" · ");
 }
 
+/** The imagery layer to draw: the viewer's pick when the server has it, else the
+ *  manifest's default, else live Esri, else the first. */
+export function pickLayer(layers: TileLayer[], id: string | null | undefined): TileLayer | undefined {
+  return (id ? layers.find(l => l.id === id) : undefined) ?? layers.find(l => l.default) ?? layers.find(l => l.id === "esri_world_imagery") ?? layers[0];
+}
+
 export interface TileLayer {
   id: string;
   attribution: string;

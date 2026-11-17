@@ -7,7 +7,7 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {Badge, Empty, Segmented, Spinner, Toggle} from "../components/ui";
 import {withToken} from "../lib/auth";
-import {fmtLonLat, liveAnchorText, mapToLonLat, mapToUtm, utmZone} from "../lib/geo";
+import {fmtLonLat, liveAnchorText, mapToLonLat, mapToUtm, pickLayer, utmZone} from "../lib/geo";
 import {toggleNavViz, useNavViz} from "../stores/navViz";
 import {useLiveRobots} from "../stores/robots";
 import {
@@ -612,7 +612,8 @@ export function AgentIdInput({id, taken}: {id: string; taken: string[]}) {
 
 export function MissionPanel() {
   const s = useMission();
-  const {current, preview, run, list, error, geo, layers, satellite, satOpacity} = s;
+  const {current, preview, run, list, error, geo, layers, satellite, satOpacity, satLayer} = s;
+  const shownLayer = pickLayer(layers, satLayer);
   const grid = useViewStyle(v => v.grid);
   const patchStyle = useViewStyle(v => v.patch);
   const [omniText, setOmniText] = useState("");
@@ -834,7 +835,7 @@ export function MissionPanel() {
             <div className="small muted">
               {geo.live ? "Estimated" : "Saved"} GPS anchor {utmZone(geo.anchor.epsg)}
               {!geo.live && geo.anchor.rms != null ? `, fit RMS ${geo.anchor.rms.toFixed(2)} m` : ""} · {layers.map(l => `${l.id}${l.cached ? ` (${l.cached} tiles)` : ""}${l.live ? " live" : ""}`).join(", ") || "no tiles cached"}
-              {layers[0]?.attribution ? ` · imagery © ${layers[0].attribution}` : ""}
+              {shownLayer?.attribution ? ` · imagery © ${shownLayer.attribution}` : ""}
             </div>
             <CursorReadout />
           </>
