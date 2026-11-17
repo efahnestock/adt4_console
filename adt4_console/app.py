@@ -308,12 +308,20 @@ def wire_scene_repair(svc) -> None:
         r = _object_row(svc, sym)
         return (r["x"], r["y"]) if r and r.get("x") is not None else None
 
-    def invalidate():
+    def map_changed(map_version, changes):
+        """A scene change batch from ROS (change detection, plan repair, a chat
+        edit made elsewhere): fold the nodes it names into the loaded map; one
+        that names none (a connection edit) or cannot be folded is reloaded
+        (GraphService.apply_change)."""
         t = _live_target(svc)
         if t is None:
             return
-        t.invalidate()
-        svc.graph.notify_version(t.id, "scene changes")
+        syms = [c["symbol"] for c in changes or () if c.get("symbol")]
+        if map_version is not None:  # nothing named: still a no-op if already seen
+            svc.graph.apply_change(t.id, "scene changes", map_version, syms)
+        else:
+            t.invalidate()
+            svc.graph.notify_version(t.id, "scene changes")
 
     def send(robot, pddl, constraints, engine):
         return svc.ros.send_pddl_goal(
@@ -329,7 +337,7 @@ def wire_scene_repair(svc) -> None:
         svc.hub, send=send, resume=resume, active_goals=lambda: svc.ros.active_goals(),
         plan_of=lambda robot: svc.ros.plan(robot),
         class_of=lambda sym: (_object_row(svc, sym) or {}).get("c"),
-        position_of=position_of, robot_xy=robot_xy, invalidate=invalidate,
+        position_of=position_of, robot_xy=robot_xy, map_changed=map_changed,
     )  # fmt: skip
     svc.scene_repair = sr
     svc.ros.scene_repair = sr

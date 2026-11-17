@@ -296,6 +296,18 @@ def test_apply_change_already_seen_sends_nothing(settings):
     assert len(hub.frames) == 1  # the echo: nothing new, no push, no reload
 
 
+def test_scene_changes_from_ros_name_their_nodes(settings):
+    """A batch on /scene_graph/changes_applied from someone else (change detection,
+    plan repair) reaches the graph with its map version and nodes."""
+    from adt4_console.scene_repair import SceneRepair
+
+    got = []
+    sr = SceneRepair(map_changed=lambda mv, changes: got.append((mv, [c["symbol"] for c in changes])))
+    sr.on_applied("scene_change_detector", 12, [{"kind": 1, "symbol": "O4", "label": "chair"}])
+    sr.on_applied("sget/chat", 13, [], local=True)  # our own: already folded in
+    assert got == [(12, ["O4"])]
+
+
 # --------------------------------------------------------------------- database
 def _seed_graph():
     import spark_dsg as dsg
