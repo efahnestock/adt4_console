@@ -5489,9 +5489,6 @@ input[type="checkbox"] {
 .trial-row .grow {
   flex: 1;
 }
-body.map-full .trial-bar:not(.trial-bar-on) {
-  display: none;
-}
 .trial-video-opt {
   display: flex;
   align-items: center;
