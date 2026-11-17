@@ -1049,11 +1049,19 @@ fixes against the Hydra trajectory by `scripts/geo/anchor_from_gps.py`. The scri
     `lonlat_to_map` as 2×3 rows, plus `max_err_m` (millimetres at this scale).
   * The browser uses it to place tiles and for the cursor's lat/lon readout, so it needs no
     projection library.
-* `GET /api/geo/layers` → `{layers: [{id, attribution, zmin, zmax, bbox_lonlat, cached, live, default}]}`.
+* `GET /api/geo/layers` → `{layers: [{id, attribution, zmin, zmax, bbox_lonlat, cached, live, default, kind, priority, fallback}]}`.
   The values come from each layer's `tiles.json` manifest.
   * A manifest may also name the layer's source, `url` (an XYZ template with `{z}/{x}/{y}`), so a
     layer other than Esri can be fetched live by adding only `<tiles-dir>/<layer>/tiles.json`.
   * `default: true` makes it the layer drawn under the map (otherwise Esri, else the first layer).
+  * `kind` (`"satellite"` unless the manifest says e.g. `"ortho"`) and `priority` (number, default 0):
+    with no layer picked in the browser, the highest-priority layer (priority > 0) whose
+    `bbox_lonlat` holds the map's centre wins over `default`. `scripts/geo/make_ortho_tiles.py`
+    writes `kind: "ortho", priority: 10` for an orthophoto flown by the quad.
+  * `fallback` names another layer to serve where this one has no tile (an orthophoto over a small
+    area, the city's aerial around it). The tile route serves the fallback's tile under this layer's
+    URL, and the reported `bbox_lonlat` / `zmin` / `live` cover both layers, so the browser asks for
+    the whole composite. `fallback` is `null` when the named layer does not exist.
 * `GET /api/geo/tiles/{layer}/{z}/{x}/{y}` → the tile (XYZ / slippy-map numbering).
   * Tiles are served from `--tiles-dir` (`<dir>/<layer>/{z}/{x}/{y}.jpg`, written by
     `scripts/geo/fetch_tiles.py`).
