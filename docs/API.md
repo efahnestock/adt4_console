@@ -1848,6 +1848,11 @@ Routes (`/api/trials`):
   start is `failed` with the reason; the trial runs on the others. If none
   starts the trial ends as `failed`.
 - `POST /machines/{name}/start` retries one machine in the active trial.
+  It also adds a machine that was not in the trial, or one that was removed
+  (its new bag is `<machine>_part<n>`).
+- `POST /machines/{name}/stop` takes one recording machine out of the active
+  trial: its bag is closed (`stopped`, `removed: true`), the trial goes on.
+  A stop that is not delivered is retried like the trial's own stop.
 - `POST /flag {text}` → `{event}`; 409 without an active trial, 500 if the line
   could not be written (the UI keeps the text).
 - `POST /stop {force?}`; `force` = a second SIGINT then SIGTERM (never -9).

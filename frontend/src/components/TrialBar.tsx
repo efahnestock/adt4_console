@@ -4,7 +4,7 @@
 import {useEffect, useRef, useState} from "react";
 import {errorText, getJSON, postJSON} from "../lib/api";
 import {fmtBytes, fmtRate} from "../lib/fuzzy";
-import {answerAge, fmtAge, fmtElapsed, fmtMinutes, LIVE, machineLabel, machineTone, recordingCount, shortestLeft, staleAfter, topicCheckLabel,
+import {answerAge, fmtAge, fmtElapsed, fmtMinutes, isRemoved, LIVE, machineLabel, machineTone, recordingCount, shortestLeft, staleAfter, topicCheckLabel,
   type PreflightMachine, type Trial, type TrialMachine, type TrialPayload} from "../lib/trial";
 import {serverNow, useTrial} from "../stores/trial";
 import {acquireScreen, note as screenNote, remoteHint, SCREEN_FPS, screenPref, screenSupported, setScreenPref, startScreenRecording, useScreenRec} from "../lib/screenRec";
@@ -32,7 +32,7 @@ function machineTitle(m: TrialMachine, now: number): string {
   ].filter(Boolean).join("\n");
 }
 
-function MachineChip({m, now, pollS, onRetry}: {m: TrialMachine; now: number; pollS: number; onRetry?: () => void}) {
+function MachineChip({m, now, pollS, onRetry, onRemove}: {m: TrialMachine; now: number; pollS: number; onRetry?: () => void; onRemove?: () => void}) {
   const tone = machineTone(m, now, pollS);
   const age = answerAge(m, now);
   const stale = m.state === "recording" && (age === null || age > staleAfter(pollS));
@@ -42,6 +42,9 @@ function MachineChip({m, now, pollS, onRetry}: {m: TrialMachine; now: number; po
   // and kept open by a click (a native tooltip is too easy to miss and puts 40
   // topics on one line)
   const [pinned, setPinned] = useState(false);
+  // removing a machine closes its bag: asked twice, on the chip itself
+  const [asking, setAsking] = useState(false);
+  const canRemove = !!onRemove && (m.state === "recording" || m.state === "unreachable");
   return (
     <span className={`trial-chip trial-chip-${tone} ${missing.length ? "trial-chip-has-pop" : ""} ${pinned ? "trial-chip-pinned" : ""}`} title={missing.length ? undefined : machineTitle(m, now)}
       data-testid={`trial-machine-${m.name}`} onClick={missing.length ? () => setPinned(p => !p) : undefined}>
@@ -65,6 +68,19 @@ function MachineChip({m, now, pollS, onRetry}: {m: TrialMachine; now: number; po
       {(m.state === "failed" || m.state === "lost") && m.message && <span className="trial-note">{m.message}</span>}
       {onRetry && (m.state === "failed" || m.state === "lost") && (
         <button className="btn btn-sm" onClick={onRetry}>Retry</button>
+      )}
+      {onRetry && isRemoved(m) && (
+        <button className="btn btn-xs" onClick={onRetry} title={`Record on ${m.name} again, as a new part of this trial`} data-testid={`trial-add-back-${m.name}`}>Add back</button>
+      )}
+      {canRemove && !asking && (
+        <button className="btn btn-xs" onClick={e => { e.stopPropagation(); setAsking(true); }} title={`Stop recording on ${m.name} only; the trial goes on`} data-testid={`trial-remove-${m.name}`}>Remove</button>
+      )}
+      {canRemove && asking && (
+        <span className="trial-ask" onClick={e => e.stopPropagation()}>
+          Stop recording on {m.name}?
+          <button className="btn btn-xs btn-danger" onClick={() => { setAsking(false); onRemove?.(); }} data-testid={`trial-remove-yes-${m.name}`}>Yes, remove</button>
+          <button className="btn btn-xs" onClick={() => setAsking(false)}>No</button>
+        </span>
       )}
       {missing.length > 0 && (
         <span className="trial-pop" role="tooltip" data-testid={`trial-missing-${m.name}`} onClick={e => e.stopPropagation()}>
@@ -222,6 +238,53 @@ function StartDialog({onClose}: {onClose: () => void}) {
   );
 }
 
+/** Add a machine to the trial that is recording. */
+function AddDialog({trial, onClose}: {trial: Trial; onClose: () => void}) {
+  const [pre, setPre] = useState<PreflightMachine[] | null>(null);
+  const [preError, setPreError] = useState<unknown>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  useEffect(() => {
+    let live = true;
+    getJSON<{machines: PreflightMachine[]}>("api/trials/preflight").then(r => live && setPre(r.machines)).catch(e => live && setPreError(e));
+    return () => { live = false; };
+  }, []);
+  // every machine that is not recording (or starting, or being stopped) in this trial
+  const free = pre?.filter(m => { const cur = trial.machines[m.name]; return !cur || !(LIVE.includes(cur.state) || cur.state === "starting"); }) ?? [];
+  const add = async (name: string) => {
+    setBusy(name);
+    setError(null);
+    try {
+      useTrial.getState().set(await postJSON<TrialPayload>(`api/trials/machines/${encodeURIComponent(name)}/start`));
+      onClose();
+    } catch (e) {
+      setError(e);
+      setBusy(null);
+    }
+  };
+  return (
+    <Modal title="Add a machine to this recording" onClose={busy ? undefined : onClose} footer={<button className="btn" onClick={onClose} disabled={!!busy}>Close</button>}>
+      {preError ? <ErrorBox error={preError} compact /> : !pre ? <Spinner label="Asking every machine for its disk and recorder" /> : free.length === 0 ? <p className="muted">Every machine is already recording in this trial.</p> : (
+        <table className="table trial-pre">
+          <thead><tr><th>Machine</th><th>Free disk</th><th></th><th></th></tr></thead>
+          <tbody>
+            {free.map(m => (
+              <tr key={m.name} className={m.ready ? "" : "muted"}>
+                <td className="strong">{m.name}{m.local && <span className="muted small"> (base station)</span>}</td>
+                <td>{m.free_bytes != null ? fmtBytes(m.free_bytes) : "?"}</td>
+                <td className={m.ready ? "muted small" : "tone-err small"}>{[m.error, ...m.notes].filter(Boolean).join("; ")}</td>
+                <td><button className="btn btn-sm btn-danger" disabled={!!busy || !m.ready} onClick={() => void add(m.name)} data-testid={`trial-add-${m.name}`}>{busy === m.name ? "Starting ..." : "Start recording"}</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="muted small">The machine joins <span className="mono">{trial.trial_id}</span> from now on; a machine that recorded earlier in this trial gets a new part next to its first bag.</p>
+      {error != null && <ErrorBox error={error} compact />}
+    </Modal>
+  );
+}
+
 function StopDialog({trial, onClose}: {trial: Trial; onClose: () => void}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -253,7 +316,7 @@ export function TrialBar() {
   const payload = useTrial(s => s.payload);
   const receivedAt = useTrial(s => s.receivedAt);
   const clientNow = useTick();
-  const [dialog, setDialog] = useState<"start" | "stop" | null>(null);
+  const [dialog, setDialog] = useState<"start" | "stop" | "add" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   useEffect(() => void useTrial.getState().load(), []);
   if (!payload) return null; // a server without trials: no bar
@@ -322,13 +385,16 @@ export function TrialBar() {
       </div>
       <div className="trial-machines">
         {Object.values(t.machines).map(m => (
-          <MachineChip key={m.name} m={m} now={now} pollS={payload.poll_s} onRetry={stopping ? undefined : () => void act(`api/trials/machines/${encodeURIComponent(m.name)}/start`)} />
+          <MachineChip key={m.name} m={m} now={now} pollS={payload.poll_s} onRetry={stopping ? undefined : () => void act(`api/trials/machines/${encodeURIComponent(m.name)}/start`)}
+            onRemove={t.state === "recording" ? () => void act(`api/trials/machines/${encodeURIComponent(m.name)}/stop`) : undefined} />
         ))}
+        {t.state === "recording" && <button className="btn btn-xs" onClick={() => setDialog("add")} title="Start recording on another machine, in this trial" data-testid="trial-add">+ Add machine</button>}
         {staleState && <span className="trial-note">this page has had no update for {Math.round(stateAge)} s: the states shown may be old</span>}
         {t.log_error && <span className="trial-note">EVENT LOG NOT WRITING: {t.log_error}</span>}
         {actionError && <span className="trial-note">{actionError}</span>}
       </div>
       {dialog === "stop" && <StopDialog trial={t} onClose={() => setDialog(null)} />}
+      {dialog === "add" && <AddDialog trial={t} onClose={() => setDialog(null)} />}
     </div>
   );
 }

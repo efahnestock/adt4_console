@@ -5412,6 +5412,12 @@ input[type="checkbox"] {
   background: var(--bg-2);
   font-variant-numeric: tabular-nums;
 }
+.trial-ask {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
 .trial-chip-has-pop {
   position: relative;
   cursor: pointer;

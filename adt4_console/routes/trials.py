@@ -121,5 +121,11 @@ def close(request: Request):
 
 @router.post("/machines/{name}/start")
 def start_machine(name: str, request: Request):
-    """Retry one machine in the active trial."""
+    """Retry one machine in the active trial, or add one to it."""
     return _call(_trials(request).start_machine, name)
+
+
+@router.post("/machines/{name}/stop")
+def stop_machine(name: str, request: Request):
+    """Take one machine out of the active trial; the others keep recording."""
+    return _call(_trials(request).stop_machine, name)

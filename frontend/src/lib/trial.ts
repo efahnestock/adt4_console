@@ -11,6 +11,8 @@ export interface TrialMachine {
   role?: string | null;
   state: MachineState;
   message?: string | null;
+  /** taken out of the trial while it went on (its bag is closed) */
+  removed?: boolean;
   dir?: string | null;
   bytes?: number | null;
   rate_bps?: number | null;
@@ -95,6 +97,7 @@ export function machineTone(m: TrialMachine, serverNow: number, pollS: number): 
     case "skipped":
       return "off";
     case "stopped":
+      if (m.removed) return "off";
       return m.warnings?.length ? "warn" : "ok";
     case "recording": {
       const age = answerAge(m, serverNow);
@@ -121,6 +124,8 @@ export function machineLabel(m: TrialMachine): string {
       return "stop not delivered";
     case "stop_failed":
       return "would not stop";
+    case "stopped":
+      return m.removed ? "removed" : "stopped";
     default:
       return m.state;
   }
@@ -158,8 +163,12 @@ export function shortestLeft(t: Trial): {name: string; minutes: number} | null {
   return best;
 }
 
-/** How many of the trial's machines are known to be recording right now. */
+/** Taken out of the trial on purpose, and its bag is closed. */
+export const isRemoved = (m: TrialMachine) => !!m.removed && m.state === "stopped";
+
+/** How many of the trial's machines are known to be recording right now
+ *  (a machine that was removed is not one of them). */
 export function recordingCount(t: Trial, serverNow: number, pollS: number): {ok: number; of: number} {
-  const ms = Object.values(t.machines).filter(m => m.state !== "skipped");
+  const ms = Object.values(t.machines).filter(m => m.state !== "skipped" && !isRemoved(m));
   return {ok: ms.filter(m => m.state === "recording" && machineTone(m, serverNow, pollS) !== "err" && (answerAge(m, serverNow) ?? Infinity) <= staleAfter(pollS)).length, of: ms.length};
 }

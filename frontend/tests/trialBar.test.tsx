@@ -127,6 +127,28 @@ describe("TrialBar", () => {
     expect($("trial-machine-euclid")!.querySelector("button")!.textContent).toBe("Retry");
   });
 
+  it("a machine is removed after a second click, and a removed one is not counted", async () => {
+    const posts: string[] = [];
+    await mount(payload(trial([machine("euclid"), machine("gauss")])), (url, init) => {
+      if (init?.method === "POST") posts.push(url);
+      return json(payload(trial([machine("euclid"), machine("gauss", {state: "stopped", removed: true})])));
+    });
+    await act(async () => $("trial-remove-gauss")!.click());
+    expect(posts).toEqual([]); // the first click only asks
+    expect($("trial-machine-gauss")!.textContent).toContain("Stop recording on gauss?");
+    await act(async () => $("trial-remove-yes-gauss")!.click());
+    await flush();
+    expect(posts.map(u => u.replace(/^.*api\//, ""))).toEqual(["trials/machines/gauss/stop"]);
+    expect($("trial-count")!.textContent).toBe("1 of 1 recording");
+    expect($("trial-bar")!.className).not.toContain("trial-bar-warn");
+    expect($("trial-machine-gauss")!.textContent).toContain("removed");
+    expect($("trial-remove-gauss")).toBeNull();
+    await act(async () => $("trial-add-back-gauss")!.click());
+    await flush();
+    expect(posts.at(-1)).toContain("trials/machines/gauss/start");
+    expect($("trial-add")).not.toBeNull();
+  });
+
   it("a flag is posted, confirmed, and kept in the box when saving fails", async () => {
     const posts: string[] = [];
     let fail = false;

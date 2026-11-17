@@ -822,3 +822,44 @@ def test_request_log_failure_never_breaks_the_request(rig, monkeypatch):
 def test_the_local_helper_runs_in_its_own_session():
     rc, out, _ = tr._run_local("python3 -c 'import os; print(os.getsid(0))'", 5)
     assert rc == 0 and int(out) != os.getsid(0)
+
+
+def test_a_machine_is_removed_and_added_while_the_trial_records(rig):
+    a = start(rig, machines=["euclid", "gauss"]).json()["active"]
+    assert sorted(a["machines"]) == ["euclid", "gauss"]
+    # remove gauss: its bag closes, the trial and euclid go on
+    body = rig.c.post("/api/trials/machines/gauss/stop").json()
+    a = body["active"]
+    assert a["state"] == "recording"
+    g = a["machines"]["gauss"]
+    assert g["state"] == "stopped" and g["removed"] is True
+    assert rig.fake.rec.get(rig.ip["gauss"]) is None
+    assert a["machines"]["euclid"]["state"] == "recording"
+    assert rig.c.post("/api/trials/machines/gauss/stop").status_code == 409
+    assert rig.c.post("/api/trials/machines/nobody/stop").status_code == 404
+    rig.t.poll_once()  # a removed machine does not end the trial or get polled
+    assert rig.c.get("/api/trials").json()["active"]["state"] == "recording"
+    # add it back, and add one that was never in the trial
+    g = rig.c.post("/api/trials/machines/gauss/start").json()["active"]["machines"]["gauss"]
+    assert g["state"] == "recording" and g["removed"] is False
+    h = rig.c.post("/api/trials/machines/hamilton/start").json()["active"]["machines"]
+    assert h["hamilton"]["state"] == "recording"
+    kinds = [(e["type"], e.get("machine")) for e in events(rig, a["trial_id"])]
+    assert ("machine_remove", "gauss") in kinds
+    assert ("machine_add", "gauss") in kinds and ("machine_add", "hamilton") in kinds
+    # the trial's stop closes all three
+    last = rig.c.post("/api/trials/stop").json()["last"]
+    assert {n: m["state"] for n, m in last["machines"].items()} == {
+        "euclid": "stopped", "gauss": "stopped", "hamilton": "stopped"}  # fmt: skip
+
+
+def test_removing_a_machine_out_of_range_is_retried(rig):
+    start(rig)
+    rig.fake.unreachable.add(rig.ip["gauss"])
+    a = rig.c.post("/api/trials/machines/gauss/stop").json()["active"]
+    assert a["state"] == "recording"
+    assert a["machines"]["gauss"]["state"] == "stop_pending"
+    rig.fake.unreachable.clear()
+    rig.t.poll_once()
+    a = rig.c.get("/api/trials").json()["active"]
+    assert a["state"] == "recording" and a["machines"]["gauss"]["state"] == "stopped"

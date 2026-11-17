@@ -657,12 +657,61 @@ class TrialService:
                 raise TrialError(409, f"{name} is {cur['state']}")
         m = next(iter(self._machines([name])))
         with self.lock:
+            added = cur is None or bool(cur.get("removed"))
             trial["machines"].setdefault(name, _new_machine(m))
-            trial["machines"][name].update(state=STARTING, message="starting")
+            # a machine that recorded before starts a new part: its topic
+            # check and its rate are measured again
+            trial["machines"][name].update(
+                state=STARTING, message="starting", removed=False,
+                topic_check=None, rate_bps=None, sample_t=None, last_growth=None,
+            )  # fmt: skip
+        if added:
+            self.event("machine_add", trial, machine=name)
         self._publish()
         self._start_machine(trial, m)
         self._save(trial)
+        self._publish()
         self._ensure_poller()
+        return self.payload()
+
+    def stop_machine(self, name: str) -> dict:
+        """Take one machine out of the active trial: its bag is closed, the
+        trial goes on with the others.  ``start_machine`` adds it back (a new
+        part next to the closed bag)."""
+        with self.lock:
+            trial = self.active
+            if trial is None or trial["state"] != RECORDING:
+                raise TrialError(409, "no trial is recording")
+            cur = trial["machines"].get(name)
+            if cur is None:
+                raise TrialError(404, f"{name} is not in this trial")
+            if cur["state"] not in (RECORDING, UNREACHABLE):
+                raise TrialError(409, f"{name} is {cur['state']}")
+            cur["removed"] = True
+        self.event("machine_remove", trial, machine=name)
+        self._set(trial, name, state=STOPPING, message="closing the bag")
+        self._publish()
+        machines = self._by_name([name])
+
+        def run():
+            try:
+                if machines:
+                    reply = self._rec(
+                        machines[0], self._stop_args(trial, False), STOP_TIMEOUT_S
+                    )[0]
+                else:
+                    reply = {"ok": False, "unreachable": True}
+                self._stop_result(trial, name, reply)
+                self._save(trial)
+                self._publish()
+                self._ensure_poller()  # retries a stop that was not delivered
+            except Exception:  # noqa: BLE001
+                log.exception("removing %s from %s", name, trial["trial_id"])
+
+        if self.background:
+            threading.Thread(target=run, name="trial-remove", daemon=True).start()
+        else:
+            run()
         return self.payload()
 
     def _check_topics(self, trial: dict, machines: list[dict]) -> None:
