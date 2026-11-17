@@ -295,3 +295,9 @@ class Hub:
     @property
     def n_clients(self) -> int:
         return len(self._clients)
+
+    def wanted(self, topic: str) -> bool:
+        """Whether any connected client is subscribed to ``topic``."""
+        with self._lock:
+            clients = list(self._clients.values())
+        return any(c.wants(topic) for c in clients)

@@ -81,6 +81,10 @@ class FakeGraph:
     def notify_version(self, sid, reason, delta=None):
         self.notified.append((sid, reason))
 
+    def refresh(self, sid, reason):  # GraphService.refresh: new version, viewers told
+        self.get(sid).invalidate()
+        self.notify_version(sid, reason)
+
 
 class FakeRos:
     available = True
