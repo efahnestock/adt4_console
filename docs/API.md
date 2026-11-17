@@ -1825,7 +1825,7 @@ Trial id: `trial_<UTC yyyymmddThhmmssZ>_<slug of the description>`.
 
 | where | path | what |
 |---|---|---|
-| each machine | `<output_root>/<trial_id>/<machine>/` | a rosbag2 directory plus `trial.json` (topics, run id, clocks; per-topic message counts and `silent_topics` at stop), `recorder.log`, `pane_start_*.txt` / `pane_stop_*.txt` (only the `adt4_system` windows listed in the checkout's `recording/capture_panes.txt`, by default the `status` panel's screen) |
+| each machine | `<output_root>/<trial_id>/<machine>/` | a rosbag2 directory plus `trial.json` (topics, run id, clocks; per-topic message counts and `silent_topics` at stop), `recorder.log` |
 | console | `<output_root>/<trial_id>/console/trial.json` | the trial: description, machines, every start / topic check / stop result, clock offsets |
 | console | `<output_root>/<trial_id>/console/events.jsonl` | one JSON object per line, fsynced: `trial_start`, `trial_started`, `machine_state`, `topics_missing`, `warning`, `flag`, `request`, `trial_stop`, `trial_end`, `console_restarted` |
 

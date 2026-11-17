@@ -116,7 +116,7 @@ class FakeRec:
             del self.rec[ip]
             return 0, json.dumps({"ok": True, "stopped": True, "was_recording": True, "metadata": True,
                                   "size_bytes": 6 * GB, "duration_s": 120.0, "topics": 19,
-                                  "silent_topics": self.silent, "stack_panes": 12, "free_bytes": self.free}), ""  # fmt: skip
+                                  "silent_topics": self.silent, "free_bytes": self.free}), ""  # fmt: skip
         return 1, "", f"unexpected {args}"
 
     def run_parallel(self, fn, items, max_workers=8):
