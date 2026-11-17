@@ -647,6 +647,9 @@ class RosBridge:
         # manipulation_service.ManipulationApprovalService (set by build_services):
         # gets every robot's ManipulationApprovalRequest
         self.manipulation = None
+        # pick_result_service.PickResultService (set by build_services): gets
+        # every robot's "did the pick work?" question
+        self.pick_result = None
         # the AWCD base station's merged change set (3D overlay + change list)
         self.awcd = AwcdChangeSet()
         self._awcd_topics: set[str] = set()
@@ -1343,6 +1346,26 @@ class RosBridge:
                     lambda m: self._on_manipulation_request(robot, m),
                     1,
                 )
+
+        # pick results: after a pick the executor asks whether the robot holds
+        # the object and waits (pick_result_service). A plain subscription, so
+        # it matches the robot's latched publisher and a fleetlink relay alike;
+        # a console started while a robot waits gets the robot's next repeat.
+        if self.pick_result is not None:
+            from . import pick_result_service as prs
+
+            n.create_subscription(
+                string,
+                prs.request_topic(robot),
+                lambda m: self._on_pick_result_request(robot, m),
+                5,
+            )
+
+    def _on_pick_result_request(self, robot: str, msg) -> None:
+        try:
+            self.pick_result.receive(robot, msg.data)
+        except Exception:  # noqa: BLE001
+            log.exception("pick result question from %s", robot)
 
     def _on_manipulation_request(self, robot: str, msg) -> None:
         try:

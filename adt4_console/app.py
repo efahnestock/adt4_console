@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import html
 import logging
+import os
 import pathlib
 from dataclasses import dataclass, field
 
@@ -31,6 +32,7 @@ from .manipulation_service import (
     ros_response_publisher,
 )
 from .optional import FeatureUnavailable
+from .pick_result_service import PickResultService, ros_answer_publisher
 from .ros_bridge import RosBridge, RosUnavailable
 from .settings import Settings
 from .teleop_service import TeleopService
@@ -86,9 +88,12 @@ class Services:
         None  # scene_repair.SceneRepair: scene change -> replan (API.md §20)
     )
     manipulation: ManipulationApprovalService | None = None
+    # pick_result_service.PickResultService: "did the robot pick it up?"
+    pick_result: PickResultService | None = None
     planner_state: object = (
         None  # planner_state.PlannerState: what the planner believes
     )
+    trials: object = None  # trials.TrialService: fleet-wide recordings, flags
     nav_viz: object = (
         None  # nav_viz.NavViz: MPPI / mid-range markers, GPS fix (on demand)
     )
@@ -107,6 +112,8 @@ class Services:
         self.graph.warm()
 
     def stop(self) -> None:
+        if self.trials is not None:
+            self.trials.shutdown()  # only the polling: recordings keep going
         for svc in (
             self.nav_viz,
             self.missions,
@@ -185,9 +192,15 @@ def build_services(
         hub,
         available=lambda: svc.ros.available,
         error=lambda: svc.ros.error,
-        default_robot=lambda: (settings.robots or fleet.robots() or ["euclid"])[0],
     )
     ros.manipulation = svc.manipulation
+    svc.pick_result = PickResultService(
+        ros_answer_publisher(ros),
+        hub,
+        available=lambda: svc.ros.available,
+        error=lambda: svc.ros.error,
+    )
+    ros.pick_result = svc.pick_result
     from .planner_state import PlannerState
 
     svc.planner_state = PlannerState(settings, ros, svc.maps, fleet, hub)
@@ -210,7 +223,52 @@ def build_services(
     chat.sget = SgetService(graph, ros, settings)
     svc.missions.edits = svc.edits
     wire_scene_repair(svc)
+    from .trials import TrialService
+
+    svc.trials = TrialService(settings, fleet, lambda: svc.helpers, hub)
+    svc.trials.context = lambda: trial_context(svc)
+    svc.trials.jobs = jobs  # to log the question a job confirmation answers
+    try:
+        svc.trials.restore()  # a trial still recording when the console last exited
+    except Exception:  # noqa: BLE001
+        log.exception("restoring the active trial")
     return svc
+
+
+def trial_context(svc) -> dict:
+    """What the console is working with, for a trial's record: the active
+    launch (experiment, robots, prior map), the live map with the hash of its
+    scene graph file, and the missions.  Each part fails on its own."""
+    import hashlib
+
+    out: dict = {}
+
+    def put(key, fn):
+        try:
+            out[key] = fn()
+        except Exception as e:  # noqa: BLE001
+            out[key] = {"error": f"{type(e).__name__}: {e}"}
+
+    def live_map():
+        st = svc.maps.status()
+        keep = {
+            k: st.get(k)
+            for k in ("target", "uri", "run", "name", "dsg", "nodes", "ready")
+        }
+        dsg = keep.get("dsg")
+        if dsg and os.path.isfile(str(dsg)) and os.path.getsize(str(dsg)) < 4 * 10**9:
+            h = hashlib.sha256()
+            with open(str(dsg), "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            keep["dsg_sha256"] = h.hexdigest()
+        return keep
+
+    put("launch", lambda: svc.launch_state.get() if svc.launch_state else None)
+    put("map", live_map)
+    put("missions", lambda: svc.missions.list()[:30] if svc.missions else [])
+    put("ros", lambda: bool(svc.settings.ros))
+    return out
 
 
 def _live_target(svc):
@@ -421,6 +479,7 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
     from .routes import (
         change_detection,
         chat,
+        drives,
         edit,
         fleet,
         geo,
@@ -432,6 +491,7 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
         maps,
         mission,
         network,
+        pick_result,
         plan,
         planner_state,
         quad,
@@ -439,16 +499,21 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
         scene_repair,
         teleop,
         terminal,
+        trials,
         ws,
     )
 
     for mod in (fleet, launch, jobs, network, maps, graph, plan, live, chat, sam3, teleop, terminal,
-                geo, mission, quad, edit, change_detection, scene_repair, manipulation, planner_state, ws):  # fmt: skip
+                geo, mission, quad, edit, change_detection, scene_repair, manipulation, pick_result,
+                planner_state, drives, trials, ws):  # fmt: skip
         app.include_router(mod.router)
     app.include_router(live.robots_router)
 
     _mount_static(app, pathlib.Path(settings.static_dir))
 
+    from .trials import TrialRequestLog
+
+    app.add_middleware(TrialRequestLog)  # operator actions -> the trial's events.jsonl
     app.add_middleware(SelectiveGZipMiddleware, minimum_size=1024)
     app.add_middleware(TokenAuthMiddleware, token=settings.token)
     return app
