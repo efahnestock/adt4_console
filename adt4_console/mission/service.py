@@ -592,14 +592,25 @@ class MissionService:
             return pddl
         sid = self._edit_src(m.src)
         if sid is None:
-            raise ValueError("the goal names mock objects, which can only be staged in a Neo4j map")
-        have = (lambda sym: world.graph.symbol_pos(sym) is not None) if world.graph is not None else (lambda s: False)
+            raise ValueError(
+                "the goal names mock objects, which can only be staged in a Neo4j map"
+            )
+        have = (
+            (lambda sym: world.graph.symbol_pos(sym) is not None)
+            if world.graph is not None
+            else (lambda s: False)
+        )
         ops = mocks.create_ops(objects, have)
         if not ops:
             return pddl
         out = self.edits.apply(sid, ops, author={"via": "mission execute", "mission": m.id}, stage=False,
                                summary="stage mock objects: " + ", ".join(o["symbol"] for o in ops))  # fmt: skip
-        log.info("mission %s: staged mock objects %s in %s", m.id, [o["symbol"] for o in ops], sid)
+        log.info(
+            "mission %s: staged mock objects %s in %s",
+            m.id,
+            [o["symbol"] for o in ops],
+            sid,
+        )
         self._await_planner_map((out or {}).get("map_version"))
         return pddl
 
@@ -700,13 +711,17 @@ class MissionService:
         Returns ``{imported: [{id, name}], errors: [{index, name, error}]}``."""
         items = data.get("missions") if isinstance(data, dict) else data
         if not isinstance(items, list):
-            raise ValueError("not a mission bundle: expected {missions: [...]} or a list")
+            raise ValueError(
+                "not a mission bundle: expected {missions: [...]} or a list"
+            )
         imported, errors = [], []
         for i, it in enumerate(items):
             name = it.get("name") if isinstance(it, dict) else None
             try:
                 r = self.import_mission(it)
-                imported.append({"id": r["mission"]["id"], "name": r["mission"]["name"]})
+                imported.append(
+                    {"id": r["mission"]["id"], "name": r["mission"]["name"]}
+                )
             except ValueError as e:
                 errors.append({"index": i, "name": name, "error": str(e)})
         return {"imported": imported, "errors": errors}

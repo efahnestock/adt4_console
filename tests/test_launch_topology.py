@@ -116,7 +116,10 @@ def test_launch_validation_and_dry_run(client):
     ).json()["lines"]
     assert "fleetlink mode" in lines[0]
     # ADT4_FLEETLINK_MODE (ADT4_FLEET_LINK before the rename)
-    assert "ADT4_FLEETLINK_MODE=fleetlink" in lines[1] or "ADT4_FLEET_LINK=fleetlink" in lines[1]
+    assert (
+        "ADT4_FLEETLINK_MODE=fleetlink" in lines[1]
+        or "ADT4_FLEET_LINK=fleetlink" in lines[1]
+    )
     r = client.post("/api/launch/dry_run", json={**PLAN, "link_mode": "smoke-signals"})
     assert r.status_code == 400 and "link mode" in r.json()["detail"]
     assert d["link_modes"] == ["router", "fleetlink"]
@@ -127,7 +130,9 @@ def test_launch_validation_and_dry_run(client):
 
 
 @needs_fleet_core
-def test_topology_edit_delete_save_preserves_file(client, topology_copy, fleet_addresses):
+def test_topology_edit_delete_save_preserves_file(
+    client, topology_copy, fleet_addresses
+):
     topology_copy.write_text(
         topology_copy.read_text().replace(
             "machines:\n", "machines:  # fleet machines\n", 1

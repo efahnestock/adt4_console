@@ -47,7 +47,9 @@ def _put(p, k, v):
 
 def max_real(objects) -> int:
     """The highest real object index among ``objects`` (symbols)."""
-    return max((i for i in (index(s) for s in objects or ()) if i is not None), default=-1)
+    return max(
+        (i for i in (index(s) for s in objects or ()) if i is not None), default=-1
+    )
 
 
 def fill_symbols(planted, next_free: int = 0):
@@ -81,7 +83,12 @@ def rewrite(goal: str, moved: dict[str, str]) -> str:
     """``goal`` with the moved mock symbols replaced."""
     if not moved:
         return goal
-    return re.sub(r"\bo\d+\b", lambda m: moved.get(m.group(0).lower(), m.group(0)), goal, flags=re.I)
+    return re.sub(
+        r"\bo\d+\b",
+        lambda m: moved.get(m.group(0).lower(), m.group(0)),
+        goal,
+        flags=re.I,
+    )
 
 
 def by_index(planted) -> dict[int, tuple[str, list[float]]]:
@@ -90,7 +97,10 @@ def by_index(planted) -> dict[int, tuple[str, list[float]]]:
     for p in planted or []:
         i = index(_get(p, "sym"))
         if i is not None:
-            out[i] = (str(_get(p, "label") or "object"), list(_get(p, "pos") or [0, 0])[:2])
+            out[i] = (
+                str(_get(p, "label") or "object"),
+                list(_get(p, "pos") or [0, 0])[:2],
+            )
     return out
 
 
@@ -157,7 +167,9 @@ def graph_with(G, objects: dict[int, tuple[str, list[float]]]):
     return G if H is None else H
 
 
-def create_ops(objects: dict[int, tuple[str, list[float]]], have=lambda sym: False) -> list[dict]:
+def create_ops(
+    objects: dict[int, tuple[str, list[float]]], have=lambda sym: False
+) -> list[dict]:
     """graph_edit ops that stage the mock objects in the map under their own
     symbols (skipping those ``have`` says the map already has)."""
     ops = []

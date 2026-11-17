@@ -221,7 +221,10 @@ class Hub:
         ``tabs`` (live connections)."""
         with self._lock:
             whos = [c.who for c in self._clients.values()]
-        return {"viewers": len({w if w else f"#{i}" for i, w in enumerate(whos)}), "tabs": len(whos)}
+        return {
+            "viewers": len({w if w else f"#{i}" for i, w in enumerate(whos)}),
+            "tabs": len(whos),
+        }
 
     def _publish_viewers(self) -> None:
         self.publish(VIEWERS_TOPIC, self.viewers())

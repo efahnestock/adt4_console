@@ -935,7 +935,10 @@ def test_chat_context_merges_both_area_scopes():
     ]
     lookup = llm_planner._area_lookup(regions, ctx)
     assert lookup["courtyard"] == {"ambiguous": ["R0", "area2"]}
-    assert lookup["area2"]["polygon"] == [[0, 0], [1, 0], [1, 1]] and lookup["R0"]["symbol"] == "R0"
+    assert (
+        lookup["area2"]["polygon"] == [[0, 0], [1, 0], [1, 1]]
+        and lookup["R0"]["symbol"] == "R0"
+    )
     assert lookup["a1"]["name"] == "A1"
     text = llm_planner.context_text(ctx, None, regions)
     assert (
@@ -949,7 +952,9 @@ def test_chat_context_merges_both_area_scopes():
     # an object the map lacks: SAM3 over the robot images before asking the operator
     assert "call search_robot_images with their words first" in text
     lk = llm_planner._area_lookup(regions, ctx)
-    assert lk["courtyard"] == {"ambiguous": ["R0", "area2"]} and lk["a1"]["polygon"] == [
+    assert lk["courtyard"] == {"ambiguous": ["R0", "area2"]} and lk["a1"][
+        "polygon"
+    ] == [
         [10, 0],
         [14, 0],
         [14, 4],
@@ -1235,21 +1240,32 @@ def test_export_all_then_import_all(mission_settings):
     with client:
         ids = []
         for name in ("north sweep", "dock run"):
-            mid = client.post("/api/missions", json=_mission().model_dump()).json()["mission"]["id"]
+            mid = client.post("/api/missions", json=_mission().model_dump()).json()[
+                "mission"
+            ]["id"]
             client.post(f"/api/missions/{mid}/save", json={"name": name})
             ids.append(mid)
         client.post("/api/missions", json=_mission().model_dump())  # an unsaved draft
         r = client.get("/api/missions/export_all")
-        assert r.status_code == 200 and 'filename="missions_all.json"' in r.headers["content-disposition"]
+        assert (
+            r.status_code == 200
+            and 'filename="missions_all.json"' in r.headers["content-disposition"]
+        )
         bundle = r.json()
         assert bundle["format"] == "adt4-missions"
         assert [m["name"] for m in bundle["missions"]] == ["north sweep", "dock run"]
-        assert len(client.get("/api/missions/export_all?drafts=true").json()["missions"]) == 3
+        assert (
+            len(client.get("/api/missions/export_all?drafts=true").json()["missions"])
+            == 3
+        )
 
         out = client.post("/api/missions/import_all", json=bundle)
         assert out.status_code == 200, out.text
         got = out.json()
-        assert [m["name"] for m in got["imported"]] == ["north sweep (2)", "dock run (2)"]
+        assert [m["name"] for m in got["imported"]] == [
+            "north sweep (2)",
+            "dock run (2)",
+        ]
         assert got["errors"] == [] and not {m["id"] for m in got["imported"]} & set(ids)
 
         mixed = [bundle["missions"][0], {"agents": "nope", "name": "broken"}]
@@ -1257,7 +1273,9 @@ def test_export_all_then_import_all(mission_settings):
         assert len(got["imported"]) == 1
         assert got["errors"][0]["index"] == 1 and got["errors"][0]["name"] == "broken"
         assert client.post("/api/missions/import_all", json={"x": 1}).status_code == 400
-        saved = [m for m in client.get("/api/missions").json()["missions"] if m["saved"]]
+        saved = [
+            m for m in client.get("/api/missions").json()["missions"] if m["saved"]
+        ]
         assert len(saved) == 5
 
 
@@ -1268,9 +1286,14 @@ def test_mission_planner_plans_ground_robots_with_pddl(mission_settings):
     from adt4_console.mission import llm_planner
 
     client, svc = make_client(mission_settings)
-    roster = [{"id": "quad1", "kind": "quad", "start": [0, 0]}, {"id": "spot1", "kind": "spot", "start": [0, 2]}]
+    roster = [
+        {"id": "quad1", "kind": "quad", "start": [0, 0]},
+        {"id": "spot1", "kind": "spot", "start": [0, 2]},
+    ]
     ctx = {"roster": roster, "sim_only": True, "omniplanner": True}
-    assert llm_planner.ground_first(ctx) and not llm_planner.ground_first({**ctx, "sim_only": False})
+    assert llm_planner.ground_first(ctx) and not llm_planner.ground_first(
+        {**ctx, "sim_only": False}
+    )
     assert "ALWAYS planned with plan_ground_mission" in llm_planner.context_text(ctx)
     assert "ALWAYS planned" not in llm_planner.context_text({**ctx, "sim_only": False})
     svc.chat.turn = ChatTurn(mission=ctx)
@@ -1281,7 +1304,15 @@ def test_mission_planner_plans_ground_robots_with_pddl(mission_settings):
     assert "plan_ground_mission" in out["error"]
     with_quad = {**ground, "agents": [*ground["agents"], {"id": "quad1", "kind": "quad"}],
                  "tasks": [*ground["tasks"], {"id": "s", "agent": "quad1", "type": "goto", "target": [5, 5]}]}  # fmt: skip
-    _, out = svc.chat._run_tool("propose_mission", with_quad, "both", None, "file:grid", None, turn=svc.chat.turn)
+    _, out = svc.chat._run_tool(
+        "propose_mission",
+        with_quad,
+        "both",
+        None,
+        "file:grid",
+        None,
+        turn=svc.chat.turn,
+    )
     assert "error" not in out, out
     # the Robot view's chat (no sim_only) is unchanged
     svc.chat.turn = ChatTurn(mission={**ctx, "sim_only": False})

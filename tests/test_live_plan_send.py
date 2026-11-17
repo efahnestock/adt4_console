@@ -193,9 +193,16 @@ def test_drawn_area_goal_is_sent_spelled_as_places():
     area = {"symbol": "area1", "name": "staging", "polygon": [[0, 0], [4, 0], [4, 4]]}
     goal = {"pddl": "(visited-region-by spot2 area1)", "areas": [area],
             "pddl_places": "(or (visited-place-by spot2 p3) (visited-place-by spot2 p4))"}  # fmt: skip
-    m = _m([dict(id="t1", agent="spot2", type="goto", target="P(3)")], planner="omniplanner", goal=goal)
+    m = _m(
+        [dict(id="t1", agent="spot2", type="goto", target="P(3)")],
+        planner="omniplanner",
+        goal=goal,
+    )
     p = mission_plan(m)
-    assert p["pddl"] == "(or (visited-place-by hamilton p3) (visited-place-by hamilton p4))"
+    assert (
+        p["pddl"]
+        == "(or (visited-place-by hamilton p3) (visited-place-by hamilton p4))"
+    )
     old = _m([dict(id="t1", agent="spot2", type="goto", target="P(3)")], planner="omniplanner",
              goal={k: v for k, v in goal.items() if k != "pddl_places"})  # fmt: skip
     assert "plan it again" in mission_plan(old)["fallback"]

@@ -53,7 +53,9 @@ def probe_object():
         try:
             yield PROBE_SYM
         finally:
-            d.execute_query("MATCH (o:Object {nodeSymbol: $s}) DETACH DELETE o", s=PROBE_SYM)
+            d.execute_query(
+                "MATCH (o:Object {nodeSymbol: $s}) DETACH DELETE o", s=PROBE_SYM
+            )
             d.execute_query("MATCH (l:_Labelspace {chat_probe: true}) DELETE l")
 
 

@@ -383,12 +383,20 @@ def test_fast_downward_plans_a_drawn_area_as_its_places(svc, monkeypatch):
 
     # a 4 x 4 m area is one look at 8 m spacing; at 2 m it takes several
     monkeypatch.setattr(omni, "AREA_COVER_SPACING_M", 2.0)
-    m, _ = omni.plan_pddl("(explored-region area1)", [SPOT1], None, service, areas=[AREA])
-    assert len(m.tasks) >= 2 and all(_inside(service, t, AREA["polygon"]) for t in m.tasks)
+    m, _ = omni.plan_pddl(
+        "(explored-region area1)", [SPOT1], None, service, areas=[AREA]
+    )
+    assert len(m.tasks) >= 2 and all(
+        _inside(service, t, AREA["polygon"]) for t in m.tasks
+    )
     assert m.goal["pddl_places"].startswith("(and (visited-place ")
 
-    m, _ = omni.plan_pddl("(in-region spot2 area1)", [SPOT1, SPOT2], None, service, areas=[AREA])
-    assert m.tasks[-1].agent == "spot2" and _inside(service, m.tasks[-1], AREA["polygon"])
+    m, _ = omni.plan_pddl(
+        "(in-region spot2 area1)", [SPOT1, SPOT2], None, service, areas=[AREA]
+    )
+    assert m.tasks[-1].agent == "spot2" and _inside(
+        service, m.tasks[-1], AREA["polygon"]
+    )
 
 
 def test_a_drawn_area_with_no_reachable_place_is_explained(svc):
@@ -417,7 +425,11 @@ def test_expand_areas_spells_each_form():
                                     {"spot1": [0, 0]})  # fmt: skip
     finally:
         omni._mesh_places = orig
-    assert "area1" not in g and "(or (visited-place p" in g and "(or (at-place spot1 p" in g
+    assert (
+        "area1" not in g
+        and "(or (visited-place p" in g
+        and "(or (at-place spot1 p" in g
+    )
     assert set(used["area1"]) <= set(syms)
 
 
@@ -433,8 +445,12 @@ def test_mock_objects_are_objects_to_the_planner(svc):
     _, service = svc
     G = _G(service)
     assert service.next_object(service._default_src()) == 2
-    m, _ = omni.plan_pddl("(inspected-by spot1 o2)", [SPOT1, SPOT2], None, service, planted=[dict(CRATE)])
-    assert [(t.agent, t.type, t.target) for t in m.tasks] == [("spot1", "inspect", "O(2)")]
+    m, _ = omni.plan_pddl(
+        "(inspected-by spot1 o2)", [SPOT1, SPOT2], None, service, planted=[dict(CRATE)]
+    )
+    assert [(t.agent, t.type, t.target) for t in m.tasks] == [
+        ("spot1", "inspect", "O(2)")
+    ]
     assert m.planted[0].sym == "O(2)"
     assert not G.has_node(dsg.NodeSymbol("O", 2))  # only the planning copy has it
     m, _ = omni.plan_pddl(f"(object-in-place o2 {_place(G, 0, 0)})", [SPOT1], None, service,
@@ -442,8 +458,16 @@ def test_mock_objects_are_objects_to_the_planner(svc):
     assert {t.type for t in m.tasks} >= {"pick", "place"}
     # a mock's symbol that is a real object elsewhere: refused, re-plan renumbers it
     with pytest.raises(ValueError, match="real object"):
-        omni.plan_pddl("(visited-object o0)", [SPOT1], None, service, planted=[{**CRATE, "sym": "O(0)"}])
-    moved = service.fix_mock_symbols(planted := [{**CRATE, "sym": "O(0)"}], service._default_src())
+        omni.plan_pddl(
+            "(visited-object o0)",
+            [SPOT1],
+            None,
+            service,
+            planted=[{**CRATE, "sym": "O(0)"}],
+        )
+    moved = service.fix_mock_symbols(
+        planted := [{**CRATE, "sym": "O(0)"}], service._default_src()
+    )
     assert moved == {"o0": "o2"} and planted[0]["sym"] == "O(2)"
 
 
@@ -451,7 +475,9 @@ def test_mock_object_targets_simulate_and_stage_on_execute(svc):
     """The simulator finds a mock target where it was planted (no missing-target
     error), and Execute stages the mock objects the goal names in the map first."""
     _, service = svc
-    m, _ = omni.plan_pddl("(visited-object-by spot1 o2)", [SPOT1], None, service, planted=[dict(CRATE)])
+    m, _ = omni.plan_pddl(
+        "(visited-object-by spot1 o2)", [SPOT1], None, service, planted=[dict(CRATE)]
+    )
     pv = service.preview(m)
     assert not [i for i in pv["issues"] if i["level"] == "error"], pv["issues"]
     assert not [i for i in pv["issues"] if i.get("code") == "planted_unmatched"]
@@ -463,7 +489,10 @@ def test_mock_object_targets_simulate_and_stage_on_execute(svc):
 
     service.edits, src = _Edits(), m.src
     m.src = "neo4j:test"
-    assert service._stage_mocks(m, service.world(m), "(visited-object-by euclid o2)") == "(visited-object-by euclid o2)"
+    assert (
+        service._stage_mocks(m, service.world(m), "(visited-object-by euclid o2)")
+        == "(visited-object-by euclid o2)"
+    )
     assert applied == [("neo4j:test", [{"op": "create_node", "layer": "Object", "symbol": "O2", "class": "crate",
                                         "name": "crate", "pos": [5.0, 5.0]}])]  # fmt: skip
     m.src = src
@@ -490,7 +519,9 @@ def test_execute_waits_for_the_planner_to_have_the_staged_map(svc, monkeypatch):
 
 
 def test_safe_is_spelled_as_an_inspection_by_one_of_the_robots():
-    assert omni.inspect_goals("(and (safe o4) (not (suspicious O7)))", ["spot1", "husky1"]) == (
+    assert omni.inspect_goals(
+        "(and (safe o4) (not (suspicious O7)))", ["spot1", "husky1"]
+    ) == (
         "(and (or (inspected-by spot1 o4) (inspected-by husky1 o4)) "
         "(or (inspected-by spot1 o7) (inspected-by husky1 o7)))"
     )

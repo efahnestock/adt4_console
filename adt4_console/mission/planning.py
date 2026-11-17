@@ -435,7 +435,6 @@ def planted_unmatched(mission: Mission) -> list[dict]:
     if not mission.planted:
         return []
     from ..chat import _matches
-
     from .mocks import position
 
     qs = search_queries(mission)
@@ -446,7 +445,9 @@ def planted_unmatched(mission: Mission) -> list[dict]:
             if isinstance(v, str) and position(mission.planted, v) is not None:
                 targeted.add(tuple(position(mission.planted, v)))
     out = []
-    used = {p.label.strip().lower() for p in mission.planted if tuple(p.pos[:2]) in targeted}
+    used = {
+        p.label.strip().lower() for p in mission.planted if tuple(p.pos[:2]) in targeted
+    }
     for label in sorted({p.label.strip().lower() for p in mission.planted} - used):
         if not any(_matches(q, label) for q in qs):
             what = (

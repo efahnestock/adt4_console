@@ -197,7 +197,10 @@ def area_symbols(areas) -> dict[str, dict]:
 
 
 SUSPICIOUS_ENV = "OMNIPLANNER_OBJECTS_SUSPICIOUS"
-_SAFE = re.compile(r"\(\s*not\s*\(\s*suspicious\s+([a-z]\d+)\s*\)\s*\)|\(\s*safe\s+([a-z]\d+)\s*\)", re.I)
+_SAFE = re.compile(
+    r"\(\s*not\s*\(\s*suspicious\s+([a-z]\d+)\s*\)\s*\)|\(\s*safe\s+([a-z]\d+)\s*\)",
+    re.I,
+)
 
 
 def inspect_goals(goal: str, robots: list[str]) -> str:
@@ -284,7 +287,9 @@ def _cover(xy: np.ndarray, spacing: float, cap: int) -> list[int]:
     return chosen
 
 
-def expand_areas(goal: str, named: dict, G, starts: dict, geofences=None) -> tuple[str, dict]:
+def expand_areas(
+    goal: str, named: dict, G, starts: dict, geofences=None
+) -> tuple[str, dict]:
     """``goal`` with every drawn area (area1, ...) replaced by mesh places inside it,
     for Fast Downward: (visited-region area1) -> (or (visited-place t..) ...) over a
     few central places, (in-region r area1) -> (or (at-place r t..) ...), and
@@ -299,7 +304,9 @@ def expand_areas(goal: str, named: dict, G, starts: dict, geofences=None) -> tup
         raise ValueError("the map has no mesh places to plan drawn areas on")
     reach = {int(comp[int(np.argmin(np.linalg.norm(xy - np.asarray(p, float)[:2], axis=1)))])
              for p in starts.values()}  # fmt: skip
-    fences = [g["polygon"] if isinstance(g, dict) else g.polygon for g in geofences or []]
+    fences = [
+        g["polygon"] if isinstance(g, dict) else g.polygon for g in geofences or []
+    ]
     places: dict[str, list[int]] = {}
     for sym, a in named.items():
         poly = a["polygon"]
@@ -307,7 +314,9 @@ def expand_areas(goal: str, named: dict, G, starts: dict, geofences=None) -> tup
                   if int(comp[i]) in reach and point_in_polygon(xy[i], poly)
                   and not any(point_in_polygon(xy[i], f) for f in fences)]  # fmt: skip
         if not inside:
-            raise ValueError(f"{sym} ({a.get('name') or sym}) has no place the robots can reach inside it")
+            raise ValueError(
+                f"{sym} ({a.get('name') or sym}) has no place the robots can reach inside it"
+            )
         places[sym] = inside
     used: dict[str, list[str]] = {}
 
@@ -320,7 +329,13 @@ def expand_areas(goal: str, named: dict, G, starts: dict, geofences=None) -> tup
         pick = [idx[int(i)] for i in half[_spread(len(half), AREA_CORE_PLACES)]]
         # and the core place nearest each robot, so a visit need not drive to the middle
         for p in starts.values():
-            k = half[int(np.argmin(np.linalg.norm(P[half] - np.asarray(p, float)[:2], axis=1)))]
+            k = half[
+                int(
+                    np.argmin(
+                        np.linalg.norm(P[half] - np.asarray(p, float)[:2], axis=1)
+                    )
+                )
+            ]
             pick.append(idx[int(k)])
         return list(dict.fromkeys(pick))
 

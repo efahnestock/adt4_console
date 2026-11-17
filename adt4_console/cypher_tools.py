@@ -15,7 +15,6 @@ live from the database so it cannot drift from what heracles writes.
 from __future__ import annotations
 
 import re
-
 import time
 
 MAX_ROWS = 200
@@ -281,7 +280,8 @@ def describe(src) -> str:
         lines.append(
             "Names the operators gave map nodes (they may call them by these names): "
             + ", ".join(
-                f"{_ui_sym(x['s'])} '{x['name']}'" + (f" ({x['c']})" if x.get("c") else "")
+                f"{_ui_sym(x['s'])} '{x['name']}'"
+                + (f" ({x['c']})" if x.get("c") else "")
                 for x in named["rows"]
             )
         )

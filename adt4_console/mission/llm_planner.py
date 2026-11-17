@@ -406,7 +406,9 @@ def _area_lookup(regions, ctx: dict | None = None) -> dict:
         if r.get("symbol"):
             out.setdefault(r["symbol"], r)
         if (r.get("name") or "").strip():
-            by_name.setdefault(r["name"].strip().lower(), []).append((r.get("symbol"), r))
+            by_name.setdefault(r["name"].strip().lower(), []).append(
+                (r.get("symbol"), r)
+            )
     for sym, a in area_symbols((ctx or {}).get("areas")).items():
         area = {"symbol": None, "name": a["name"].strip(), "polygon": a["polygon"]}
         out.setdefault(sym, area)
@@ -415,7 +417,9 @@ def _area_lookup(regions, ctx: dict | None = None) -> dict:
     for name, hits in by_name.items():
         if name in out:
             continue
-        out[name] = hits[0][1] if len(hits) == 1 else {AMBIGUOUS: [s for s, _ in hits if s]}
+        out[name] = (
+            hits[0][1] if len(hits) == 1 else {AMBIGUOUS: [s for s, _ in hits if s]}
+        )
     return out
 
 
@@ -592,7 +596,11 @@ def run_tool(
     if ground_first(ctx):
         kinds = {str(a.get("id")): a.get("kind") for a in [*(ctx.get("roster") or []), *(args.get("agents") or [])]
                  if isinstance(a, dict)}  # fmt: skip
-        if not any(kinds.get(str(t.get("agent"))) == "quad" for t in args.get("tasks") or [] if isinstance(t, dict)):
+        if not any(
+            kinds.get(str(t.get("agent"))) == "quad"
+            for t in args.get("tasks") or []
+            if isinstance(t, dict)
+        ):
             return [], {"error": "In the mission planner, ground robots are planned with plan_ground_mission "
                                  "(one PDDL goal the robots' goal manager can take and repair). Plan this with "
                                  "plan_ground_mission; propose_mission is only for missions with quad tasks."}  # fmt: skip
@@ -605,7 +613,13 @@ def run_tool(
                                      f"({', '.join(r[AMBIGUOUS])}). Name the one meant by its symbol, "
                                      "or ask the operator which."}  # fmt: skip
             if r is None:
-                known = sorted({x["name"] or x["symbol"] for x in lookup.values() if AMBIGUOUS not in x})
+                known = sorted(
+                    {
+                        x["name"] or x["symbol"]
+                        for x in lookup.values()
+                        if AMBIGUOUS not in x
+                    }
+                )
                 return [], {"error": f"task {t.get('id')}: there is no area {t['area']!r}. Do not substitute "
                                      "another area: ask the operator to draw it on the map or to pick one of "
                                      f"{known or 'the areas they draw'}."}  # fmt: skip
