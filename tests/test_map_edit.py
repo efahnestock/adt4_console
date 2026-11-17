@@ -580,5 +580,7 @@ def test_edits_made_elsewhere_fold_in_as_one_delta(penn):
         full.close()
     got = src.loaded()
     assert got.version == v
-    assert {k: r.key() for k, r in got.records.items()} == {k: r.key() for k, r in ref.records.items()}
+    assert {k: r.key() for k, r in got.records.items()} == {
+        k: r.key() for k, r in ref.records.items()
+    }
     assert got.edges == ref.edges and got.labelspaces == ref.labelspaces

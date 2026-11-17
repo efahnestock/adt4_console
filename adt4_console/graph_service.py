@@ -1485,13 +1485,17 @@ class Neo4jSource(Source):
                 try:
                     syms = self._changes_between(seen[0], key[0])
                 except Exception:  # noqa: BLE001  (unknown: reloaded below)
-                    log.warning("%s: reading what changed failed", self.id, exc_info=True)
+                    log.warning(
+                        "%s: reading what changed failed", self.id, exc_info=True
+                    )
                 if syms is not None:
                     delta = None
                     try:
                         delta = self._try_apply(key[0], syms)
                     except Exception:  # noqa: BLE001
-                        log.exception("%s: incremental update failed; reloading", self.id)
+                        log.exception(
+                            "%s: incremental update failed; reloading", self.id
+                        )
                     if delta is not None:
                         self._unknown_since = None
                         return True, delta
@@ -1548,7 +1552,9 @@ class Neo4jSource(Source):
         of them is not known."""
         if hi <= lo or hi - lo > INCREMENTAL_MAX_VERSIONS:
             return None
-        known = {v: self._announced[v] for v in range(lo + 1, hi + 1) if v in self._announced}
+        known = {
+            v: self._announced[v] for v in range(lo + 1, hi + 1) if v in self._announced
+        }
         if hi not in known:
             version, _layers, ids = self.read_map_change()
             if version == hi and ids:

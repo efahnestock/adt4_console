@@ -172,7 +172,9 @@ def _known_source(mutations=None, last=(None, None, None)):
     db = {"count": 10, "map": 4}
     src.count_nodes = lambda: db["count"]
     src.read_map_version = lambda: db["map"]
-    src.read_map_change = lambda: last if last[0] is not None else (db["map"], None, None)
+    src.read_map_change = (
+        lambda: last if last[0] is not None else (db["map"], None, None)
+    )
     asked = []
 
     def mutation_changes(lo, hi):
@@ -432,8 +434,12 @@ def test_scene_changes_from_ros_name_their_nodes(settings):
     from adt4_console.scene_repair import SceneRepair
 
     got = []
-    sr = SceneRepair(map_changed=lambda mv, changes: got.append((mv, [c["symbol"] for c in changes])))
-    sr.on_applied("scene_change_detector", 12, [{"kind": 1, "symbol": "O4", "label": "chair"}])
+    sr = SceneRepair(
+        map_changed=lambda mv, changes: got.append((mv, [c["symbol"] for c in changes]))
+    )
+    sr.on_applied(
+        "scene_change_detector", 12, [{"kind": 1, "symbol": "O4", "label": "chair"}]
+    )
     sr.on_applied("sget/chat", 13, [], local=True)  # our own: already folded in
     assert got == [(12, ["O4"])]
 
