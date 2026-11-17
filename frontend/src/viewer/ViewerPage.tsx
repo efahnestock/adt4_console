@@ -2,7 +2,7 @@ import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type
 import {useSearchParams} from "react-router";
 import {useViewer} from "../stores/viewer";
 import {getJSON} from "../lib/api";
-import {pickDefaultSources} from "../lib/runCopies";
+import {neo4jDefaultSource, pickDefaultSources} from "../lib/runCopies";
 import type {ActiveLaunch} from "../types";
 import {sourceMatrix, useRobots} from "../stores/robots";
 import {applyPoint, nearestGotoPlace, snapToPlannerMap, type Vec3} from "../lib/frameAlign";
@@ -180,7 +180,8 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
     void openMission(handoff, {fit: true}).then(() => showTab("mission"));
   }, [handoff, missionMode, showTab]);
 
-  // catalog + initial source selection (?src=... or the first prior/neo4j source)
+  // catalog + initial source selection (?src=..., else the Neo4j map alone, else the
+  // active launch's defaults, else the first prior)
   useEffect(() => {
     void (async () => {
       await useViewer.getState().loadCatalog();
@@ -193,8 +194,16 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
         if (useViewer.getState().sources[wanted]) st.enableSource(wanted, true);
         return;
       }
+      // sources already enabled in this tab (the operator's choice, kept across
+      // Robot viewer <-> Mission planner) win over any default
       if (st.order.some(id => st.sources[id].enabled)) return;
-      // an active launch with a prior map: prior + live:<robots> by default
+      // the Neo4j map alone by default; priors and live:<robot> start disabled
+      const neo = neo4jDefaultSource(st.order, id => st.sources[id]?.kind);
+      if (neo) {
+        st.enableSource(neo, true);
+        return;
+      }
+      // no Neo4j map: an active launch with a prior map: prior + live:<robots>
       const active = await getJSON<ActiveLaunch>("api/launch/active").catch(() => null);
       if (active?.default_sources?.length) {
         const {enable, pending} = pickDefaultSources(useViewer.getState().order, active.default_sources);
@@ -202,7 +211,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
         for (const id of enable) useViewer.getState().enableSource(id, true);
         if (enable.length) return;
       }
-      const first = st.order.find(id => st.sources[id].kind === "neo4j") ?? st.order.find(id => st.sources[id].kind === "file") ?? st.order[0];
+      const first = st.order.find(id => st.sources[id].kind === "file") ?? st.order[0];
       if (first) st.enableSource(first, true);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -569,7 +578,8 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
       case "live":
         return <LivePanel />;
       case "camera":
-        return <CameraPanel compact={camPip || camPinned} />;
+        // the drive layout (teleop): live video first, stills as the backup
+        return <CameraPanel compact={camPip || camPinned} preferVideo={drive} />;
     }
   };
   const tabs = (
