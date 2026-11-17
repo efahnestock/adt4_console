@@ -30,6 +30,8 @@ import {useWsStatus} from "../ws";
 import {useIsPhone, useMedia} from "../lib/media";
 import {Icon} from "../components/Shell";
 import {BottomSheet} from "./BottomSheet";
+import {defaultPanes, onePanelAtATime} from "./paneLayout";
+import "./touch.css";
 import {ControlsHelpButton, TopViewHint} from "./ControlsHelp";
 import {FloatingWindow, Splitter, TabPortal, TabSlot, useElementSize, usePaneLayout, useTabHosts, useTabTearOff} from "./Panes";
 import {CAM_H, FLOAT_MQ, LEFT, MIN_CANVAS, PANE_TABS, RIGHT, clampCameraH, cameraPlacement, clampWidths, dock, driveOn, loadCamOverChat, saveCamOverChat, popOut, raise, stripTabs, toggleDrive, updateWin, type PaneTab} from "./paneLayout";
@@ -90,8 +92,8 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const floats = useCallback((t: Tab) => wide && !!layout.windows[t], [wide, layout.windows]);
   const floatsRef = useRef(floats);
   floatsRef.current = floats;
-  const [leftOpen, setLeftOpenRaw] = useState(() => window.innerWidth > (missionMode ? 900 : 1100));
-  const [rightOpen, setRightOpenRaw] = useState(() => window.innerWidth > 900);
+  const [leftOpen, setLeftOpenRaw] = useState(() => defaultPanes(window.innerWidth, missionMode).left);
+  const [rightOpen, setRightOpenRaw] = useState(() => defaultPanes(window.innerWidth, missionMode).right);
   const [searchOpen, setSearchOpen] = useState(false);
   const [camOverChat, setCamOverChatRaw] = useState(loadCamOverChat);
   const setCamOverChat = useCallback((on: boolean) => {
@@ -126,20 +128,28 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const focused = useFocusedRobot();
   const roster = useRobotRoster();
   const drive = driveOn(layout, focused);
-  // phones show one panel at a time, as a bottom sheet
+  // phones show one panel at a time, as a bottom sheet; tablets <= 900 px one
+  // at a time too, since each panel lies over the map there
   const phoneRef = useRef(isPhone);
   phoneRef.current = isPhone;
+  const onePanel = onePanelAtATime(isPhone, wide);
+  const oneRef = useRef(onePanel);
+  oneRef.current = onePanel;
+  // a tablet turned to portrait (panels now over the map): keep one of them
+  useEffect(() => {
+    if (onePanel && leftOpen && rightOpen) setLeftOpenRaw(false);
+  }, [onePanel]); // eslint-disable-line react-hooks/exhaustive-deps
   const setLeftOpen = useCallback((f: boolean | ((o: boolean) => boolean)) => {
     setLeftOpenRaw(o => {
       const next = typeof f === "function" ? f(o) : f;
-      if (next && phoneRef.current) setRightOpenRaw(false);
+      if (next && oneRef.current) setRightOpenRaw(false);
       return next;
     });
   }, []);
   const setRightOpen = useCallback((f: boolean | ((o: boolean) => boolean)) => {
     setRightOpenRaw(o => {
       const next = typeof f === "function" ? f(o) : f;
-      if (next && phoneRef.current) setLeftOpenRaw(false);
+      if (next && oneRef.current) setLeftOpenRaw(false);
       return next;
     });
   }, []);
