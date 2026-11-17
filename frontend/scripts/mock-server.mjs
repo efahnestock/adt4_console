@@ -484,6 +484,116 @@ route("POST", "/api/network/iperf", async (q, r) => {
   })});
 });
 
+// --- trials (API.md §23): a recording on every machine, flags, stop. hamilton
+// drops off the radio 20-40 s into a trial; lewis has two topics nobody publishes.
+const TRIAL_POLL_S = 2;
+const trialRates = {euclid: 86e6, hamilton: 92e6, lewis: 41e6, willow: 2e4};
+const trialFree = {euclid: 88e9, hamilton: 201e9, lewis: 33e9, willow: 412e9};
+let trial = null;
+let lastTrial = null;
+const trialEvents = [];
+const trialPayload = () => ({now: now(), poll_s: TRIAL_POLL_S, active: trial, last: lastTrial});
+const trialPush = () => broadcast("trial/state", trialPayload());
+const trialEvent = (type, f = {}) => {
+  const ev = {t: now(), iso: new Date().toISOString(), type, ...f};
+  trialEvents.push(ev);
+  if (trial) trial.events++;
+  return ev;
+};
+route("GET", "/api/trials", (q, r) => json(r, 200, trialPayload()));
+route("GET", "/api/trials/events", (q, r) => json(r, 200, {events: trialEvents.slice(-50)}));
+route("GET", "/api/trials/preflight", (q, r) =>
+  setTimeout(() => json(r, 200, {
+    updated: now(),
+    machines: machines.filter(m => m.online).map(m => {
+      const rate = lastTrial ? trialRates[m.name] : null;
+      return {name: m.name, role: m.role, ready: true, error: null, free_bytes: trialFree[m.name], total_bytes: 468e9,
+        rate_bps: rate, minutes: rate ? Math.round(trialFree[m.name] / rate / 6) / 10 : null,
+        notes: m.name === "hamilton" ? ["1 other recorder(s) running (the stack's recording window?)"] : []};
+    }),
+  }), 400),
+);
+route("POST", "/api/trials/start", async (q, r) => {
+  const b = await readBody(q);
+  if (!String(b.description ?? "").trim()) return json(r, 400, {detail: "a short mission description is required"});
+  if (trial) return json(r, 409, {detail: `${trial.trial_id} is still ${trial.state}`});
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
+  const slug = b.description.toLowerCase().match(/[a-z0-9]+/g)?.join("-").slice(0, 40) ?? "trial";
+  const id = `trial_${stamp}_${slug}`;
+  const names = b.machines ?? machines.filter(m => m.online).map(m => m.name);
+  trial = {trial_id: id, description: b.description.trim(), state: "starting", started: now(), stopped: null, events: 0, flags: 0, log_error: null,
+    console_dir: `/home/rrg/adt4_output/${id}/console`,
+    machines: Object.fromEntries(names.map(n => [n, {name: n, role: machines.find(m => m.name === n)?.role, state: "starting", message: "starting", dir: null, bytes: null, rate_bps: null,
+      free_bytes: trialFree[n], minutes_left: null, last_seen: null, warnings: [], clock_offset_s: null, topic_check: null}]))};
+  trialEvents.length = 0;
+  trialEvent("trial_start", {description: trial.description, machines: names});
+  json(r, 200, trialPayload());
+  trialPush();
+  setTimeout(() => {
+    if (!trial) return;
+    for (const m of Object.values(trial.machines))
+      Object.assign(m, {state: "recording", message: "recording", dir: `/home/swarm/adt4_output/${id}/${m.name}`, bytes: 4096, last_seen: now(), clock_offset_s: m.name === "lewis" ? 0.31 : 0.02,
+        warnings: m.name === "hamilton" ? ["1 other recorder(s) also running on this machine"] : []});
+    trial.state = "recording";
+    trialPush();
+  }, 2500);
+  setTimeout(() => {
+    if (trial?.machines.lewis) trial.machines.lewis.topic_check = {ok: true, topics: 20, published: 18, missing: ["/lewis/fix", "/lewis/rtcm"]};
+    trialPush();
+  }, 6000);
+});
+setInterval(() => {
+  if (!trial || trial.state !== "recording") return;
+  const age = now() - trial.started;
+  for (const m of Object.values(trial.machines)) {
+    const out = m.name === "hamilton" && age > 20 && age < 40;
+    if (out) {
+      if (m.state === "recording") Object.assign(m, {state: "unreachable", message: "no answer over ssh; last known: recording"});
+      continue;
+    }
+    if (m.state !== "recording" && m.state !== "unreachable") continue;
+    const rate = trialRates[m.name] ?? 5e7;
+    m.state = "recording";
+    m.message = "recording";
+    m.bytes = (m.bytes ?? 0) + rate * TRIAL_POLL_S;
+    m.rate_bps = rate;
+    m.free_bytes = Math.max(0, trialFree[m.name] - m.bytes);
+    m.minutes_left = Math.round(m.free_bytes / rate / 6) / 10;
+    m.last_seen = now();
+    m.warnings = (m.warnings ?? []).filter(w => !w.startsWith("disk:"));
+    if (m.minutes_left < 10) m.warnings.push(`disk: ${(m.free_bytes / 1e9).toFixed(1)} GB free, about ${Math.round(m.minutes_left)} min at this rate`);
+  }
+  trialPush();
+}, TRIAL_POLL_S * 1000);
+route("POST", "/api/trials/flag", async (q, r) => {
+  const b = await readBody(q);
+  if (!trial) return json(r, 409, {detail: "no trial is recording: start one to add flags"});
+  if (!String(b.text ?? "").trim()) return json(r, 400, {detail: "an empty flag"});
+  trial.flags++;
+  const ev = trialEvent("flag", {text: b.text.trim(), elapsed_s: Math.round((now() - trial.started) * 10) / 10});
+  json(r, 200, {ok: true, event: ev});
+  trialPush();
+});
+route("POST", "/api/trials/stop", async (q, r) => {
+  if (!trial) return json(r, 409, {detail: "no trial is recording"});
+  trial.state = "stopping";
+  for (const m of Object.values(trial.machines)) if (m.state !== "failed") Object.assign(m, {state: "stopping", message: "closing the bag"});
+  json(r, 200, trialPayload());
+  trialPush();
+  setTimeout(() => {
+    if (!trial) return;
+    for (const m of Object.values(trial.machines))
+      Object.assign(m, {state: "stopped", message: "stopped", rate_bps: null, warnings: m.name === "lewis" ? ["2 of 20 topics recorded no message"] : []});
+    Object.assign(trial, {state: "stopped", stopped: now()});
+    trialEvent("trial_end");
+    lastTrial = trial;
+    trial = null;
+    trialPush();
+  }, 2000);
+});
+route("POST", "/api/trials/close", (q, r) => json(r, 409, {detail: "stop the trial first"}));
+route("POST", "/api/trials/machines/([^/]+)/start", (q, r) => json(r, 200, trialPayload()));
+
 // --- USB bag drives (API.md §22): euclid has a fast drive with an interrupted copy
 // on it, hamilton one on a USB 2.0 link, lewis no helper ---
 const GBY = 1e9;

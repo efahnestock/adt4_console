@@ -1804,6 +1804,127 @@ straight onto the drive, so bag data never crosses the radio.
   move); a run's output folder is never touched. 400 bad names / no runs, 404
   unknown run.
 
+## 23. Trials: recording on the whole fleet (`trials.py`, `routes/trials.py`)
+
+A *trial* is one operator-started recording on every chosen machine, with a
+description and timestamped flags. Each machine records with `adt4-rec`
+(Awesome-DCIST-T4 `dcist_launch_system/bin/adt4-rec`, standard library only), in
+its own tmux session `adt4_rec` on its own tmux server (`tmux -L adt4_rec
+attach` on the machine shows it): starting or stopping a trial sends nothing to
+`adt4_system`, a `tmux kill-server` there does not end a recording, and a plain
+`tmux attach` never lands in the recorder. A machine whose recorder died
+(`lost`) can be started again from its chip (*Retry*): the first bag stays in
+`<trial>/<machine>/` and the recording goes on in `<trial>/<machine>_part2/`
+(then `_part3`, ...), each a rosbag2 directory with its own `trial.json`
+(`part`). The console only uses ssh: one command per machine at start and
+at stop, one `status` per machine every `trial_poll_s` (10 s) while recording.
+Nothing recorded crosses the radio, and a machine that loses the radio keeps
+recording.
+
+Trial id: `trial_<UTC yyyymmddThhmmssZ>_<slug of the description>`.
+
+| where | path | what |
+|---|---|---|
+| each machine | `<output_root>/<trial_id>/<machine>/` | a rosbag2 directory plus `trial.json` (topics, run id, clocks; per-topic message counts and `silent_topics` at stop), `recorder.log` |
+| console | `<output_root>/<trial_id>/console/trial.json` | the trial: description, machines, every start / topic check / stop result, clock offsets |
+| console | `<output_root>/<trial_id>/console/events.jsonl` | one JSON object per line, fsynced: `trial_start`, `trial_started`, `machine_state`, `topics_missing`, `warning`, `flag`, `request`, `trial_stop`, `trial_end`, `console_restarted` |
+
+The layout is `<run>/<bag>` for the Drives tab (§22): a trial is copied to a
+USB drive like any other run. The topic list is `recording/<set>_topics.txt` of
+the machine's checkout: `spot` / `phoenix` by `platform_type`, `base_station`
+for a machine that is not a robot.
+
+Routes (`/api/trials`):
+
+- `GET ""` → `{now, poll_s, active, last}`; also the hub topic `trial/state`
+  (latest value) on every change and every poll. A trial: `{trial_id,
+  description, state: starting|recording|stopping|stopped|failed, started,
+  stopped, events, flags, log_error, note, console_dir, machines: {name: {...}}}`.
+- `GET /preflight` → per machine `{ready, error, free_bytes, rate_bps, minutes,
+  notes}`. `minutes` = free disk / the rate of that machine's last trial
+  (`<output_root>/.trial_rates.json`); null until it has recorded one.
+- `POST /start {description, machines?}` → 409 while a trial is active. Machines
+  default to every online robot plus this machine. A machine that does not
+  start is `failed` with the reason; the trial runs on the others. If none
+  starts the trial ends as `failed`.
+- `POST /machines/{name}/start` retries one machine in the active trial.
+  It also adds a machine that was not in the trial, or one that was removed
+  (its new bag is `<machine>_part<n>`).
+- `POST /machines/{name}/stop` takes one recording machine out of the active
+  trial: its bag is closed (`stopped`, `removed: true`), the trial goes on.
+  A stop that is not delivered is retried like the trial's own stop.
+- `POST /flag {text}` → `{event}`; 409 without an active trial, 500 if the line
+  could not be written (the UI keeps the text).
+- `POST /stop {force?}`; `force` = a second SIGINT then SIGTERM (never -9).
+- `POST /close` ends a stopping trial whose machine could not be stopped.
+- `GET /events?n=50`.
+
+Machine states: `starting`, `recording`, `failed`, `unreachable` (no answer:
+unknown, never assumed recording; `last_seen` is the console clock of the last
+answer), `lost` (it answered and is not recording this trial), `stopping`,
+`stopped`, `stop_pending` (the stop was not delivered; retried every poll, the
+machine keeps recording), `stop_failed`, `skipped` (no topic list).
+
+While recording each machine carries `bytes`, `rate_bps` (smoothed bag growth),
+`free_bytes`, `minutes_left`, `clock_offset_s` / `clock_rtt_s` (the status
+reply's clock against the middle of the ssh round trip, best of the samples;
+good to about the round trip) and `warnings`. Warnings never stop anything:
+`disk:` under 10 GB or 10 min left, `bag:` no growth for 45 s after it grew.
+
+Request log (`TrialRequestLog`, ASGI middleware): while a trial is active every
+`POST/PUT/PATCH/DELETE /api/...` becomes a `request` event (path, JSON body
+without `history` / images / tokens, cut at 4 kB, status); for `/api/chat` also
+the response stream (cut at 200 kB). Skipped: `teleop/cmd_vel`, `/api/trials`,
+`/api/jobs/`, dry runs and previews. It forwards every message untouched and
+swallows its own errors.
+
+What else a trial keeps (all in `console/`):
+
+- **This machine always records.** The console's own machine (`local`) is added
+  to every trial with the `base_station` topic list, whatever was picked;
+  `adt4-rec start --robots a,b,c` expands the list's `${ADT4_FLEET_ROBOT}` lines
+  to every robot (their compiled plans). `GET /preflight` carries
+  `base_station` and, when this machine is not in the topology, a `base_note`.
+- **Context** (`trial_context` in `app.py`): `context_start` / `context_stop` in
+  `trial.json` and a `context` event: the active launch (experiment, robots,
+  prior map), the live map (`target, run, name, dsg, nodes` and `dsg_sha256` of
+  its scene graph file) and the missions. Each machine's own `trial.json` has
+  `prior_map`: the stack's `$ADT4_PRIOR_MAP`, its run id / origin and the
+  sha256 of `hydra/backend/dsg.json` and `dsg_with_mesh.json`.
+- **Responses** of `/api/chat`, `/api/mission*`, `/api/plan*`, `/api/edit*`,
+  `/api/manipulation*` and robot `goal/`, `executor/`, `path/` requests are kept
+  with the request (body and response up to 200 kB each). Previews, dry runs
+  and job confirmations are logged like any other request.
+- **`hub` events**: `manipulation/*`, `mission/*`, `maps/active` and
+  `goal_track/*` as published to the browsers, when they change (at most one
+  line per topic per 0.5 s, 20 kB each).
+- **`ui` events** (`POST /api/trials/ui {events}`; `frontend/src/lib/uiLog.ts`):
+  clicks on controls (named by aria-label / test id / text, and the dialog they
+  are in), page changes, dialogs opening (title and text) and closing, checkbox
+  and select changes. Text typed into fields is never sent.
+
+- **Request categories.** Every `request` event has `category`: `preview`
+  (show what this would do), `dry_run` (list what a launch would run),
+  `job_confirm` / `job_cancel` (with `job: {id, kind, title, question, ...}`,
+  the question the answer was for), else `action`.
+- **Screen video** (`POST /api/trials/screen?session&seq&mime&final`, raw
+  MediaRecorder bytes; `frontend/src/lib/screenRec.ts`): the browser that
+  starts the trial records its tab (10 fps, on by default) and uploads 5 s
+  pieces, appended to `console/screen_<session>.webm`; `screen_start`,
+  `screen_stop`, `screen_gap`, `screen_note` events; pieces are still taken
+  for 120 s after the trial ends. Browsers only allow this on `localhost` or
+  https: from another computer, tunnel (`ssh -L 8090:localhost:8090
+  user@base`) and open `http://localhost:8090`; the page says so otherwise.
+
+Settings: `trial_recorder` (`$ADT4_REC_CMD`; default
+`~/dcist_ws/src/awesome_dcist_t4/dcist_launch_system/bin/adt4-rec`),
+`trial_poll_s`. After a console restart the newest trial without a `stopped`
+time is picked up again (`restore`).
+
+Frontend: `components/TrialBar.tsx` under the top bar on every page. Green only
+when every machine answered within 2.5 polls and has no warning; any unknown
+or failed machine turns the bar red and the count reads "N of M recording".
+
 ## Deviations
 
 ### fleetlink (§8)
