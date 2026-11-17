@@ -266,6 +266,32 @@ export function cameraPlacement(o: {
   return {pinned, folded, pip, mounted: pinned || folded || pip};
 }
 
+/** Where a node picked on the map is inspected. "tab": the Inspect tab (side
+ *  panel / phone sheet / its floating window). "card": a card over the map,
+ *  because bringing the Inspect tab forward would hide the chat the operator
+ *  is writing a mission in: the docked Chat tab (robot view), or the open chat
+ *  pane where only one panel shows at a time (phone sheets; tablets <= 900 px,
+ *  where the panels lie over the map). The mission planner's desktop chat is
+ *  its own pane beside the side panel, so Inspect goes there as before. */
+export function inspectPlacement(o: {
+  missionMode: boolean;
+  /** one side panel at a time (phones, overlay tablets) */
+  onePanel: boolean;
+  leftOpen: boolean;
+  rightOpen: boolean;
+  /** the tab the docked side panel shows */
+  dockTab: string | null;
+  /** the mission planner's left pane shows Layers instead of the chat */
+  layersInMission: boolean;
+  inspectFloats: boolean;
+  chatFloats: boolean;
+}): "tab" | "card" {
+  if (o.inspectFloats) return "tab";
+  if (o.missionMode) return o.onePanel && o.leftOpen && !o.layersInMission ? "card" : "tab";
+  return !o.chatFloats && o.rightOpen && o.dockTab === "chat" ? "card" : "tab";
+}
+
+
 const CAM_OVER_CHAT_KEY = "adt4.viewer.cameraOverChat";
 /** Drive layout: show the pinned camera above the Chat tab too (default: folded). */
 export function loadCamOverChat(): boolean {

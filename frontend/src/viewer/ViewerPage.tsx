@@ -44,7 +44,10 @@ import {exitMapFull, toggleMapFull, useMapFull} from "./mapFull";
 import {editLayerOf} from "../lib/mapEdit";
 import {idlePickMode, onEditClick, pickIntoSelection} from "../stores/mapEdit";
 import {finishDrawing, useActiveTool} from "../stores/tools";
-import {useChat} from "../stores/chat";
+import {insertIntoChat, useChat} from "../stores/chat";
+import {InspectCard} from "./InspectCard";
+import {inspectPlacement} from "./paneLayout";
+import "./inspectCard.css";
 import {EditCanvasOverlay, LiveEditStrip, MapEditPanel, useEditFrameClass} from "./MapEditPanel";
 import {AreaPopover} from "./AreaTools";
 import {ToolBanner} from "./ToolBanner";
@@ -56,6 +59,10 @@ type Tab = PaneTab;
 const TAB_TITLE: Record<Tab, string> = {inspect: "Inspect", mission: "Mission", map: "Map", plan: "Plan", teleop: "Teleop", chat: "Chat", images: "Images", live: "Live link", camera: "Camera"};
 /** the mission chat's narrowest width (the map keeps the rest) */
 const CHAT_MIN_W = 300;
+/** below this viewer width the chat pane and the side panel together leave
+ *  too little map (chat 300 + side panel 280 + 480 of map): the mission
+ *  planner inspects on a card instead of opening the side panel */
+export const INSPECT_PANEL_MIN_W = CHAT_MIN_W + 280 + 480;
 /** below this map width the viewer toolbar folds into a "more" menu */
 export const NARROW_MAP_W = 700;
 /** the same on /mission, whose toolbar has the extra "Fit mission" button */
@@ -78,6 +85,10 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const missionMode = mode === "mission";
   const [tab, setTabRaw] = useState<Tab>(missionMode ? "mission" : "inspect");
   const [layersInMission, setLayersInMission] = useState(false);
+  // a node picked while the chat is open is inspected on a card over the map
+  // (paneLayout inspectPlacement); the card shows while something is selected
+  const [inspectCard, setInspectCard] = useState(false);
+  const placeRef = useRef<() => "tab" | "card">(() => "tab");
   const isPhone = useIsPhone();
   // mesh detail "auto": coarse under the mission planner's satellite top view,
   // medium on a phone, full on a desktop viewer (lib/meshPlan autoDetail)
@@ -343,6 +354,11 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const showInspect = useCallback(
     (src?: string, sym?: string) => {
       if (src && sym && pickIntoSelection(src, sym)) return;
+      if (placeRef.current() === "card") {
+        setInspectCard(true);
+        return;
+      }
+      setInspectCard(false);
       setTab("inspect");
       setRightOpen(true);
     },
@@ -371,7 +387,11 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
           return;
         }
         st.select({src, sym});
-        showTab("inspect");
+        if (placeRef.current() === "card") setInspectCard(true);
+        else {
+          setInspectCard(false);
+          showTab("inspect");
+        }
       },
       onPoint: p => {
         const st = useViewer.getState();
@@ -474,6 +494,34 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
     grasping: !!graspRobot,
   });
   const shown = (t: Tab) => floats(t) || (rightOpen && t === dockTab) || (t === "camera" && (camPinned || camPip));
+  // one panel at a time: phones (sheets), tablets <= 900 px (panels over the
+  // map), and a mission planner too narrow for its chat and the side panel
+  placeRef.current = () => inspectPlacement({missionMode, onePanel: isPhone || !wide || (area.w || window.innerWidth) < INSPECT_PANEL_MIN_W, leftOpen, rightOpen, dockTab, layersInMission, inspectFloats: floats("inspect"), chatFloats: floats("chat")});
+  const chatShown = missionMode ? leftOpen && !layersInMission : shown("chat");
+  const selected = v.selected;
+  useEffect(() => {
+    if (!selected) setInspectCard(false);
+  }, [selected]);
+  // the card steps aside whenever the Inspect tab itself is showing
+  const cardShown = inspectCard && !!selected && !shown("inspect");
+  // a short phone screen (held sideways): the chat sheet steps down to peek so
+  // the card fits between the toolbars and the sheet
+  const cardPeek = isPhone && cardShown && (area.h || window.innerHeight) < 560;
+  const cardNode = selected ? v.sources[selected.src]?.model?.nodes.get(selected.sym) : undefined;
+  const cardTitle = cardNode ? (v.sources[selected!.src]!.model!.displayName(cardNode) ?? selected!.sym) : (selected?.sym ?? "");
+  /** "Insert O(12) in chat": into the draft at the caret; the chat comes
+   *  forward if it was not showing, and the node stays on the card */
+  const onInsert = (sym: string) => {
+    insertIntoChat(sym);
+    if (chatShown) return;
+    if (missionMode) {
+      setLayersInMission(false);
+      setLeftOpen(true);
+    } else {
+      setInspectCard(true);
+      showTab("chat");
+    }
+  };
   // folded under Chat the camera stays mounted (its host is just detached from
   // the page): hiding it must not stop / restart the video stream
   const mounted = (t: Tab) => shown(t) || (t === "camera" && camMounted);
@@ -542,7 +590,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
   const tabContent = (t: Tab) => {
     switch (t) {
       case "inspect":
-        return <Inspector onVisit={onVisit} onGoto={gotoNode} />;
+        return <Inspector onVisit={onVisit} onGoto={gotoNode} onInsert={onInsert} />;
       case "mission":
         return <MissionPanel />;
       case "map":
@@ -834,6 +882,21 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
             <TabSlot host={hosts.camera} />
           </section>
         )}
+        {cardShown && (
+          <InspectCard
+            title={cardTitle}
+            sym={selected!.sym}
+            onInsert={onInsert}
+            onClose={() => v.select(null)}
+            expandLabel={isPhone ? "Expand" : "Inspect tab"}
+            onExpand={() => {
+              setInspectCard(false);
+              showTab("inspect");
+            }}
+          >
+            <Inspector onVisit={onVisit} onGoto={gotoNode} onInsert={onInsert} />
+          </InspectCard>
+        )}
         <ToolBanner phone={isPhone} />
         <AreaPopover />
         <ImageViewer />
@@ -924,13 +987,13 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
         })}
       {v.driveFull && focused && <DriveFullscreen key={focused} robot={focused} onExit={() => v.set({driveFull: false})} />}
       {isPhone && leftOpen && (
-        <BottomSheet key="left" label={missionMode ? "Mission chat" : "Sources and layers"} host={viewerRef} onClose={() => setLeftOpen(false)}>
+        <BottomSheet key="left" label={missionMode ? "Mission chat" : "Sources and layers"} host={viewerRef} peek={cardPeek} onClose={() => setLeftOpen(false)}>
           {missionMode && leftSwitch}
           {missionMode && !layersInMission ? <ChatPanel missionMode /> : leftPanel}
         </BottomSheet>
       )}
       {isPhone && rightOpen && (
-        <BottomSheet key="right" label="Inspector and planning" head={tabs} host={viewerRef} onClose={() => setRightOpen(false)} initial={camPip ? "peek" : "half"}>
+        <BottomSheet key="right" label="Inspector and planning" head={tabs} host={viewerRef} peek={cardPeek} onClose={() => setRightOpen(false)} initial={camPip ? "peek" : "half"}>
           {rightBody}
         </BottomSheet>
       )}
