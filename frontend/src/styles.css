@@ -5294,6 +5294,12 @@ input[type="checkbox"] {
 .bag-picker {
   margin-top: 10px;
 }
+/* a run output badge carries a folder name: let it wrap instead of running out of the card */
+.bag-picker .badge {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
 .bag-picker tr.clickable {
   cursor: pointer;
 }

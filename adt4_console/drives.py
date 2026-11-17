@@ -132,11 +132,21 @@ def eject_command(drive: str) -> str:
 # (all bytes there, not hashed yet), "partial" (an interrupted copy) or "".
 # "output": the run output folder the stack wrote during a trial (hydra, roman,
 # ...), named by run.output_dir of the trial.json beside the bag.  Only a folder
-# directly under the output root is taken; "live" says the stack is still up or
-# a file in it changed in the last minute (so a copy of it may be incomplete),
-# A trial that recorded the launch's run id (run.run_id) only takes a folder whose
-# run_info.json has the same id: a later launch under the same experiment name
-# clears the folder, and its output must not be filed under the earlier trial.
+# directly under the output root is taken.
+# "live": a copy of the folder may be incomplete, because the stack that writes
+# it is still up ("stack": the running stack's ADT4_OUTPUT_DIR is this folder;
+# every folder when a running stack does not say which one is its own) or a file
+# in it changed in the last minute.  The folders of launches that ended are not
+# live, whatever runs now.
+# A later launch under the same experiment name clears the folder, and its
+# output must not be filed under the earlier trial:
+# * a trial that recorded the launch's run id (run.run_id) only takes a folder
+#   whose run_info.json has the same id;
+# * one without (a robot's launch writes no run_info.json) is "confirmed" when
+#   the folder holds a file as old as the trial (it was not cleared since), or
+#   when the stack running on it was started before the trial stopped; it is not
+#   taken when none of the files listed at the trial's stop (run_output_at_stop)
+#   are left; otherwise it is copied with "confirmed": false and a "note".
 # "missing"/"note" why there is nothing to copy.  It is copied to
 # <dest>/<run>/run_output/<name>/ and never deleted from the machine.
 BAG_SCAN = r"""
@@ -145,35 +155,60 @@ root = os.path.expanduser(sys.argv[1])
 dest = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
 now = time.time()
 runs = []
+stops = {}
 try:
     names = sorted(os.listdir(root))
 except OSError as e:
     print(json.dumps({"root": root, "runs": [], "error": str(e)}))
     sys.exit(0)
-def stack_up():
+def stack():
+    # (up, the running launch's output folder or None, when it was started or 0)
+    fake = os.environ.get("ADT4_SCAN_STACK")  # tests: "<output dir>|<start unix>"
+    if fake is not None:
+        d, _, t = fake.partition("|")
+        return True, (os.path.normpath(d) if d else None), float(t or 0)
     import subprocess
-    try:
-        return subprocess.run(["tmux", "has-session", "-t", "=adt4_system"],
-                              capture_output=True, timeout=5).returncode == 0
-    except Exception:
-        return False
-STACK = stack_up()
-def run_output(run, subs, name):
-    path = want = None
+    def tmux(*args):
+        try:
+            p = subprocess.run(("tmux",) + args, capture_output=True, text=True, timeout=5)
+            return p.returncode, p.stdout.strip()
+        except Exception:
+            return 1, ""
+    if tmux("has-session", "-t", "=adt4_system")[0] != 0:
+        return False, None, 0.0
+    rc, env = tmux("show-environment", "-t", "=adt4_system", "ADT4_OUTPUT_DIR")
+    d = env.partition("=")[2].strip() if rc == 0 and "=" in env else ""
+    born = 0.0
+    rc, rows = tmux("list-sessions", "-F", "#{session_name} #{session_created}")
+    for row in rows.splitlines() if rc == 0 else []:
+        sname, _, t = row.rpartition(" ")
+        if sname == "adt4_system":
+            try:
+                born = float(t)
+            except ValueError:
+                pass
+    return True, (os.path.normpath(os.path.expanduser(d)) if d else None), born
+STACK_UP, STACK_DIR, STACK_BORN = stack()
+def run_output(run, subs, name, stopped):
+    path = want = listing = None
     for sub in subs:
         try:
             with open(os.path.join(run, sub, "trial.json")) as f:
-                info = json.load(f).get("run") or {}
+                trial = json.load(f)
+            info = trial.get("run") or {}
             path, want = info.get("output_dir"), info.get("run_id")
         except (OSError, ValueError, AttributeError):
             continue
         if path:
+            stopped = trial.get("stop_time_unix") or stopped
+            listing = (trial.get("run_output_at_stop") or {}).get("files")
             break
     if not path or not isinstance(path, str):
         return None
     path = os.path.normpath(path)
     out = {"name": os.path.basename(path), "path": path, "bytes": 0, "files": 0,
-           "dest_bytes": 0, "on_drive": "", "live": False, "missing": False, "note": ""}
+           "dest_bytes": 0, "on_drive": "", "live": False, "stack": False,
+           "confirmed": True, "missing": False, "note": ""}
     if os.path.dirname(path) != os.path.normpath(root) or out["name"] == name:
         out.update(missing=True, note="not a folder directly under %s: not copied" % root)
         return out
@@ -196,7 +231,7 @@ def run_output(run, subs, name):
                 "the folder has no run_info.json to show it is the run the trial "
                 "was recorded in (%s): not copied" % str(want)[:8]))
             return out
-    newest, there = 0.0, 0
+    newest, oldest, there = 0.0, None, 0
     base = os.path.join(dest, name, "run_output", out["name"]) if dest else None
     for d, dirs, files in os.walk(path):
         dirs[:] = sorted(x for x in dirs if not os.path.islink(os.path.join(d, x)))
@@ -211,12 +246,36 @@ def run_output(run, subs, name):
             out["files"] += 1
             out["bytes"] += st.st_size
             newest = max(newest, st.st_mtime)
+            oldest = st.st_mtime if oldest is None else min(oldest, st.st_mtime)
             if base:
                 try:
                     there += min(os.path.getsize(os.path.join(base, os.path.relpath(fp, path))), st.st_size)
                 except OSError:
                     pass
-    out["live"] = STACK or now - newest < 60
+    # only the folder the running stack writes to; a stack that does not say
+    # which folder is its own leaves every folder in doubt
+    out["stack"] = STACK_UP and (STACK_DIR is None or STACK_DIR == path)
+    out["live"] = out["stack"] or now - newest < 60
+    if not want:
+        # no run id to compare: is this still the launch the trial was recorded in?
+        kept = [f for f in listing or []
+                if isinstance(f, dict) and os.path.isfile(os.path.join(path, str(f.get("path"))))]
+        if listing and not kept:
+            out.update(missing=True, note=(
+                "none of the %d files the folder held when the trial stopped are "
+                "left: the stack was launched again under this name, and the "
+                "folder now holds that launch's output: not copied" % len(listing)))
+            return out
+        same = bool(stopped) and (
+            (oldest is not None and oldest <= stopped)
+            or (STACK_UP and STACK_DIR == path and 0 < STACK_BORN <= stopped))
+        if not same:
+            out.update(confirmed=False, note=(
+                "every file in it was written after the trial stopped, and the "
+                "trial recorded no run id: it may be a later launch's output"
+                if stopped and oldest is not None else
+                "the trial recorded no run id and no stop time, so nothing shows "
+                "the folder is from the launch it was recorded in"))
     out["dest_bytes"] = there
     if base and out["files"] and there >= out["bytes"]:
         out["on_drive"] = "verified" if os.path.isfile(base + ".sha256") else "copied"
@@ -265,6 +324,8 @@ for name in names:
             continue
         stats = [f.stat() for f in files]
         total = sum(st.st_size for st in stats)
+        # when the bag was closed: the fallback for a trial.json without stop_time_unix
+        stops[name] = max(stops.get(name, 0.0), max(st.st_mtime for st in stats))
         bag = {"name": sub, "bytes": total, "files": len(files),
                "metadata": any(f.name == "metadata.yaml" for f in files),
                "recording": now - max(st.st_mtime for st in stats) < 60
@@ -290,7 +351,7 @@ for name in names:
                      "dest_bytes": sum(b["dest_bytes"] for b in bags),
                      "recording": any(b["recording"] for b in bags),
                      "on_drive": state(bags), "bags": bags,
-                     "output": run_output(run, subs, name)})
+                     "output": run_output(run, subs, name, stops.get(name))})
 runs.sort(key=lambda r: -r["mtime"])
 print(json.dumps({"root": root, "runs": runs}))
 """

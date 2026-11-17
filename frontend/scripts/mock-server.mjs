@@ -492,9 +492,9 @@ const driveState = {
     installed: true,
     drives: [{name: "dcist_ssd3", label: "dcist_ssd3", uuid: "7DFF-FFAA", fstype: "exfat", model: "Extreme 55AE", mountpoint: "/mnt/bag_drives/dcist_ssd3", write_dir: "/mnt/bag_drives/dcist_ssd3", mounted: true, managed: true, size_bytes: 2000 * GBY, free_bytes: 1620 * GBY, usb_speed_mbps: 10000, slow_link: false, error: "", copy_job: null}],
     runs: [
-      {name: "nov13_b45_field_v3", mtime: now() - 20, bytes: 6.1 * GBY, dest_bytes: 0, recording: true, on_drive: ""},
-      {name: "nov13_b45_field_v2", mtime: now() - 5400, bytes: 77.5 * GBY, dest_bytes: 33.2 * GBY, recording: false, on_drive: "partial"},
-      {name: "nov13_b45_field_v1", mtime: now() - 9000, bytes: 36.2 * GBY, dest_bytes: 36.2 * GBY, recording: false, on_drive: "verified"},
+      {name: "nov13_b45_field_v3", mtime: now() - 20, bytes: 6.1 * GBY, dest_bytes: 0, recording: true, on_drive: "", output: {name: "nov13_afternoon_test_v3", path: "/home/swarm/adt4_output/nov13_afternoon_test_v3", bytes: 6800000, files: 240, dest_bytes: 0, on_drive: "", live: true, stack: true, confirmed: true, missing: false, note: ""}},
+      {name: "nov13_b45_field_v2", mtime: now() - 5400, bytes: 77.5 * GBY, dest_bytes: 33.2 * GBY, recording: false, on_drive: "partial", output: {name: "ethan-try-to-create-issue-with-nathan-verbose", path: "/home/swarm/adt4_output/ethan-try-to-create-issue-with-nathan-verbose", bytes: 799000000, files: 240, dest_bytes: 0, on_drive: "", live: false, stack: false, confirmed: false, missing: false, note: "every file in it was written after the trial stopped, and the trial recorded no run id: it may be a later launch's output"}},
+      {name: "nov13_b45_field_v1", mtime: now() - 9000, bytes: 36.2 * GBY, dest_bytes: 36.2 * GBY, recording: false, on_drive: "verified", output: {name: "nov13_morning_map", path: "/home/swarm/adt4_output/nov13_morning_map", bytes: 1060000000, files: 240, dest_bytes: 0, on_drive: "", live: false, stack: false, confirmed: true, missing: false, note: ""}},
       {name: "nov11_b45_v3_map_images_v7", mtime: now() - 190000, bytes: 21.8 * GBY, dest_bytes: 0, recording: false, on_drive: ""},
       {name: "nov11_b45_v3_map_images_v5", mtime: now() - 200000, bytes: 3.3 * GBY, dest_bytes: 0, recording: false, on_drive: ""},
     ],

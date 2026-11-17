@@ -390,15 +390,23 @@ def copy(body: CopyBody, request: Request):
         label = f"{run_name}: run output {o['name']}"
         dst = bd.output_dest_dir(write_dir, name, run_name, o["name"])
         item = {"run": run_name, "name": o["name"], "dest": dst, "bytes": o["bytes"],
-                "live": bool(o.get("live")), "state": "failed", "changed": []}  # fmt: skip
+                "live": bool(o.get("live")), "confirmed": o.get("confirmed") is not False,
+                "state": "failed", "changed": []}  # fmt: skip
         job.log("info", f"{label} ({bd.human(o['bytes'])}, {o['files']} files)")
         if o.get("live"):
             job.log(
                 "warn",
-                f"{label}: the stack is still running or wrote to it in the last "
-                "minute, so this copy may be incomplete (the final scene graph is "
+                f"{label}: "
+                + (
+                    "the stack is still running on it"
+                    if o.get("stack")
+                    else "a file in it changed in the last minute"
+                )
+                + ", so this copy may be incomplete (the final scene graph is "
                 "saved when the stack stops). Copy the run again after stopping it.",
             )
+        if o.get("confirmed") is False:
+            job.log("warn", f"{label}: copied, but {o.get('note')}.")
         tail: list[str] = []
 
         def on_copy(line):

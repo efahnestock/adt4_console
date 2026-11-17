@@ -66,7 +66,13 @@ export interface RunOutput {
   files: number;
   dest_bytes?: number;
   on_drive?: "verified" | "copied" | "partial" | "";
+  /** a copy may be incomplete: the running stack writes to this folder
+   *  (`stack`), or a file in it changed in the last minute */
   live?: boolean;
+  stack?: boolean;
+  /** false: nothing shows the folder is from the launch the trial was recorded
+   *  in (no run id, and every file is newer than the trial); `note` says why */
+  confirmed?: boolean;
   missing?: boolean;
   note?: string;
 }
@@ -74,7 +80,12 @@ export interface RunOutput {
 export function outputLabel(o: RunOutput): {tone: "ok" | "info" | "warn" | "off"; text: string; title: string} {
   if (o.missing) return {tone: "warn", text: `run output ${o.name} missing`, title: `The trial names the run output folder ${o.name}, but ${o.note || "it is not here"}. Only the bag is copied.`};
   const size = `${fmtBytes(o.bytes)}`;
-  if (o.live) return {tone: "warn", text: `+ run output ${o.name}, ${size}, stack running`, title: "The stack is still running or wrote to this folder in the last minute. It is copied with the bag, but may be incomplete: the final scene graph is saved when the stack stops. Copy again after stopping it."};
+  if (o.live) {
+    return o.stack
+      ? {tone: "warn", text: `+ run output ${o.name}, ${size}, stack running`, title: "The stack is still running on this folder. It is copied with the bag, but may be incomplete: the final scene graph is saved when the stack stops. Copy again after stopping it."}
+      : {tone: "warn", text: `+ run output ${o.name}, ${size}, still being written`, title: "A file in this folder changed in the last minute. It is copied with the bag, but may be incomplete. Copy again once it is quiet."};
+  }
+  if (o.confirmed === false) return {tone: "warn", text: `+ run output ${o.name}, ${size}, launch not confirmed`, title: `It is copied with the bag, but ${o.note || "nothing shows it is from the launch the trial was recorded in"}.`};
   if (o.on_drive === "verified") return {tone: "ok", text: `+ run output ${o.name} on drive`, title: "The run output folder is on the drive and its hashes were checked."};
   return {tone: "off", text: `+ run output ${o.name}, ${size}`, title: "The folder the stack wrote during this run (scene graph, logs). It is copied with the bag into run_output/ and is never deleted from the robot."};
 }

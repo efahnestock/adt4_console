@@ -172,7 +172,14 @@ describe("Drives page", () => {
     const o = {name: "exp_a", bytes: 4e6, files: 12};
     expect(outputLabel(o).text).toBe("+ run output exp_a, 4.0 MB");
     expect(outputLabel({...o, live: true}).tone).toBe("warn");
-    expect(outputLabel({...o, live: true}).text).toContain("stack running");
+    // only a folder the running stack writes to says "stack running"
+    expect(outputLabel({...o, live: true, stack: true}).text).toContain("stack running");
+    expect(outputLabel({...o, live: true}).text).toContain("still being written");
+    expect(outputLabel({...o, live: true}).text).not.toContain("stack running");
+    const unsure = outputLabel({...o, confirmed: false, note: "every file in it was written after the trial stopped"});
+    expect(unsure.tone).toBe("warn");
+    expect(unsure.text).toBe("+ run output exp_a, 4.0 MB, launch not confirmed");
+    expect(unsure.title).toContain("written after the trial stopped");
     expect(outputLabel({...o, on_drive: "verified"}).text).toBe("+ run output exp_a on drive");
     const gone = outputLabel({...o, missing: true, note: "the folder is not on this machine"});
     expect(gone.text).toBe("run output exp_a missing");

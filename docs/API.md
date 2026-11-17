@@ -1768,16 +1768,26 @@ straight onto the drive, so bag data never crosses the radio.
   * **Run output.** A trial's `trial.json` names the folder the stack wrote
     during the run (`run.output_dir`: scene graph, ROMAN map, logs). In the
     bag listing a run then has `output` = `{name, path, bytes, files,
-    dest_bytes, on_drive, live, missing, note}`, or `null`. Only a folder
-    directly under the output root counts; anything else is `missing` with a
-    `note`. So does a folder whose `run_info.json` does not carry the
-    `run.run_id` the trial recorded (the stack was launched again under the
-    same experiment name, which clears the folder). The copy job copies it after the bags, to
+    dest_bytes, on_drive, live, stack, confirmed, missing, note}`, or `null`.
+    Only a folder directly under the output root counts; anything else is
+    `missing` with a `note`. So does a folder whose `run_info.json` does not
+    carry the `run.run_id` the trial recorded (the stack was launched again
+    under the same experiment name, which clears the folder). A trial that
+    recorded no run id (a robot's launch writes no `run_info.json`) is checked
+    by what is in the folder: it is `missing` when none of the files listed at
+    the trial's stop (`run_output_at_stop`) are left; it is the trial's launch
+    when a file in it is as old as the trial's stop (`stop_time_unix`, else when
+    the bag was closed), or when the stack running on it was started before
+    that; otherwise it is copied with `confirmed: false` and a `note` (every
+    file is newer than the trial). The copy job copies it after the bags, to
     `<write_dir>/<machine>/<run>/run_output/<name>/` with its manifest
     `<name>.sha256` beside it (paths relative to the folder), and counts it in
-    the space check. It is **never deleted** from the machine. `live` means the
-    stack session is up or a file changed in the last minute: the copy still
-    runs, with a warning that it may be incomplete. A problem with the run
+    the space check. It is **never deleted** from the machine. `live` means a
+    copy may be incomplete: the running stack writes to this folder (`stack`:
+    the `adt4_system` tmux session is up and its `ADT4_OUTPUT_DIR` is this
+    folder, or it names none), or a file in it changed in the last minute. The
+    folders of launches that ended are not live, whatever runs now. The copy
+    still runs, with a warning. A problem with the run
     output (files that changed while being copied, a failed copy) is a warning
     in the log and in `result.outputs[].state` (`verified`, `changed`,
     `failed`, `missing`), never a failed job; the delete question names the

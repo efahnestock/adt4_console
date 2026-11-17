@@ -671,9 +671,15 @@ def test_eject_waits_for_a_running_copy(app, monkeypatch):
 
 
 # ------------------------------------------------------------ run output
-def _scan(out, dest=None):
+def _scan(out, dest=None, stack=None):
+    """Run the scan; ``stack`` = (output dir or "", start unix) stands in for a
+    running adt4_system session, ``None`` for the machine as it is (no tmux here)."""
     args = [sys.executable, "-c", bd.BAG_SCAN, str(out)] + ([str(dest)] if dest else [])
-    p = subprocess.run(args, capture_output=True, text=True)
+    env = dict(os.environ)
+    env.pop("ADT4_SCAN_STACK", None)
+    if stack is not None:
+        env["ADT4_SCAN_STACK"] = f"{stack[0]}|{stack[1]}"
+    p = subprocess.run(args, capture_output=True, text=True, env=env)
     return bd.parse_bag_scan(p.returncode, p.stdout, p.stderr)
 
 
@@ -724,6 +730,114 @@ def test_bag_scan_finds_the_run_output_a_trial_points_to(tmp_path):
     # a file written just now: the stack may still be writing
     (exp / "roman" / "map.pkl").write_bytes(b"r" * 200)
     assert _scan(out)["runs"][0]["output"]["live"] is True
+
+
+def _aged(path, age_s):
+    t = time.time() - age_s
+    os.utime(path, (t, t))
+
+
+def test_only_the_running_launchs_folder_is_live(tmp_path):
+    """A stack running now says nothing about the folders of launches that ended."""
+    out = tmp_path / "out"
+    for exp in ("exp_old", "exp_now"):
+        (out / exp).mkdir(parents=True)
+        (out / exp / "dsg.json").write_bytes(b"d" * 100)
+        _aged(out / exp / "dsg.json", 3600)
+    for trial, exp in (("trial_old", "exp_old"), ("trial_now", "exp_now")):
+        bag = out / trial / "euclid"
+        bag.mkdir(parents=True)
+        (bag / "euclid_0.mcap").write_bytes(b"m" * 50)
+        (bag / "metadata.yaml").write_text("meta")
+        (bag / "trial.json").write_text(
+            json.dumps({"run": {"output_dir": str(out / exp)}})
+        )
+        for f in bag.iterdir():
+            _aged(f, 600)
+
+    def outputs(stack):
+        return {r["name"]: r["output"] for r in _scan(out, stack=stack)["runs"]}
+
+    # no stack: nothing is live
+    assert {k: v["live"] for k, v in outputs(None).items()} == {
+        "trial_old": False,
+        "trial_now": False,
+    }
+    # the stack runs on exp_now: only that folder may be incomplete
+    o = outputs((out / "exp_now", time.time() - 1800))
+    assert (o["trial_now"]["live"], o["trial_now"]["stack"]) == (True, True)
+    assert (o["trial_old"]["live"], o["trial_old"]["stack"]) == (False, False)
+    # a stack that does not say which folder is its own leaves both in doubt
+    o = outputs(("", 0))
+    assert o["trial_old"]["stack"] is True and o["trial_now"]["stack"] is True
+    # a file written just now is live without any stack, and says so
+    (out / "exp_old" / "log.txt").write_text("x")
+    o = outputs(None)["trial_old"]
+    assert (o["live"], o["stack"]) == (True, False)
+
+
+def test_a_trial_without_a_run_id_checks_the_folder_is_still_its_launch(tmp_path):
+    out = tmp_path / "out"
+    exp = out / "exp_a"
+    (exp / "roman").mkdir(parents=True)
+    (exp / "roman" / "map.pkl").write_bytes(b"r" * 200)
+    _trial_with_output(out, exp)  # bag closed 600 s ago
+    trial = out / "trial_x" / "euclid" / "trial.json"
+    output = lambda **kw: _scan(out, **kw)["runs"][0]["output"]  # noqa: E731
+
+    # a file as old as the trial: the folder was not cleared since
+    _aged(exp / "roman" / "map.pkl", 900)
+    o = output()
+    assert (o["missing"], o["confirmed"], o["note"]) == (False, True, "")
+
+    # every file newer than the trial: copied, but flagged
+    _aged(exp / "roman" / "map.pkl", 30)
+    o = output()
+    assert o["missing"] is False and o["confirmed"] is False
+    assert "written after the trial stopped" in o["note"]
+    # ... unless the stack still running on it was started before the trial stopped
+    assert output(stack=(exp, time.time() - 3600))["confirmed"] is True
+    assert output(stack=(exp, time.time() - 60))["confirmed"] is False
+    assert output(stack=(out / "other", time.time() - 3600))["confirmed"] is False
+
+    # trial.json's own stop time wins over the bag's file times
+    trial.write_text(
+        json.dumps(
+            {"run": {"output_dir": str(exp)}, "stop_time_unix": time.time() - 10}
+        )
+    )
+    assert output()["confirmed"] is True
+
+    # the listing taken at the trial's stop: none of its files are left, so the
+    # stack was launched again under this name
+    trial.write_text(
+        json.dumps(
+            {
+                "run": {"output_dir": str(exp)},
+                "run_output_at_stop": {
+                    "files": [{"path": "hydra/dsg.json", "size": 5, "mtime": 1.0}]
+                },
+            }
+        )
+    )
+    o = output()
+    assert o["missing"] is True and "launched again under this name" in o["note"]
+    # one of them is still there: the same launch
+    (exp / "hydra").mkdir()
+    (exp / "hydra" / "dsg.json").write_bytes(b"d" * 5)
+    _aged(exp / "hydra" / "dsg.json", 900)
+    o = output()
+    assert (o["missing"], o["confirmed"]) == (False, True)
+
+    # two trials of one launch both take its folder
+    other = out / "trial_y" / "euclid"
+    other.mkdir(parents=True)
+    (other / "euclid_0.mcap").write_bytes(b"m" * 50)
+    (other / "trial.json").write_text(json.dumps({"run": {"output_dir": str(exp)}}))
+    for f in other.iterdir():
+        _aged(f, 300)
+    both = {r["name"]: r["output"]["confirmed"] for r in _scan(out)["runs"]}
+    assert both == {"trial_x": True, "trial_y": True}
 
 
 def test_bag_scan_says_why_a_run_output_is_not_copied(tmp_path):
@@ -842,7 +956,7 @@ def test_copy_takes_the_run_output_along_and_never_deletes_it(app):
     assert job.state == "succeeded", job.to_dict()["log"]
     assert job.result["outputs"] == [
         {"run": "nov11_b45", "name": "exp_a", "dest": dst, "bytes": 4 * 10**6,
-         "live": False, "state": "verified", "changed": []}
+         "live": False, "confirmed": True, "state": "verified", "changed": []}
     ]  # fmt: skip
     removed = [c for c in svc.helpers.calls if c.startswith("rm -rf")]
     assert removed == ["rm -rf -- /home/swarm/adt4_output/nov11_b45/recorded_data"]
@@ -853,7 +967,7 @@ def test_a_run_output_that_changed_or_is_missing_warns_and_the_bags_still_copy(
 ):
     client, svc = app
     robot = _robot(svc)
-    _scan_with_output(svc, live=True)
+    _scan_with_output(svc, live=True, stack=True)
 
     def stream(job, m, cmd, on_line):
         svc.streamed.append(cmd)
