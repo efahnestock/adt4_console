@@ -377,9 +377,12 @@ def test_refresh_of_another_map_or_nothing_loaded_is_a_plain_push(settings):
     hub = FakeHub()
     gs = GraphService(settings, hub=hub)
     base = Loaded(3, _records(50), set(), {})
-    other = lambda v: Loaded(
-        v, {k: NodeRecord(k, 2, 0, (0, 0, 9.0)) for k in base.records}, set(), {}
-    )  # noqa: E731
+
+    def other(v):
+        return Loaded(
+            v, {k: NodeRecord(k, 2, 0, (0, 0, 9.0)) for k in base.records}, set(), {}
+        )
+
     src = _ReloadSource(base, other)
     gs.sources[src.id] = src
     gs.refresh(src.id, "reset")
