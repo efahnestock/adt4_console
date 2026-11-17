@@ -34,6 +34,9 @@ import {usePlanPreview} from "../stores/planPreview";
 import {planCleared, useClearedPaths} from "../stores/clearedPaths";
 import {EditOverlay} from "./EditOverlay";
 import {fitTopView} from "../lib/fitView";
+import {useRobotStatus} from "../stores/robotStatus";
+import {ringColor, ringLabel} from "../lib/readiness";
+import {useRobotReadiness, useTick} from "./RobotStatusCard";
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
@@ -120,6 +123,29 @@ function SourceContent({src, cb}: {src: SourceView; cb: SceneCallbacks}) {
   );
 }
 
+/** How close (screen px) to a robot's position a tap opens its status card. */
+const ROBOT_PICK_PX = 28;
+
+/** The drawn robot nearest a screen point within `radius` px (global pose,
+ *  hidden robots skipped), or null. */
+function robotAt(camera: THREE.Camera, rect: DOMRect, x: number, y: number, radius: number): string | null {
+  const {state} = useRobots.getState();
+  const {focus, focusOthers} = useViewer.getState();
+  const v = new THREE.Vector3();
+  let best: {r: string; d: number} | null = null;
+  for (const [r, st] of Object.entries(state)) {
+    const p = st.pose;
+    if (!p || !Number.isFinite(p.x)) continue;
+    if (focusOthers === "hide" && focus && focus !== "all" && focus !== r) continue;
+    const g = poseInGlobal(p, frameAlignOf(r));
+    v.set(g.x, g.y, g.z).project(camera);
+    if (v.z > 1 || v.z < -1) continue;
+    const d = Math.hypot(((v.x + 1) / 2) * rect.width - x, ((1 - v.y) / 2) * rect.height - y);
+    if (d < radius && (!best || d < best.d)) best = {r, d};
+  }
+  return best?.r ?? null;
+}
+
 /** Click picking: nearest projected node within a few pixels, else the mesh surface. */
 function Picker({cb}: {cb: SceneCallbacks}) {
   const {gl, camera, scene} = useThree();
@@ -139,6 +165,14 @@ function Picker({cb}: {cb: SceneCallbacks}) {
       const y = e.clientY - rect.top;
       const enabled = useViewer.getState().sources;
       const v = new THREE.Vector3();
+      // inspect: a tap on (or right next to) a robot opens its status card
+      if (useViewer.getState().pickMode === "inspect") {
+        const r = robotAt(camera, rect, x, y, Math.max(radius, ROBOT_PICK_PX));
+        if (r) {
+          useRobotStatus.getState().show(r);
+          return;
+        }
+      }
       let best: {src: string; sym: string; d: number; depth: number} | null = null;
       for (const [src, layers] of pickRegistry) {
         if (!enabled[src]?.enabled || !enabled[src]?.showGraph) continue;
@@ -226,11 +260,48 @@ function RobotGlyph({robot, children}: {robot: string; children: React.ReactNode
 function GlyphTag({robot, color, stale}: {robot: string; color: string; stale: boolean}) {
   const look = useFocusLook(robot);
   const focused = useViewer(s => s.focus) === robot;
+  const toggle = useRobotStatus(s => s.toggle);
   return (
-    <div className={`robot-tag ${look === "dim" ? "dim" : ""} ${focused ? "focused" : ""}`} style={{borderColor: color}}>
+    <div
+      role="button"
+      tabIndex={0}
+      className={`robot-tag clickable ${look === "dim" ? "dim" : ""} ${focused ? "focused" : ""}`}
+      style={{borderColor: color}}
+      title={`${robot}: open its status`}
+      data-testid={`robot-tag-${robot}`}
+      onClick={e => {
+        e.stopPropagation();
+        toggle(robot);
+      }}
+      onPointerDown={e => e.stopPropagation()}
+      onKeyDown={e => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle(robot);
+        }
+      }}
+    >
       {robot}
       {stale ? " (stale)" : ""}
     </div>
+  );
+}
+
+/** A halo outside the robot's colour ring: green ready for the current phase
+ *  (localize with a prior map, else map), amber partly, red blocked, grey no
+ *  data (lib/readiness.ts). Wider while its card is open. */
+function ReadinessHalo({robot, ring, z}: {robot: string; ring: number; z: number}) {
+  const now = useTick(2000);
+  const {tone, phase} = useRobotReadiness(robot, now);
+  const open = useRobotStatus(s => s.open) === robot;
+  const light = contrastFor(useBackground()).light;
+  const color = ringColor(tone, light);
+  const outer = ring + (open ? 0.7 : 0.5);
+  return (
+    <mesh position={[0, 0, z]} renderOrder={3} userData={{readiness: tone, label: ringLabel(tone, phase)}}>
+      <ringGeometry args={[ring + 0.14, outer, 48]} />
+      <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent opacity={tone === "none" ? 0.45 : 0.9} depthWrite={false} />
+    </mesh>
   );
 }
 
@@ -277,6 +348,7 @@ function RobotBody({robot, color, stale, x, y, yaw, at}: {robot: string; color: 
         <ringGeometry args={[ring - 0.08, ring + 0.07, 40]} />
         <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent opacity={stale ? 0.3 : 0.85} />
       </mesh>
+      <ReadinessHalo robot={robot} ring={ring} z={groundZ - 0.005} />
       <Html position={[0, 0, (spec?.topZ ?? 0.6) + 0.8]} center zIndexRange={[20, 0]} className="robot-tag-wrap">
         <GlyphTag robot={robot} color={color} stale={stale} />
       </Html>

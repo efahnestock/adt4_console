@@ -363,7 +363,63 @@ export interface LidarState {
   bytes?: number;
 }
 
+/** Robot readiness (backend readiness.py), computed by the console from the
+ *  C1 state and carried along with it as ``readiness``. */
+export type ReadyState = "ok" | "warn" | "fail" | "unknown";
+
+export interface ReadinessItem {
+  key: string;
+  name: string;
+  state: ReadyState;
+  /** one line, plain words */
+  reason: string;
+  /** monitor row / topic the item comes from */
+  source: string;
+  /** how old the evidence is when the console computed it (null: unknown) */
+  age_s: number | null;
+  /** a non-ok state keeps the checklist from being ready */
+  blocking: boolean;
+  /** unreliable signal (GPS monitor, unmeasured depth quality...): shown only */
+  info: boolean;
+}
+
+export interface ReadinessList {
+  state: ReadyState;
+  ready: boolean;
+  items: ReadinessItem[];
+  first_problem: string | null;
+}
+
+/** hydra_multi's loop-closure count and last optimization, current or the last
+ *  ones seen (``*_stale``: its row no longer says, e.g. ERR "time since last spin"). */
+export interface HydraMultiSummary {
+  accepted: number | null;
+  total: number | null;
+  needed: number;
+  count_age_s: number | null;
+  count_stale: boolean;
+  took_s: number | null;
+  /** only older hydra_multi notes say how long before the report it ran */
+  ago_s: number | null;
+  opt_age_s: number | null;
+  opt_stale: boolean;
+  status: string | null;
+  note: string | null;
+  in_table: boolean;
+}
+
+export interface Readiness {
+  robot: string;
+  map: ReadinessList;
+  localize: ReadinessList;
+  hydra_multi: HydraMultiSummary | null;
+  broken: {list: "map" | "localize"; key: string; name: string; state: ReadyState; reason: string}[];
+  summary: string;
+}
+
 export interface RobotState {
+  /** ready to map / localize, computed by the console (readiness.py) */
+  readiness?: Readiness;
   /** "spot" | "phoenix" (agents before phoenix support: absent = spot) */
   platform?: string;
   phoenix_progress?: PhoenixProgress | null;

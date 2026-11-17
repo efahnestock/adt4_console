@@ -18,6 +18,7 @@ import {ChatPanel} from "./ChatPanel";
 import {LivePanel} from "./LivePanel";
 import {LiveOverlaysPanel} from "./LiveOverlays";
 import {RobotLegend} from "./RobotLegend";
+import {RobotStatusCard} from "./RobotStatusCard";
 import {ClearPathsButton} from "./ClearPaths";
 import {GraspApprovalBadge} from "./ManipulationApproval";
 import {CameraPanel} from "./CameraPanel";
@@ -846,6 +847,7 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
         {/* no rotate hint while a banner says what the next click does */}
         <TopViewHint active={v.topDown && armed.owner === "none" && v.pickMode !== "goto" && v.pickMode !== "edit" && !pendingArea} />
         <RobotLegend />
+        <RobotStatusCard />
         <LoadBar />
         <div className="vstatus mono">
           {totalNodes.toLocaleString()} nodes{tileText ? ` · tiles ${tileText}` : ""}
