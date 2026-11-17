@@ -1,0 +1,16 @@
+/* The after-pick question. Reuses the manipulation dialog frame; sits just
+   below the grasp approval panel so an open approval is never covered. */
+.pick-result-backdrop {z-index: 2950;}
+.pick-result-dialog {width: min(1040px, 100%); outline: none;}
+.pick-result-sensor {margin: 12px 0 8px; font-size: 13px;}
+.pick-result-sensor.is-warn {color: #ffdf84; font-weight: 700;}
+.pick-result-images {display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;}
+.pick-result-images figure {margin: 0; flex: 1 1 280px; max-width: 100%; text-align: center; background: #080e16; border: 1px solid var(--line, #536071); border-radius: 6px; padding: 6px;}
+.pick-result-images img {display: block; margin: 0 auto; max-width: 100%; max-height: 46dvh; width: auto; height: auto; user-select: none;}
+.pick-result-images figcaption {font-size: 12px; margin-top: 4px; opacity: 0.8;}
+.pick-result-foot {border-top: 1px solid var(--line, #536071); flex-wrap: wrap;}
+.pick-result-foot .row {display: flex; gap: 10px; align-items: center; flex-wrap: wrap;}
+.pick-result-confirm {width: 100%; justify-content: flex-end;}
+.pick-result-confirm > span {margin-right: auto;}
+.pick-result-pending {position: fixed; bottom: 68px; right: 20px; z-index: 2900; max-width: min(520px, calc(100vw - 40px));}
+.pick-result-notice {bottom: 68px;}

@@ -25,7 +25,7 @@ def server_time():
 def health(request: Request):
     svc = services(request)
     neo4j = {}
-    for s in svc.graph.sources.values():
+    for s in list(svc.graph.sources.values()):
         if s.kind == "neo4j":
             try:
                 s.read_map_version()
@@ -69,7 +69,7 @@ def config(request: Request):
         ],
         "maps": [
             {"name": src.name, "path": str(src.run_dir)}
-            for src in svc.graph.sources.values()
+            for src in list(svc.graph.sources.values())
             if src.kind == "file"
         ],
         "sessions": lw.list_sessions() if lw is not None else [],

@@ -512,7 +512,7 @@ The RViz `nlu_interface_rviz` panel answers the same protocol; the console is a 
 The protocol has no request id: the console assigns one, keeps only the newest request per robot
 answerable, expires it after 5 min, and drops the images once answered.
 
-* `GET /api/manipulation/pending` → `{available, error, requests: [{id, robot, status, simulated,
+* `GET /api/manipulation/pending` → `{available, error, requests: [{id, robot, status,
   received_at, expires_at, images: [{index, name, url, width, height, depth_url?, point_query_url?,
   ground_estimate, ground_estimate_warning?, error?, depth_error?}], depth_range_m, walk_to:
   {standoff_m, max_distance_m}, has_detection, selection: {image_index, x, y} | null}]}`.
@@ -527,7 +527,7 @@ answerable, expires it after 5 min, and drops the images once answered.
   carry `ground_estimate_warning`: the gripper camera's floor estimates are unreliable.
 * `POST /api/manipulation/requests/{id}/respond` `{approve, image_index?, image_x?, image_y?,
   walk_to?, stand_x?, stand_y?}` (strict types; pixels default to the suggested detection) →
-  `{ok, status: "published" | "simulated", request_id, robot, response, subscribers?, via?,
+  `{ok, status: "published", request_id, robot, response, subscribers?, via?,
   delivered?, link?}`. `approve: true` grasps at the pixel; `approve: false` abandons the attempt;
   `approve: false, walk_to: true` walks toward the pixel's ground/object point (the executor stops
   `walk_to_standoff` short of it, moves at most `walk_to_max_distance`) and then sends a fresh
@@ -538,13 +538,43 @@ answerable, expires it after 5 min, and drops the images once answered.
   fleetlink mode the relay is always the local subscriber, so the bridge waits for the robot's
   ack instead (`publish_to_robot`); a missing ack closes the request as `publish_failed` rather
   than invite a duplicate approval. The message goes out exactly once.
-* `POST /api/manipulation/demo[?robot=]` → a simulated request (two synthetic cameras with depth
-  and geometry; `simulated: true`) whose answers are recorded and never published; 409 while a
-  live request is open.
 * fleetlink mode needs `relay.yaml` to carry `manipulation_request` up and `pick_confirmation`
   down (both `platform: [spot]`); router mode (robot topics on the base graph) needs nothing.
   `nlu_interface_rviz` must be importable in `spark_env` (it is where the RViz panel is built),
   else the bridge logs a warning and `pending` stays empty.
+
+### 9d. Pick result (`routes/pick_result.py`, `pick_result_service.py`)
+
+After a pick Spot believes worked, `spot_executor_node` asks the operator whether the robot
+really holds the object, and waits with the object in the gripper (executor parameter
+`confirm_pick_result`, default true). The question is one `std_msgs/String` JSON on
+`/<r>/spot_executor_node/pick_result_request` (latched, repeated every 20 s while unanswered):
+`{request_id, object_id, object_class, attempt, gripper_holding, images: [{name, jpeg_b64}]}`.
+The answer is one `std_msgs/String` JSON on `/<r>/spot_executor_node/pick_result`:
+`{request_id, result}`. When the robot stops waiting it publishes
+`{request_id, closed: <result | "stopped">}` on the question topic.
+
+| result | what the robot does |
+|---|---|
+| `picked` | reports holding to the map and continues with the plan |
+| `retry` | opens the gripper, stows the arm and runs the pick again (a new grasp approval, then a new question); not counted against the executor's three attempts |
+| `give_up` | opens the gripper, stows, reports the pick `FAILED` and ends its action sequence |
+
+* `GET /api/pick_result/pending` → `{available, error, requests: [{id, robot, object_id,
+  object_class, attempt, gripper_holding, images: [{name, width, height}], received_at}]}`:
+  one open question per robot, oldest first. `id` is the robot's `request_id`.
+* `GET /api/pick_result/requests/{id}/images/{index}` → the JPEG (`no-store`).
+* `POST /api/pick_result/requests/{id}/respond` `{result}` → publishes the answer. 404: the
+  question is no longer open (answered, closed by the robot, or replaced). 422: unknown
+  result. 503: nothing received the answer (no subscriber in router mode; not relayed or
+  not acknowledged in fleetlink mode); the question stays open and can be answered again,
+  because the robot ignores an answer whose `request_id` it is not waiting on.
+* Hub topic `manipulation/pick_result` carries the same payload as `pending` on every change.
+* The web console opens the question by itself on every page ("Later" hides it behind a
+  button; the robot keeps waiting). A console started while a robot waits shows the
+  question at the robot's next repeat. A stop or a new plan for the robot closes the question:
+  the robot then keeps its own belief that it holds the object.
+* fleetlink mode needs `relay.yaml` to carry `pick_result_request` up and `pick_result` down.
 
 ## 10. Chat (optional LLM): Cypher-first
 
@@ -960,9 +990,19 @@ Khronos do not write that store any more: they log keyframe zips (`keyframes/`),
 * `fleetlink.receiver.Receiver(..., store_root=DIR)` (or `store_mirror=StoreMirror(...)`) writes
   frames with `fleetlink.image_transfer.write_frame` on a worker thread into
   **`<live_store_root>/<robot>/<store_id>/image_store`**; source frame and sensor ids are kept.
-  Console setting `live_store_root` / `--live-store-root` (default `<output_root>/live`,
-  i.e. `~/adt4_output/live`; `""` disables). The result passes `hydra-image-store check` and
-  loads with `agentic_navigation…keyframe_store.load_keyframes_from_store`.
+  Console setting `live_store_root` / `--live-store-root` (default: the current run's
+  `$ADT4_OUTPUT_DIR/live`, else `<output_root>/console_<start time>/live`; never a folder
+  shared across runs, whose older mirrors are in other runs' odometry frames; `""` disables).
+  The result passes `hydra-image-store check` and loads with
+  `agentic_navigation…keyframe_store.load_keyframes_from_store`.
+* **Live state for the SAM3 query server**: every 2 s the console writes `live_state_path` /
+  `--live-state` (default `<output_root>/console_live.json`, a fixed place because
+  openset_query runs in another session with another `ADT4_OUTPUT_DIR`; `""` disables):
+  `{version, written_ns, console_started_ns, pid, live_store_root, robots: {r: {store_id,
+  path, relocalized, reason, frame_align: {ok, parent, child, T}}}}`. openset_query
+  (`--live-state`) searches only these stores, posed into the prior map with `frame_align.T`
+  while `relocalized` is true, and refuses a commit from a live image otherwise (409). The
+  file is removed on a clean console stop.
 * **`GET /api/live`** gains `store: {root, robots: {r: {store_id, path, watermark, frames, bytes,
   avg_frame_bytes, backlog, robot_last, duplicates, skipped, gaps, write_errors, last_error,
   frames_selection, compression, queued_writes}}}`, and each `robots[r]` link gains the same dict
@@ -1701,6 +1741,222 @@ and a **Correct** button. Correct opens "holds nothing / holds [O22]", then **Ap
 confirm with **Confirm** / **Cancel**. Above the table are the map and planner versions and
 epochs (flagged when the epochs differ), and the last plan error. The Chat panel shows the
 same view folded under one line (`Planner believes: euclid holds O11 · hamilton —`).
+
+## 22. USB bag drives (`drives.py`, `routes/drives.py`)
+
+Robots run the `bag-drive` helper: a udev rule and a systemd unit mount any USB
+drive at `/mnt/bag_drives/<label or UUID>`. The console only talks to it over the
+fleet's ssh. A copy runs `rsync` on the robot itself, from its output root
+straight onto the drive, so bag data never crosses the radio.
+
+* `GET /api/drives` → `{updated, machines: [{name, role, online, installed,
+  drives, error}]}`. One ssh `bag-drive status --json` per online machine, in
+  parallel. `installed: false` = the helper is not on that machine. Each drive:
+  `{name, label, uuid, fstype, mountpoint, write_dir, mounted, managed,
+  size_bytes, free_bytes, usb_speed_mbps, slow_link, error, copy_job}`.
+  `write_dir` is where the machine's user can write (the drive root, or its
+  `bags/` folder on a drive whose root is root-owned; `""` = read-only).
+  `slow_link` = a USB 2.0 link (under 5000 Mbit/s): wrong port or cable.
+  `copy_job` = the copy job writing to the drive now, else null.
+* `POST /api/drives/eject` `{machine, drive}` → `{ok, message}`. Runs
+  `sudo -n bag-drive eject` (sync, unmount, power down). 409 while a copy to
+  that drive is running; 502 with the helper's message when it fails (drive busy).
+* `GET /api/drives/bags?machine=&drive=` → `{machine, drive, root, runs: [{name,
+  mtime, bytes, dest_bytes, recording, on_drive, bags: [{name, bytes, files,
+  metadata, recording, dest_bytes, on_drive}]}]}`, newest first. A bag is a
+  directory with `*.mcap` / `*.db3` files directly inside a run of the output
+  root (`drives.BAG_SCAN`: the one place that decides what a bag is).
+  A trial's `console` folder (with its `trial.json`) is listed the same way.
+  `recording` = a file changed in the last minute and the bag is not closed
+  (closed: `metadata.yaml` as new as the newest bag file; for a `console`
+  folder, its `trial.json` says the trial ended); a
+  copy of such a run is refused with 409. With `drive`, `on_drive` says what of
+  the run is already there: `"verified"` (every byte, and the hash manifest of a
+  finished check), `"copied"` (every byte, not hashed), `"partial"` (an
+  interrupted copy, `dest_bytes` of `bytes`), `""` (nothing).
+* `POST /api/drives/copy` `{machine, drive, runs, remove_source=false}` →
+  `{job_id, bytes, to_copy}`; job kind `drive_copy`. Each bag goes to
+  `<write_dir>/<machine>/<run>/<bag>/`. 400 bad names / no runs, 404 unknown
+  drive or run, 409 not mounted, read-only, a run still recording, not enough
+  free space for what is not on the drive yet, or a copy already running to
+  that drive.
+  * Copy: `rsync --append` on the machine. Progress key `<machine> copy`, by
+    bytes over all selected bags.
+  * Verify: straight after each bag, the SHA-256 of every file is computed on
+    the machine for the original and for the copy at the same time (the copy is
+    dropped from the page cache first, so the drive itself is read). It takes one
+    read of the drive, about 2 minutes per 100 GB on a 10 Gbit/s link; the hash
+    is not the limit. Progress key `<machine> verify`. On success the hashes are
+    written beside the copy as `<bag>.sha256` (`sha256sum -c` format), which is
+    what marks the bag `verified`. A file whose hash differs is removed from the
+    drive and the job fails; copy again to rewrite it.
+  * Interrupt and resume: `POST /api/jobs/{id}/cancel` stops the rsync and keeps
+    what is on the drive (state `cancelled`); the drive can be ejected. The same
+    copy request later, on any machine-and-drive pair holding that data,
+    continues each file where it stopped and skips bags that are `verified`.
+  * With `remove_source`, once every selected bag is verified the job asks
+    (a *Delete from robot* button, nothing to type), and only on a yes are the bags removed from the machine.
+    The Drives page sends `remove_source: true` unless the switch at the top of
+    the machine's card is turned off.
+  * **Run output.** A trial's `trial.json` names the folder the stack wrote
+    during the run (`run.output_dir`: scene graph, ROMAN map, logs). In the
+    bag listing a run then has `output` = `{name, path, bytes, files,
+    dest_bytes, on_drive, live, stack, confirmed, missing, note}`, or `null`.
+    Only a folder directly under the output root counts; anything else is
+    `missing` with a `note`. So does a folder whose `run_info.json` does not
+    carry the `run.run_id` the trial recorded (the stack was launched again
+    under the same experiment name, which clears the folder). A trial that
+    recorded no run id (a robot's launch writes no `run_info.json`) is checked
+    by what is in the folder: it is `missing` when none of the files listed at
+    the trial's stop (`run_output_at_stop`) are left; it is the trial's launch
+    when a file in it is as old as the trial's stop (`stop_time_unix`, else when
+    the bag was closed), or when the stack running on it was started before
+    that; otherwise it is copied with `confirmed: false` and a `note` (every
+    file is newer than the trial). The copy job copies it after the bags, to
+    `<write_dir>/<machine>/<run>/run_output/<name>/` with its manifest
+    `<name>.sha256` beside it (paths relative to the folder), and counts it in
+    the space check. It is **never deleted** from the machine. `live` means a
+    copy may be incomplete: the running stack writes to this folder (`stack`:
+    the `adt4_system` tmux session is up and its `ADT4_OUTPUT_DIR` is this
+    folder, or it names none), or a file in it changed in the last minute. The
+    folders of launches that ended are not live, whatever runs now. The copy
+    still runs, with a warning. A problem with the run
+    output (files that changed while being copied, a failed copy) is a warning
+    in the log and in `result.outputs[].state` (`verified`, `changed`,
+    `failed`, `missing`), never a failed job; the delete question names the
+    runs whose output is not fully on the drive.
+* `POST /api/drives/delete` `{machine, runs, drive=null}` → `{job_id, bytes,
+  not_on_drive}`; job kind `bag_delete`. Deletes the bag folders of `runs`
+  from the machine's disk, with or without a drive plugged in (the Drives page
+  lists a machine's bags either way). Nothing is copied first, so the job asks
+  with a typed `delete` (confirm kind `bag_delete`) and its message says what is
+  known about copies: with `drive`, which runs are not on it with checked
+  hashes; without, that no drive was checked. The bags are scanned again after
+  the answer, and a run being recorded is refused (409 before the job, an
+  error in it). A run folder left empty is removed (`rmdir`, also after a
+  move); a run's output folder is never touched. 400 bad names / no runs, 404
+  unknown run.
+
+## 23. Trials: recording on the whole fleet (`trials.py`, `routes/trials.py`)
+
+A *trial* is one operator-started recording on every chosen machine, with a
+description and timestamped flags. Each machine records with `adt4-rec`
+(Awesome-DCIST-T4 `dcist_launch_system/bin/adt4-rec`, standard library only), in
+its own tmux session `adt4_rec` on its own tmux server (`tmux -L adt4_rec
+attach` on the machine shows it): starting or stopping a trial sends nothing to
+`adt4_system`, a `tmux kill-server` there does not end a recording, and a plain
+`tmux attach` never lands in the recorder. A machine whose recorder died
+(`lost`) can be started again from its chip (*Retry*): the first bag stays in
+`<trial>/<machine>/` and the recording goes on in `<trial>/<machine>_part2/`
+(then `_part3`, ...), each a rosbag2 directory with its own `trial.json`
+(`part`). The console only uses ssh: one command per machine at start and
+at stop, one `status` per machine every `trial_poll_s` (10 s) while recording.
+Nothing recorded crosses the radio, and a machine that loses the radio keeps
+recording.
+
+Trial id: `trial_<UTC yyyymmddThhmmssZ>_<slug of the description>`.
+
+| where | path | what |
+|---|---|---|
+| each machine | `<output_root>/<trial_id>/<machine>/` | a rosbag2 directory plus `trial.json` (topics, run id, clocks; per-topic message counts and `silent_topics` at stop), `recorder.log` |
+| console | `<output_root>/<trial_id>/console/trial.json` | the trial: description, machines, every start / topic check / stop result, clock offsets |
+| console | `<output_root>/<trial_id>/console/events.jsonl` | one JSON object per line, fsynced: `trial_start`, `trial_started`, `machine_state`, `topics_missing`, `warning`, `flag`, `request`, `trial_stop`, `trial_end`, `console_restarted` |
+
+The layout is `<run>/<bag>` for the Drives tab (§22): a trial is copied to a
+USB drive like any other run. The topic list is `recording/<set>_topics.txt` of
+the machine's checkout: `spot` / `phoenix` by `platform_type`, `base_station`
+for a machine that is not a robot.
+
+Routes (`/api/trials`):
+
+- `GET ""` → `{now, poll_s, active, last}`; also the hub topic `trial/state`
+  (latest value) on every change and every poll. A trial: `{trial_id,
+  description, state: starting|recording|stopping|stopped|failed, started,
+  stopped, events, flags, log_error, note, console_dir, machines: {name: {...}}}`.
+- `GET /preflight` → per machine `{ready, error, free_bytes, rate_bps, minutes,
+  notes}`. `minutes` = free disk / the rate of that machine's last trial
+  (`<output_root>/.trial_rates.json`); null until it has recorded one.
+- `POST /start {description, machines?}` → 409 while a trial is active. Machines
+  default to every online robot plus this machine. A machine that does not
+  start is `failed` with the reason; the trial runs on the others. If none
+  starts the trial ends as `failed`.
+- `POST /machines/{name}/start` retries one machine in the active trial.
+  It also adds a machine that was not in the trial, or one that was removed
+  (its new bag is `<machine>_part<n>`).
+- `POST /machines/{name}/stop` takes one recording machine out of the active
+  trial: its bag is closed (`stopped`, `removed: true`), the trial goes on.
+  A stop that is not delivered is retried like the trial's own stop.
+- `POST /flag {text}` → `{event}`; 409 without an active trial, 500 if the line
+  could not be written (the UI keeps the text).
+- `POST /stop {force?}`; `force` = a second SIGINT then SIGTERM (never -9).
+- `POST /close` ends a stopping trial whose machine could not be stopped.
+- `GET /events?n=50`.
+
+Machine states: `starting`, `recording`, `failed`, `unreachable` (no answer:
+unknown, never assumed recording; `last_seen` is the console clock of the last
+answer), `lost` (it answered and is not recording this trial), `stopping`,
+`stopped`, `stop_pending` (the stop was not delivered; retried every poll, the
+machine keeps recording), `stop_failed`, `skipped` (no topic list).
+
+While recording each machine carries `bytes`, `rate_bps` (smoothed bag growth),
+`free_bytes`, `minutes_left`, `clock_offset_s` / `clock_rtt_s` (the status
+reply's clock against the middle of the ssh round trip, best of the samples;
+good to about the round trip) and `warnings`. Warnings never stop anything:
+`disk:` under 10 GB or 10 min left, `bag:` no growth for 45 s after it grew.
+
+Request log (`TrialRequestLog`, ASGI middleware): while a trial is active every
+`POST/PUT/PATCH/DELETE /api/...` becomes a `request` event (path, JSON body
+without `history` / images / tokens, cut at 4 kB, status); for `/api/chat` also
+the response stream (cut at 200 kB). Skipped: `teleop/cmd_vel`, `/api/trials`,
+`/api/jobs/`, dry runs and previews. It forwards every message untouched and
+swallows its own errors.
+
+What else a trial keeps (all in `console/`):
+
+- **This machine always records.** The console's own machine (`local`) is added
+  to every trial with the `base_station` topic list, whatever was picked;
+  `adt4-rec start --robots a,b,c` expands the list's `${ADT4_FLEET_ROBOT}` lines
+  to every robot (their compiled plans). `GET /preflight` carries
+  `base_station` and, when this machine is not in the topology, a `base_note`.
+- **Context** (`trial_context` in `app.py`): `context_start` / `context_stop` in
+  `trial.json` and a `context` event: the active launch (experiment, robots,
+  prior map), the live map (`target, run, name, dsg, nodes` and `dsg_sha256` of
+  its scene graph file) and the missions. Each machine's own `trial.json` has
+  `prior_map`: the stack's `$ADT4_PRIOR_MAP`, its run id / origin and the
+  sha256 of `hydra/backend/dsg.json` and `dsg_with_mesh.json`.
+- **Responses** of `/api/chat`, `/api/mission*`, `/api/plan*`, `/api/edit*`,
+  `/api/manipulation*` and robot `goal/`, `executor/`, `path/` requests are kept
+  with the request (body and response up to 200 kB each). Previews, dry runs
+  and job confirmations are logged like any other request.
+- **`hub` events**: `manipulation/*`, `mission/*`, `maps/active` and
+  `goal_track/*` as published to the browsers, when they change (at most one
+  line per topic per 0.5 s, 20 kB each).
+- **`ui` events** (`POST /api/trials/ui {events}`; `frontend/src/lib/uiLog.ts`):
+  clicks on controls (named by aria-label / test id / text, and the dialog they
+  are in), page changes, dialogs opening (title and text) and closing, checkbox
+  and select changes. Text typed into fields is never sent.
+
+- **Request categories.** Every `request` event has `category`: `preview`
+  (show what this would do), `dry_run` (list what a launch would run),
+  `job_confirm` / `job_cancel` (with `job: {id, kind, title, question, ...}`,
+  the question the answer was for), else `action`.
+- **Screen video** (`POST /api/trials/screen?session&seq&mime&final`, raw
+  MediaRecorder bytes; `frontend/src/lib/screenRec.ts`): the browser that
+  starts the trial records its tab (10 fps, on by default) and uploads 5 s
+  pieces, appended to `console/screen_<session>.webm`; `screen_start`,
+  `screen_stop`, `screen_gap`, `screen_note` events; pieces are still taken
+  for 120 s after the trial ends. Browsers only allow this on `localhost` or
+  https: from another computer, tunnel (`ssh -L 8090:localhost:8090
+  user@base`) and open `http://localhost:8090`; the page says so otherwise.
+
+Settings: `trial_recorder` (`$ADT4_REC_CMD`; default
+`~/dcist_ws/src/awesome_dcist_t4/dcist_launch_system/bin/adt4-rec`),
+`trial_poll_s`. After a console restart the newest trial without a `stopped`
+time is picked up again (`restore`).
+
+Frontend: `components/TrialBar.tsx` under the top bar on every page. Green only
+when every machine answered within 2.5 polls and has no warning; any unknown
+or failed machine turns the bar red and the count reads "N of M recording".
 
 ## Deviations
 

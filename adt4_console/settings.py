@@ -34,8 +34,12 @@ class Settings:
     ros: bool = True
     fleetlink: bool = True
     zenoh_connect: str | None = None
-    # live image-store mirror (fleetlink C6): None -> <output_root>/live, "" = off
+    # live image-store mirror (fleetlink C6): None -> the current run's
+    # $ADT4_OUTPUT_DIR/live (else <output_root>/console_<start>/live), "" = off
     live_store_root: str | None = None
+    # live state for the SAM3 query server: None -> <output_root>/console_live.json,
+    # "" = off (live_service.py)
+    live_state_path: str | None = None
     robots: list[str] | None = None
     # the active launch (experiment, robots, prior map) survives console restarts
     # here; None = memory only (tests).  cli.py sets ~/.adt4_console/active_launch.json
@@ -44,6 +48,13 @@ class Settings:
     # station; None = memory only (tests).  cli.py sets ~/.adt4_console/launch_memory.json
     launch_memory_path: str | None = None
     planner_ns: str | None = None  # omniplanner namespace (base station name)
+    # trials (trials.py): the recorder helper on every machine (None: the
+    # dcist_ws checkout's dcist_launch_system/bin/adt4-rec) and how often each
+    # recording machine is asked for its status while a trial runs
+    trial_recorder: str | None = field(
+        default_factory=lambda: os.environ.get("ADT4_REC_CMD")
+    )
+    trial_poll_s: float = 10.0
     # browser terminals on fleet machines (a shell for anyone who can reach the console)
     terminal: bool = False
     static_dir: pathlib.Path = STATIC_DIR
