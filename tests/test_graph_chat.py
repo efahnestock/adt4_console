@@ -105,7 +105,9 @@ def test_file_source_version_bumps_on_rewrite(gclient, run_dir):
     ((t, frame),) = [(t, f) for t, f in client.queue if t == "graph/file:syn/version"]
     msg = msgpack.unpackb(frame, raw=False)["data"]
     assert msg["version"] == 2 and msg["base"] == loaded.version == 1
-    assert msg["delta"]["del"] == [] and msg["delta"]["up"]["ids"] == []  # same contents
+    assert (
+        msg["delta"]["del"] == [] and msg["delta"]["up"]["ids"] == []
+    )  # same contents
 
 
 def test_register_map(client, run_dir):

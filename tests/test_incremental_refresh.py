@@ -288,7 +288,9 @@ def test_a_removed_place_brings_the_objects_it_held():
 def _records(n):
     from adt4_console.codec import NodeRecord
 
-    return {f"O({i})": NodeRecord(f"O({i})", 2, 0, (float(i), 0.0, 0.0)) for i in range(n)}
+    return {
+        f"O({i})": NodeRecord(f"O({i})", 2, 0, (float(i), 0.0, 0.0)) for i in range(n)
+    }
 
 
 def test_diff_loaded_small_and_big():
@@ -306,7 +308,9 @@ def test_diff_loaded_small_and_big():
     assert d.deletes == ["O(6)"] and d.labelspaces is None
     assert d.edges_add == [("O(0)", "O(200)")] and d.edges_del == [("O(0)", "O(1)")]
     # another map: most nodes differ, the viewers load the snapshot
-    other = Loaded(3, {k: NodeRecord(k, 2, 0, (0.0, 0.0, 1.0)) for k in recs}, set(), {})
+    other = Loaded(
+        3, {k: NodeRecord(k, 2, 0, (0.0, 0.0, 1.0)) for k in recs}, set(), {}
+    )
     assert diff_loaded(new, other) is None
 
 
@@ -373,7 +377,9 @@ def test_refresh_of_another_map_or_nothing_loaded_is_a_plain_push(settings):
     hub = FakeHub()
     gs = GraphService(settings, hub=hub)
     base = Loaded(3, _records(50), set(), {})
-    other = lambda v: Loaded(v, {k: NodeRecord(k, 2, 0, (0, 0, 9.0)) for k in base.records}, set(), {})  # noqa: E731
+    other = lambda v: Loaded(
+        v, {k: NodeRecord(k, 2, 0, (0, 0, 9.0)) for k in base.records}, set(), {}
+    )  # noqa: E731
     src = _ReloadSource(base, other)
     gs.sources[src.id] = src
     gs.refresh(src.id, "reset")
@@ -394,12 +400,17 @@ def test_refresh_with_no_viewer_subscribed_does_not_reload(settings):
 
     hub = Hub()
     gs = GraphService(settings, hub=hub)
-    src = _ReloadSource(Loaded(3, _records(5), set(), {}), lambda v: Loaded(v, _records(5), set(), {}))
+    src = _ReloadSource(
+        Loaded(3, _records(5), set(), {}), lambda v: Loaded(v, _records(5), set(), {})
+    )
     gs.sources[src.id] = src
     loads = []
     src.loaded = lambda: loads.append(1)
     gs.refresh(src.id, "neo4j")
-    assert loads == [] and hub.latest(f"graph/{src.id}/version") == {"version": 4, "reason": "neo4j"}
+    assert loads == [] and hub.latest(f"graph/{src.id}/version") == {
+        "version": 4,
+        "reason": "neo4j",
+    }
     c = hub.add_client()
     hub.subscribe(c, ["graph/"])
     assert hub.wanted(f"graph/{src.id}/version") and not hub.wanted("video/x")

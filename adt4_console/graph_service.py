@@ -2454,7 +2454,9 @@ class GraphService:
                     self.notify_version(src.id, job["reason"])
                     return
 
-        threading.Thread(target=run, name=f"graph-refresh-{src.id}", daemon=True).start()
+        threading.Thread(
+            target=run, name=f"graph-refresh-{src.id}", daemon=True
+        ).start()
 
     @staticmethod
     def _mesh_moved(src: Source) -> bool:
