@@ -1,8 +1,9 @@
 {
  "no_odom": {
   "robot": "gauss",
-  "map": {
-   "state": "fail",
+  "state": "fail",
+  "localize": {
+   "state": "warn",
    "ready": false,
    "items": [
     {
@@ -15,83 +16,6 @@
      "blocking": true,
      "info": false
     },
-    {
-     "key": "odom",
-     "name": "Odometry (odom -> base_link)",
-     "state": "fail",
-     "reason": "No odometry: the robot's agent cannot look up gauss/odom -> base_link (Spot driver / DLIO not running?) (fastsam reports 'tf lookup failed')",
-     "source": "fleetlink pose (gauss/odom -> base_link TF)",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "hydra",
-     "name": "Hydra",
-     "state": "fail",
-     "reason": "Hydra is up but active_window, backend are not reporting: Hydra gets no input (there is no odometry)",
-     "source": "status table: gauss/hydra",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "dsg",
-     "name": "Scene graph from Hydra",
-     "state": "unknown",
-     "reason": "The agent reports no scene-graph counter",
-     "source": "fleetlink stats.dsg",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "semantic_inference",
-     "name": "Semantic inference",
-     "state": "ok",
-     "reason": "Semantic segmentation running",
-     "source": "status table: gauss/semantic_inference",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "fastsam",
-     "name": "FastSAM (open-set)",
-     "state": "warn",
-     "reason": "FastSAM cannot look up the camera pose (TF lookup failed: no odometry)",
-     "source": "status table: gauss/fastsam",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "depth_correction",
-     "name": "Depth correction",
-     "state": "warn",
-     "reason": "Depth correction not calibrated: using the fallback correction (acceptable)",
-     "source": "status table: gauss/depth_correction",
-     "age_s": null,
-     "blocking": false,
-     "info": false
-    },
-    {
-     "key": "zed_depth_quality",
-     "name": "ZED depth quality",
-     "state": "unknown",
-     "reason": "Depth quality not measured (not measured (no lidar)): OK here means nothing",
-     "source": "status table: gauss/zed_depth_quality",
-     "age_s": null,
-     "blocking": false,
-     "info": true
-    }
-   ],
-   "first_problem": "No odometry: the robot's agent cannot look up gauss/odom -> base_link (Spot driver / DLIO not running?) (fastsam reports 'tf lookup failed')"
-  },
-  "localize": {
-   "state": "warn",
-   "ready": false,
-   "items": [
     {
      "key": "hydra_multi",
      "name": "hydra_multi loop closures",
@@ -175,6 +99,16 @@
    ],
    "first_problem": "hydra_multi idle (time since last spin): no scene graph processed, no loop-closure count yet"
   },
+  "odometry": {
+   "key": "odom",
+   "name": "Odometry (odom -> base_link)",
+   "state": "fail",
+   "reason": "No odometry: the robot's agent cannot look up gauss/odom -> base_link (Spot driver / DLIO not running?) (fastsam reports 'tf lookup failed')",
+   "source": "fleetlink pose (gauss/odom -> base_link TF)",
+   "age_s": null,
+   "blocking": true,
+   "info": false
+  },
   "hydra_multi": {
    "accepted": null,
    "total": null,
@@ -191,42 +125,18 @@
   },
   "broken": [
    {
-    "list": "map",
     "key": "odom",
     "name": "Odometry (odom -> base_link)",
     "state": "fail",
     "reason": "No odometry: the robot's agent cannot look up gauss/odom -> base_link (Spot driver / DLIO not running?) (fastsam reports 'tf lookup failed')"
    },
    {
-    "list": "map",
-    "key": "hydra",
-    "name": "Hydra",
-    "state": "fail",
-    "reason": "Hydra is up but active_window, backend are not reporting: Hydra gets no input (there is no odometry)"
-   },
-   {
-    "list": "map",
-    "key": "fastsam",
-    "name": "FastSAM (open-set)",
-    "state": "warn",
-    "reason": "FastSAM cannot look up the camera pose (TF lookup failed: no odometry)"
-   },
-   {
-    "list": "map",
-    "key": "dsg",
-    "name": "Scene graph from Hydra",
-    "state": "unknown",
-    "reason": "The agent reports no scene-graph counter"
-   },
-   {
-    "list": "localize",
     "key": "hydra_multi",
     "name": "hydra_multi loop closures",
     "state": "warn",
     "reason": "hydra_multi idle (time since last spin): no scene graph processed, no loop-closure count yet"
    },
    {
-    "list": "localize",
     "key": "frame_align",
     "name": "Global frame (map -> odom)",
     "state": "unknown",
@@ -237,7 +147,8 @@
  },
  "relocalized_idle": {
   "robot": "gauss",
-  "map": {
+  "state": "ok",
+  "localize": {
    "state": "ok",
    "ready": true,
    "items": [
@@ -251,83 +162,6 @@
      "blocking": true,
      "info": false
     },
-    {
-     "key": "odom",
-     "name": "Odometry (odom -> base_link)",
-     "state": "ok",
-     "reason": "Odometry TF is live (pose stamp advancing)",
-     "source": "fleetlink pose (gauss/odom -> base_link TF)",
-     "age_s": 0.0,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "hydra",
-     "name": "Hydra",
-     "state": "ok",
-     "reason": "Hydra running, all modules reporting",
-     "source": "status table: gauss/hydra",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "dsg",
-     "name": "Scene graph from Hydra",
-     "state": "ok",
-     "reason": "Scene graphs arriving (9 so far)",
-     "source": "fleetlink stats.dsg",
-     "age_s": 0.0,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "semantic_inference",
-     "name": "Semantic inference",
-     "state": "ok",
-     "reason": "Semantic segmentation running",
-     "source": "status table: gauss/semantic_inference",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "fastsam",
-     "name": "FastSAM (open-set)",
-     "state": "ok",
-     "reason": "Open-set segmentation running",
-     "source": "status table: gauss/fastsam",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "depth_correction",
-     "name": "Depth correction",
-     "state": "warn",
-     "reason": "Depth correction not calibrated: using the fallback correction (acceptable)",
-     "source": "status table: gauss/depth_correction",
-     "age_s": null,
-     "blocking": false,
-     "info": false
-    },
-    {
-     "key": "zed_depth_quality",
-     "name": "ZED depth quality",
-     "state": "unknown",
-     "reason": "Depth quality not measured (not measured (no lidar)): OK here means nothing",
-     "source": "status table: gauss/zed_depth_quality",
-     "age_s": null,
-     "blocking": false,
-     "info": true
-    }
-   ],
-   "first_problem": null
-  },
-  "localize": {
-   "state": "ok",
-   "ready": true,
-   "items": [
     {
      "key": "hydra_multi",
      "name": "hydra_multi loop closures",
@@ -411,6 +245,16 @@
    ],
    "first_problem": null
   },
+  "odometry": {
+   "key": "odom",
+   "name": "Odometry (odom -> base_link)",
+   "state": "ok",
+   "reason": "Odometry TF is live (pose stamp advancing)",
+   "source": "fleetlink pose (gauss/odom -> base_link TF)",
+   "age_s": 0.0,
+   "blocking": true,
+   "info": false
+  },
   "hydra_multi": {
    "accepted": 7,
    "total": 9,
@@ -426,13 +270,14 @@
    "in_table": true
   },
   "broken": [],
-  "summary": "Ready to map and to localize"
+  "summary": "Relocalized"
  },
  "relocalizing": {
   "robot": "gauss",
-  "map": {
-   "state": "ok",
-   "ready": true,
+  "state": "warn",
+  "localize": {
+   "state": "warn",
+   "ready": false,
    "items": [
     {
      "key": "link",
@@ -444,83 +289,6 @@
      "blocking": true,
      "info": false
     },
-    {
-     "key": "odom",
-     "name": "Odometry (odom -> base_link)",
-     "state": "ok",
-     "reason": "Odometry TF is live (pose stamp advancing)",
-     "source": "fleetlink pose (gauss/odom -> base_link TF)",
-     "age_s": 0.0,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "hydra",
-     "name": "Hydra",
-     "state": "ok",
-     "reason": "Hydra running, all modules reporting",
-     "source": "status table: gauss/hydra",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "dsg",
-     "name": "Scene graph from Hydra",
-     "state": "ok",
-     "reason": "Scene graphs arriving (2 so far)",
-     "source": "fleetlink stats.dsg",
-     "age_s": 0.0,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "semantic_inference",
-     "name": "Semantic inference",
-     "state": "ok",
-     "reason": "Semantic segmentation running",
-     "source": "status table: gauss/semantic_inference",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "fastsam",
-     "name": "FastSAM (open-set)",
-     "state": "ok",
-     "reason": "Open-set segmentation running",
-     "source": "status table: gauss/fastsam",
-     "age_s": null,
-     "blocking": true,
-     "info": false
-    },
-    {
-     "key": "depth_correction",
-     "name": "Depth correction",
-     "state": "warn",
-     "reason": "Depth correction not calibrated: using the fallback correction (acceptable)",
-     "source": "status table: gauss/depth_correction",
-     "age_s": null,
-     "blocking": false,
-     "info": false
-    },
-    {
-     "key": "zed_depth_quality",
-     "name": "ZED depth quality",
-     "state": "unknown",
-     "reason": "Depth quality not measured (not measured (no lidar)): OK here means nothing",
-     "source": "status table: gauss/zed_depth_quality",
-     "age_s": null,
-     "blocking": false,
-     "info": true
-    }
-   ],
-   "first_problem": null
-  },
-  "localize": {
-   "state": "warn",
-   "ready": false,
-   "items": [
     {
      "key": "hydra_multi",
      "name": "hydra_multi loop closures",
@@ -604,6 +372,16 @@
    ],
    "first_problem": "Relocalizing: 2 of the 5 needed loop closures accepted (4 proposed)"
   },
+  "odometry": {
+   "key": "odom",
+   "name": "Odometry (odom -> base_link)",
+   "state": "ok",
+   "reason": "Odometry TF is live (pose stamp advancing)",
+   "source": "fleetlink pose (gauss/odom -> base_link TF)",
+   "age_s": 0.0,
+   "blocking": true,
+   "info": false
+  },
   "hydra_multi": {
    "accepted": 2,
    "total": 4,
@@ -620,7 +398,6 @@
   },
   "broken": [
    {
-    "list": "localize",
     "key": "hydra_multi",
     "name": "hydra_multi loop closures",
     "state": "warn",
@@ -628,5 +405,139 @@
    }
   ],
   "summary": "Relocalizing: 2 of the 5 needed loop closures accepted (4 proposed)"
+ },
+ "suspect": {
+  "robot": "gauss",
+  "state": "fail",
+  "localize": {
+   "state": "fail",
+   "ready": false,
+   "items": [
+    {
+     "key": "link",
+     "name": "Robot link",
+     "state": "ok",
+     "reason": "Robot state arriving over fleetlink",
+     "source": "fleetlink C1",
+     "age_s": 0.0,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "hydra_multi",
+     "name": "hydra_multi loop closures",
+     "state": "ok",
+     "reason": "Relocalized: 9 / 9 inter-robot loop closures accepted (needs 5)",
+     "source": "status table: hydra_multi",
+     "age_s": 0.0,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "frame_align",
+     "name": "Global frame (map -> odom)",
+     "state": "fail",
+     "reason": "Suspect placement: the placement jumped 2x (loop closures disagree)",
+     "source": "fleetlink reloc",
+     "age_s": 0.2,
+     "blocking": true,
+     "info": false
+    },
+    {
+     "key": "roman_lc",
+     "name": "ROMAN loop closures",
+     "state": "unknown",
+     "reason": "roman_lc NO_HB (normal between reports)",
+     "source": "status table: roman_lc",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "roman_map",
+     "name": "ROMAN map",
+     "state": "unknown",
+     "reason": "roman_map NO_HB: Waiting for observation",
+     "source": "status table: roman_map",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "tf_network",
+     "name": "TF over the network",
+     "state": "warn",
+     "reason": "tf_network WARN: No TF received on /gauss/tf",
+     "source": "status table: tf_network",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "relocalization_monitor",
+     "name": "GPS relocalization monitor",
+     "state": "unknown",
+     "reason": "WARN: TF map->gps not available (GPS-based: cannot go green indoors or without a GPS alignment)",
+     "source": "status table: relocalization_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "gps_monitor",
+     "name": "GPS",
+     "state": "unknown",
+     "reason": "gps_monitor WARN: Fix (No RTK)",
+     "source": "status table: gps_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    },
+    {
+     "key": "ntrip_monitor",
+     "name": "NTRIP corrections",
+     "state": "unknown",
+     "reason": "ntrip_monitor STARTUP: Waiting for first NTRIP",
+     "source": "status table: ntrip_monitor",
+     "age_s": null,
+     "blocking": false,
+     "info": true
+    }
+   ],
+   "first_problem": "Suspect placement: the placement jumped 2x (loop closures disagree)"
+  },
+  "odometry": {
+   "key": "odom",
+   "name": "Odometry (odom -> base_link)",
+   "state": "ok",
+   "reason": "Odometry TF is live (pose stamp advancing)",
+   "source": "fleetlink pose (gauss/odom -> base_link TF)",
+   "age_s": 0.0,
+   "blocking": true,
+   "info": false
+  },
+  "hydra_multi": {
+   "accepted": 9,
+   "total": 9,
+   "needed": 5,
+   "count_age_s": 0.0,
+   "count_stale": false,
+   "took_s": null,
+   "ago_s": null,
+   "opt_age_s": null,
+   "opt_stale": false,
+   "status": "OK",
+   "note": "9 / 9 valid interrobot loop closures",
+   "in_table": true
+  },
+  "broken": [
+   {
+    "key": "frame_align",
+    "name": "Global frame (map -> odom)",
+    "state": "fail",
+    "reason": "Suspect placement: the placement jumped 2x (loop closures disagree)"
+   }
+  ],
+  "summary": "Suspect placement: the placement jumped 2x (loop closures disagree)"
  }
 }

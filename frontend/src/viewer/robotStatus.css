@@ -77,6 +77,14 @@
   margin: 4px 0;
   color: var(--warn);
 }
+.rs-odom {
+  margin: 4px 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--err);
+  background: var(--err-bg);
+  font-weight: 600;
+}
 .rs-broken {
   margin: 6px 0;
   padding: 6px 8px;
@@ -192,28 +200,6 @@
   border: 1px solid var(--line-2);
   border-radius: 3px;
   padding: 0 4px;
-}
-.rs-more summary {
-  cursor: pointer;
-  color: var(--text-2);
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-}
-.rs-phase {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  flex-wrap: wrap;
-}
-.rs-seg {
-  min-height: 44px;
-  min-width: 44px;
-}
-.rs-seg.active {
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 /* the legend dot: small to look at, 44 px to hit */

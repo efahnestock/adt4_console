@@ -1,44 +1,29 @@
-// Robot readiness for the Robot view: the ring under each robot and the
-// status card (viewer/RobotStatusCard.tsx). The console backend computes the
-// two checklists ("Ready to map", "Ready to localize": adt4_console/readiness.py)
-// and sends them with each robot state; this decides which one matters now and
-// how the ring looks.
-import type {Readiness, ReadyState} from "../types";
+// Robot localization readiness for the Robot view: the ring under each robot
+// and the status card (viewer/RobotStatusCard.tsx). The console backend
+// computes the checklist (adt4_console/readiness.py) and sends it with each
+// robot state; this turns it into the ring's tone and words.
+import type {Readiness} from "../types";
 
-/** No robot state for this long: the ring goes grey, the card says so. */
+/** No robot state for this long: the robot stopped reporting (red). */
 export const STATE_STALE_S = 10;
 
-export type Phase = "map" | "localize";
 export type RingTone = "ok" | "warn" | "fail" | "none";
 
-/** Localize when a prior map is registered with the console (a relocalize
- *  session), otherwise map; the operator can pick one in the card. hydra_multi
- *  alone does not decide: multi-robot mapping runs it without a prior map. */
-export function readinessPhase(priorLoaded: boolean, override: Phase | null = null): Phase {
-  return override ?? (priorLoaded ? "localize" : "map");
+/** Green relocalized; amber relocalizing / waiting (some loop closures, no
+ *  match yet); red blocked (no odometry, no state from the robot for
+ *  STATE_STALE_S, suspect placement); grey no data. `staleS` = seconds since
+ *  the robot's last state (null: never). */
+export function ringTone(r: Readiness | null | undefined, staleS: number | null): RingTone {
+  if (staleS === null || !r) return "none";
+  if (staleS > STATE_STALE_S) return "fail";
+  if (!r.localize.items.length) return "none";
+  return r.state === "ok" ? "ok" : r.state === "fail" ? "fail" : "warn";
 }
 
-const RANK: Record<ReadyState, number> = {ok: 0, unknown: 1, warn: 1, fail: 2};
-
-function tone(st: ReadyState): RingTone {
-  return st === "ok" ? "ok" : st === "fail" ? "fail" : "warn";
-}
-
-/** Green: ready for the phase; amber: partly; red: blocked; grey: no (fresh) data.
- *  Localizing needs mapping too (hydra_multi matches what Hydra builds). */
-export function ringTone(r: Readiness | null | undefined, phase: Phase, staleS: number | null): RingTone {
-  if (!r || staleS === null || staleS > STATE_STALE_S) return "none";
-  if (!r.map.items.length && !r.localize.items.length) return "none";
-  const lists = phase === "map" ? [r.map.state] : [r.map.state, r.localize.state];
-  const worst = lists.reduce((a, b) => (RANK[b] > RANK[a] ? b : a), "ok" as ReadyState);
-  return tone(worst);
-}
-
-export function ringLabel(t: RingTone, phase: Phase): string {
-  const what = phase === "map" ? "map" : "localize";
-  if (t === "ok") return `Ready to ${what}`;
-  if (t === "warn") return `Not yet ready to ${what}`;
-  if (t === "fail") return `Blocked: cannot ${what}`;
+export function ringLabel(t: RingTone, staleS: number | null = 0): string {
+  if (t === "ok") return "Relocalized";
+  if (t === "warn") return "Not relocalized yet";
+  if (t === "fail") return staleS !== null && staleS > STATE_STALE_S ? "No state from the robot" : "Blocked: cannot relocalize";
   return "No status from the robot";
 }
 

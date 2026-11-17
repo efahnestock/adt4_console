@@ -1,37 +1,31 @@
-"""Per-robot readiness: is the robot ready to map, ready to localize, and if not,
-what is broken first (the Robot view's status card and the ring under each robot).
+"""Per-robot localization readiness: is the robot relocalized against the prior
+map, and if not, what is in the way (the Robot view's status card and the ring
+under each robot).  Console-only: everything comes from the robot's fleetlink C1
+state as the console already receives it -- the robot's ros_system_monitor table
+(``health.nodes``: one row per node with status nominal / warning / error /
+no_hb / startup and a note), ``pose`` (the agent's ``<robot>/odom -> base_link``
+TF lookup, with the TF stamp ``t``), ``frame_align`` (``map -> <robot>/odom``)
+and ``reloc`` (map -> odom jumps).
 
-Everything comes from the robot's fleetlink C1 state, as the console receives
-it: the robot's ros_system_monitor table (``health.nodes``: one row per node with
-status nominal / warning / error / no_hb / startup and a note), ``pose`` (the
-agent's ``<odom> -> base_link`` TF lookup, with the TF stamp ``t``),
-``frame_align`` (``map -> <robot>/odom``), ``reloc`` (map -> odom jumps) and
-``stats.dsg`` (scene graphs the agent received from Hydra).
-
-Two checklists, each a list of items ``{key, name, state, reason, source,
+One checklist (``localize``) of items ``{key, name, state, reason, source,
 age_s, blocking, info}``; ``state`` is ok / warn / fail / unknown, ``reason`` a
 one-line plain-words explanation, ``age_s`` how old the evidence is (None when
-the source carries no time: monitor rows have no stamp).  Items with
-``info`` true are shown but never block (unreliable signals, see below).
+the source carries no time: monitor rows have no stamp).  Blocking items: the
+robot link, hydra_multi's accepted inter-robot loop closures (the console's
+relocalized rule: :data:`RELOC_MIN_HYDRA_LCS`), ``map -> odom`` present and the
+placement not suspect.  Shown, never blocking (``info``): roman_lc inter-robot
+loop closures (NO_HB between reports), tf_network (map -> robot TF),
+relocalization_monitor (GPS-based: "TF map->gps not available" indoors or
+without a GPS alignment), roman_map, gps / ntrip.
 
-Ready to map: the robot link, odometry (the pose stamp keeps advancing: the only
-``odom -> base_link`` freshness the console can see; no monitor row exists for
-it), Hydra (its row: "missing exepected modules: active_window, backend" means
-Hydra gets no input, usually no odometry), scene graphs arriving, semantic
-inference, FastSAM ("tf lookup failed": no camera pose), depth correction (the
-fallback correction is acceptable: shown amber, not blocking).
+hydra_multi spins only when a scene graph arrives, so its row goes ERR "time
+since last spin" in between and that note drops the counts:
+:class:`ReadinessTracker` keeps the last count and the last optimization time it
+saw, labelled with their age.
 
-Ready to localize: hydra_multi's accepted inter-robot loop closures (the
-console's relocalized rule: :data:`RELOC_MIN_HYDRA_LCS`), and ``map -> odom``
-present and not suspect.  hydra_multi spins only when a scene graph arrives, so
-its row goes ERR "time since last spin" in between and that note drops the
-counts: :class:`ReadinessTracker` keeps the last count and the last
-optimization time it saw, labelled with their age.
-
-Informational only: relocalization_monitor (GPS-based, "TF map->gps not
-available" indoors / without a GPS alignment), zed_depth_quality (OK even when
-"not measured (no lidar)"), gps / ntrip monitors, roman_lc / roman_map (NO_HB
-between reports), tf_network.
+``odometry``: one extra item, the only mapping-side check kept: the agent's
+pose stamp must keep advancing (no monitor row exists for odom -> base_link).
+No odometry means nothing to relocalize, so it makes the verdict ``fail``.
 """
 
 from __future__ import annotations
@@ -39,7 +33,7 @@ from __future__ import annotations
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .routes.change_detection import (
     HYDRA_LC_RE,
@@ -50,7 +44,6 @@ from .routes.change_detection import (
 
 STATE_STALE_S = 10.0  # no C1 state for this long: the link is down
 ODOM_STALE_S = 5.0  # pose stamp not advancing for this long: odometry frozen
-DSG_STALE_S = 30.0  # no new scene graph for this long: Hydra stalled
 
 STATUS_LABEL = {
     "nominal": "OK",
@@ -59,9 +52,7 @@ STATUS_LABEL = {
     "no_hb": "NO_HB",
     "startup": "STARTUP",
 }
-_MISSING_MODULES_RE = re.compile(r"missing\s+ex\w*\s+modules?\s*:?\s*(.*)", re.I)
 _TF_FAIL_RE = re.compile(r"tf\s+lookup\s+failed|missing\s+pose|no\s+pose", re.I)
-_NOT_SEEN_RE = re.compile(r"not\s+yet\s+seen", re.I)
 _ROMAN_LCS_RE = re.compile(r"inter-?robot\s+lcs\s*:\s*(\d+)", re.I)
 
 
@@ -122,19 +113,15 @@ class _Memory:
     pose_t: float | None = None
     pose_seen_at: float | None = None  # first time this pose stamp was seen
     pose_samples: int = 0
-    dsg_received: int | None = None
-    dsg_changed_at: float | None = None
     hydra_count: tuple[int, int] | None = None
     hydra_count_at: float | None = None
     opt: dict | None = None
     opt_at: float | None = None
-    extra: dict = field(default_factory=dict)
 
 
 class ReadinessTracker:
-    """Remembers what a single C1 state cannot say (odometry advancing, scene
-    graphs arriving, hydra_multi's last count / optimization) and computes the
-    readiness.  Thread-safe: the receiver thread observes, routes compute."""
+    """Remembers what a single C1 state cannot say (odometry advancing,
+    hydra_multi's last count / optimization) and computes the readiness.  Thread-safe: the receiver thread observes, routes compute."""
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
@@ -161,13 +148,6 @@ class ReadinessTracker:
                     if t != mem.pose_t:
                         mem.pose_t, mem.pose_seen_at = t, now
                         mem.pose_samples += 1
-                dsg = (state.get("stats") or {}).get("dsg")
-                rec = dsg.get("processed", dsg.get("received")) if isinstance(dsg, dict) else None
-                if isinstance(rec, int | float):
-                    if mem.dsg_received is None or rec != mem.dsg_received:
-                        if mem.dsg_received is not None or rec > 0:
-                            mem.dsg_changed_at = now
-                        mem.dsg_received = int(rec)
                 row = find_row(state.get("health"), robot, "hydra_multi")
                 m = HYDRA_LC_RE.search(_note(row))
                 if m:
@@ -217,7 +197,7 @@ def _checklist(items: list[dict], no_data: bool = False) -> dict:
     }
 
 
-# ------------------------------------------------------------------ ready to map
+# ------------------------------------------------------------- link + odometry
 def _link_item(mem: _Memory, now: float) -> dict:
     if mem.state_at is None:
         return _item("link", "Robot link", "unknown", "No state received from the robot yet (fleetlink)", "fleetlink C1")
@@ -252,101 +232,6 @@ def _odom_item(robot: str, state: dict, mem: _Memory, now: float, link_ok: bool)
     if mem.pose_samples < 2:
         return _item("odom", name, "unknown", "One pose sample so far: waiting for the TF stamp to advance", src, age)
     return _item("odom", name, "ok", "Odometry TF is live (pose stamp advancing)", src, age)
-
-
-def _row_item(key, name, row, *, ok, missing, blocking=True, info=False, special=None) -> dict:
-    """An item from one monitor row; ``special(row)`` may return
-    ``(state, reason, blocking)`` for a known note."""
-    src = f"status table: {(row or {}).get('nickname') or key}"
-    if row is None:
-        return _item(key, name, "unknown", missing, f"status table: {key}", blocking=blocking and not info, info=info)
-    if special:
-        got = special(row)
-        if got:
-            st, reason, blk = got
-            return _item(key, name, st, reason, src, blocking=blk, info=info)
-    status = row.get("status")
-    if status == "nominal":
-        return _item(key, name, "ok", ok + (f" ({_note(row)})" if _note(row) and _note(row).lower() != "ok" else ""), src, blocking=blocking, info=info)  # fmt: skip
-    st = "warn" if status in ("warning", "startup") else "fail"
-    return _item(key, name, st, f"{name} {_row_txt(row)}", src, blocking=blocking, info=info)
-
-
-def _map_items(robot: str, state: dict, mem: _Memory, now: float) -> list[dict]:
-    health = state.get("health")
-    table = isinstance((health or {}).get("nodes"), list)
-    link = _link_item(mem, now)
-    odom = _odom_item(robot, state, mem, now, link["state"] == "ok")
-    items = [link, odom]
-    no_table = "The robot sends no status table (ros_system_monitor)"
-
-    def hydra_special(row):
-        note = _note(row)
-        if _NOT_SEEN_RE.search(note):
-            return "fail", "Hydra is not running (the monitor has not seen it yet)", True
-        m = _MISSING_MODULES_RE.search(note)
-        if m:
-            mods = m.group(1).strip().rstrip(".") or "some modules"
-            why = "there is no odometry" if odom["state"] == "fail" else "usually no odometry or no camera input"
-            return "fail", f"Hydra is up but {mods} are not reporting: Hydra gets no input ({why})", True
-        return None
-
-    items.append(_row_item("hydra", "Hydra", find_row(health, robot, "hydra"), ok="Hydra running, all modules reporting",
-                           missing=no_table if not table else "Hydra is not in the robot's status table",
-                           special=hydra_special))  # fmt: skip
-    items.append(_dsg_item(state, mem, now))
-    items.append(_row_item("semantic_inference", "Semantic inference", find_row(health, robot, "semantic_inference"),
-                           ok="Semantic segmentation running",
-                           missing=no_table if not table else "semantic_inference is not in the robot's status table"))  # fmt: skip
-
-    def fastsam_special(row):
-        if _TF_FAIL_RE.search(_note(row)):
-            why = "no odometry" if odom["state"] == "fail" else "camera or odom frame missing from TF"
-            return "warn", f"FastSAM cannot look up the camera pose (TF lookup failed: {why})", True
-        return None
-
-    fs = find_row(health, robot, "fastsam")
-    items.append(_row_item("fastsam", "FastSAM (open-set)", fs, ok="Open-set segmentation running",
-                           missing="FastSAM is not in this robot's status table", blocking=fs is not None,
-                           special=fastsam_special))  # fmt: skip
-
-    def depth_special(row):
-        note = _note(row)
-        if row.get("status") == "warning" and re.search(r"fallback", note, re.I):
-            return "warn", "Depth correction not calibrated: using the fallback correction (acceptable)", False
-        return None
-
-    dc = find_row(health, robot, "depth_correction")
-    items.append(_row_item("depth_correction", "Depth correction", dc, ok="Depth correction calibrated",
-                           missing="depth_correction is not in this robot's status table", blocking=dc is not None,
-                           special=depth_special))  # fmt: skip
-
-    def zed_special(row):
-        if re.search(r"not\s+measured", _note(row), re.I):
-            return "unknown", f"Depth quality not measured ({_note(row)}): OK here means nothing", False
-        return None
-
-    zq = find_row(health, robot, "zed_depth_quality")
-    if zq is not None:
-        items.append(_row_item("zed_depth_quality", "ZED depth quality", zq, ok="Depth quality measured OK",
-                               missing="", info=True, special=zed_special))  # fmt: skip
-    return items
-
-
-def _dsg_item(state: dict, mem: _Memory, now: float) -> dict:
-    name = "Scene graph from Hydra"
-    src = "fleetlink stats.dsg"
-    dsg = (state.get("stats") or {}).get("dsg")
-    if not isinstance(dsg, dict) or mem.dsg_received is None:
-        return _item("dsg", name, "unknown", "The agent reports no scene-graph counter", src)
-    if mem.dsg_received == 0 or mem.dsg_changed_at is None:
-        return _item("dsg", name, "warn", "No scene graph received from Hydra yet", src)
-    age = now - mem.dsg_changed_at
-    if dsg.get("last_error"):
-        return _item("dsg", name, "warn", f"Scene graphs fail to decode: {dsg['last_error']}", src, age)
-    if age > DSG_STALE_S:
-        return _item("dsg", name, "warn", f"No new scene graph from Hydra for {_fmt_s(age)}", src, age)
-    return _item("dsg", name, "ok", f"Scene graphs arriving ({mem.dsg_received} so far)", src, age)
 
 
 # ------------------------------------------------------------- ready to localize
@@ -417,7 +302,7 @@ def _localize_items(robot: str, state: dict, mem: _Memory, now: float, hm: dict)
         sus = _suspect(state.get("reloc"))
         age = fa.get("age_s") if fa.get("stamp") else None
         if sus:
-            items.append(_item("frame_align", fa_name, "fail", f"Placement {sus.removeprefix('suspect: ')}", "fleetlink reloc", age))
+            items.append(_item("frame_align", fa_name, "fail", f"Suspect placement: {sus.removeprefix('suspect: ')}", "fleetlink reloc", age))
         else:
             items.append(_item("frame_align", fa_name, "ok", f"{fa.get('parent')} -> {fa.get('child')} available", "fleetlink frame_align", age))  # fmt: skip
 
@@ -454,17 +339,19 @@ def _localize_items(robot: str, state: dict, mem: _Memory, now: float, hm: dict)
 
 def compute_readiness(robot: str, state: dict | None, mem: _Memory, now: float) -> dict:
     if not isinstance(state, dict):
-        empty = _checklist([], no_data=True)
-        return {"robot": robot, "map": empty, "localize": empty, "hydra_multi": None, "broken": [],
-                "summary": f"No state from {robot}"}  # fmt: skip
+        return {"robot": robot, "state": "unknown", "localize": _checklist([], no_data=True), "odometry": None,
+                "hydra_multi": None, "broken": [], "summary": f"No state from {robot}"}  # fmt: skip
     hm = hydra_multi_summary(robot, state, mem, now)
-    mp = _checklist(_map_items(robot, state, mem, now))
-    loc = _checklist(_localize_items(robot, state, mem, now, hm))
+    link = _link_item(mem, now)
+    odom = _odom_item(robot, state, mem, now, link["state"] == "ok")
+    loc = _checklist([link, *_localize_items(robot, state, mem, now, hm)])
     broken = []
-    for lst, cl in (("map", mp), ("localize", loc)):
-        for st in ("fail", "warn", "unknown"):
-            for i in cl["items"]:
-                if i["blocking"] and i["state"] == st:
-                    broken.append({"list": lst, "key": i["key"], "name": i["name"], "state": st, "reason": i["reason"]})
-    return {"robot": robot, "map": mp, "localize": loc, "hydra_multi": hm, "broken": broken,
-            "summary": broken[0]["reason"] if broken else "Ready to map and to localize"}  # fmt: skip
+    if odom["state"] == "fail":
+        broken.append({"key": "odom", "name": odom["name"], "state": "fail", "reason": odom["reason"]})
+    for st in ("fail", "warn", "unknown"):
+        for i in loc["items"]:
+            if i["blocking"] and i["state"] == st:
+                broken.append({"key": i["key"], "name": i["name"], "state": st, "reason": i["reason"]})
+    verdict = "fail" if odom["state"] == "fail" else loc["state"]
+    return {"robot": robot, "state": verdict, "localize": loc, "odometry": odom, "hydra_multi": hm, "broken": broken,
+            "summary": broken[0]["reason"] if broken else "Relocalized"}  # fmt: skip

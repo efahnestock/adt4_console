@@ -5,7 +5,7 @@ import {RobotStatusBody, RobotStatusCard} from "../src/viewer/RobotStatusCard";
 import {RobotLegend} from "../src/viewer/RobotLegend";
 import {useRobots} from "../src/stores/robots";
 import {useRobotStatus} from "../src/stores/robotStatus";
-import {hydraCountText, hydraOptText, readinessPhase, ringColor, ringLabel, ringTone, STATE_STALE_S} from "../src/lib/readiness";
+import {hydraCountText, hydraOptText, ringColor, ringLabel, ringTone, STATE_STALE_S} from "../src/lib/readiness";
 import type {Readiness} from "../src/types";
 // computed by the backend (adt4_console/readiness.py) from status tables
 // modelled on the 2026-11-15 willow logs (tests/test_readiness.py)
@@ -16,28 +16,25 @@ import FIX from "./fixtures/readiness.json";
 const NO_ODOM = FIX.no_odom as unknown as Readiness;
 const RELOC_IDLE = FIX.relocalized_idle as unknown as Readiness;
 const RELOCALIZING = FIX.relocalizing as unknown as Readiness;
+const SUSPECT = FIX.suspect as unknown as Readiness;
 
-describe("readiness ring", () => {
-  it("judges the current phase: map without a prior map, map + localize with one", () => {
-    expect(readinessPhase(false)).toBe("map");
-    expect(readinessPhase(true)).toBe("localize");
-    expect(readinessPhase(true, "map")).toBe("map");
-    // no odometry: blocked either way
-    expect(ringTone(NO_ODOM, "map", 0)).toBe("fail");
-    expect(ringTone(NO_ODOM, "localize", 0)).toBe("fail");
-    // relocalizing (2 of 5): ready to map, partly ready to localize
-    expect(ringTone(RELOCALIZING, "map", 0)).toBe("ok");
-    expect(ringTone(RELOCALIZING, "localize", 0)).toBe("warn");
-    // relocalized; hydra_multi idle (ERR "time since last spin") keeps the last count
-    expect(ringTone(RELOC_IDLE, "localize", 0)).toBe("ok");
-    expect(ringLabel("ok", "localize")).toBe("Ready to localize");
+describe("localization ring", () => {
+  it("is green relocalized, amber relocalizing, red blocked", () => {
+    expect(ringTone(RELOC_IDLE, 0)).toBe("ok"); // hydra_multi idle keeps the last count
+    expect(ringTone(RELOCALIZING, 0)).toBe("warn");
+    expect(ringTone(NO_ODOM, 0)).toBe("fail");
+    expect(ringTone(SUSPECT, 0)).toBe("fail");
+    expect(ringLabel("ok")).toBe("Relocalized");
+    expect(ringLabel("warn")).toBe("Not relocalized yet");
+    expect(ringLabel("fail")).toBe("Blocked: cannot relocalize");
   });
 
-  it("goes grey without fresh state", () => {
-    expect(ringTone(undefined, "map", 0)).toBe("none");
-    expect(ringTone(RELOC_IDLE, "map", null)).toBe("none");
-    expect(ringTone(RELOC_IDLE, "map", STATE_STALE_S + 1)).toBe("none");
-    expect(ringLabel("none", "map")).toBe("No status from the robot");
+  it("is red when the robot stops reporting, grey with no data", () => {
+    expect(ringTone(RELOC_IDLE, STATE_STALE_S + 1)).toBe("fail");
+    expect(ringLabel("fail", STATE_STALE_S + 1)).toBe("No state from the robot");
+    expect(ringTone(undefined, 0)).toBe("none");
+    expect(ringTone(RELOC_IDLE, null)).toBe("none");
+    expect(ringLabel("none")).toBe("No status from the robot");
   });
 
   it("uses different colours per tone, deeper on a light background", () => {
@@ -61,7 +58,7 @@ describe("robot status card", () => {
   afterEach(() => {
     act(() => root?.unmount());
     host?.remove();
-    useRobotStatus.setState({open: null, phase: null});
+    useRobotStatus.setState({open: null});
   });
   const mount = (el: React.ReactNode) => {
     host = document.createElement("div");
@@ -70,35 +67,39 @@ describe("robot status card", () => {
     act(() => root!.render(el));
     return host;
   };
+  const set = (r: Readiness, at = Date.now()) => useRobots.setState({state: {gauss: {readiness: r}} as never, stateAt: {gauss: at}, link: {}, plan: {}});
 
-  it("says what is broken first: no odometry before Hydra's missing modules", () => {
-    useRobots.setState({state: {gauss: {readiness: NO_ODOM}} as never, stateAt: {gauss: Date.now()}, link: {}, plan: {}});
+  it("puts a failing odometry check on one line at the top; no mapping checklist", () => {
+    set(NO_ODOM);
     const h = mount(<RobotStatusBody robot="gauss" />);
-    expect(h.querySelector("[data-testid=rs-verdict-gauss]")?.textContent).toBe("Blocked: cannot map");
-    const broken = h.querySelector("[data-testid=rs-broken-gauss]")!;
-    expect(broken.textContent).toMatch(/^Broken first/);
-    expect(broken.querySelector("li")?.textContent).toMatch(/^No odometry: .*gauss\/odom -> base_link/);
-    expect(broken.textContent).toMatch(/active_window, backend are not reporting.*there is no odometry/);
-    // the fallback depth correction is labelled acceptable; zed quality is info only
-    expect(h.querySelector("[data-testid=rs-item-depth_correction]")?.textContent).toMatch(/acceptable/);
-    expect(h.querySelector("[data-testid=rs-item-zed_depth_quality]")?.textContent).toMatch(/info only.*not measured/);
-    expect(h.querySelector("[data-testid=rs-item-odom] .rs-badge")?.textContent).toBe("FAIL");
+    expect(h.querySelector("[data-testid=rs-verdict-gauss]")?.textContent).toBe("Blocked: cannot relocalize");
+    expect(h.querySelector("[data-testid=rs-odom-gauss]")?.textContent).toMatch(/^No odometry: .*gauss\/odom -> base_link/);
+    expect(h.textContent).not.toMatch(/Ready to map|semantic inference|Depth correction|ZED depth/i);
+    expect(h.querySelector("[data-testid=rs-hydra-gauss]")?.textContent).toMatch(/^no count yet/);
+    // GPS relocalization monitor and tf_network: shown, never blocking
+    expect(h.querySelector("[data-testid=rs-item-relocalization_monitor]")?.textContent).toMatch(/GPS-based: cannot go green indoors/);
+    expect(h.querySelector("[data-testid=rs-item-tf_network]")?.textContent).toMatch(/No TF received on \/gauss\/tf/);
   });
 
-  it("shows hydra_multi's loop closures and last optimization in a relocalize session", () => {
-    useRobots.setState({state: {gauss: {readiness: RELOC_IDLE}} as never, stateAt: {gauss: Date.now()}, link: {}, plan: {}});
-    useRobotStatus.setState({phase: "localize"});
+  it("shows hydra_multi's loop closures, last optimization and ROMAN LCs when relocalized", () => {
+    set(RELOC_IDLE);
     const h = mount(<RobotStatusBody robot="gauss" />);
-    expect(h.querySelector("[data-testid=rs-verdict-gauss]")?.textContent).toBe("Ready to localize");
+    expect(h.querySelector("[data-testid=rs-verdict-gauss]")?.textContent).toBe("Relocalized");
+    expect(h.querySelector("[data-testid=rs-odom-gauss]")).toBeNull();
     expect(h.querySelector("[data-testid=rs-hydra-gauss]")?.textContent).toMatch(/^7 \/ 9 accepted/);
     expect(h.querySelector("[data-testid=rs-opt-gauss]")?.textContent).toMatch(/^took 412 ms · last reported 19 s ago$/);
-    // the current phase's checklist comes first
-    expect(h.querySelector(".rs-list h4")?.textContent).toMatch(/^Ready to localize/);
-    expect(h.textContent).toMatch(/GPS-based: cannot go green indoors/);
+    expect(h.querySelector("[data-testid=rs-roman-gauss]")?.textContent).toBeTruthy();
+    expect(h.querySelector("[data-testid=rs-broken-gauss]")?.textContent).toMatch(/Relocalized: nothing in the way/);
   });
 
-  it("opens from the legend dot, closes with Escape, and has 44 px targets", () => {
-    useRobots.setState({state: {gauss: {readiness: RELOCALIZING}} as never, stateAt: {gauss: Date.now()}, link: {}, plan: {}});
+  it("flags a suspect placement", () => {
+    set(SUSPECT);
+    const h = mount(<RobotStatusBody robot="gauss" />);
+    expect(h.querySelector("[data-testid=rs-broken-gauss]")?.textContent).toMatch(/Broken first.*Suspect placement: the placement jumped 2x/);
+  });
+
+  it("opens from the legend dot, closes with Escape", () => {
+    set(RELOCALIZING);
     const h = mount(
       <>
         <RobotLegend />
@@ -106,50 +107,22 @@ describe("robot status card", () => {
       </>,
     );
     const dot = h.querySelector("[data-testid=readiness-dot-gauss]") as HTMLButtonElement;
-    expect(dot.className).toMatch(/rs-tone-ok/); // no prior map: judged on mapping
-    expect(dot.getAttribute("aria-label")).toMatch(/^gauss: Ready to map/);
+    expect(dot.className).toMatch(/rs-tone-warn/);
+    expect(dot.getAttribute("aria-label")).toMatch(/^gauss: Not relocalized yet \(Relocalizing: 2 of the 5/);
     act(() => dot.click());
     expect(useRobotStatus.getState().open).toBe("gauss");
     expect(h.querySelector("[data-testid=robot-status-gauss]")).not.toBeNull();
-    // switching the judged phase to localize: relocalizing is amber
-    const loc = [...h.querySelectorAll(".rs-seg")].find(b => b.textContent === "Localize") as HTMLButtonElement;
-    act(() => loc.click());
-    expect(h.querySelector("[data-testid=readiness-dot-gauss]")?.className).toMatch(/rs-tone-warn/);
     expect(h.querySelector("[data-testid=rs-broken-gauss]")?.textContent).toMatch(/Waiting on.*Relocalizing: 2 of the 5/);
-    act(() => window.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape"})));
-    expect(useRobotStatus.getState().open).toBeNull();
-  });
-
-  it("says when the robot stopped reporting", () => {
-    useRobots.setState({state: {gauss: {readiness: RELOC_IDLE}} as never, stateAt: {gauss: Date.now() - 60_000}, link: {}, plan: {}});
-    const h = mount(<RobotStatusBody robot="gauss" />);
-    expect(h.querySelector("[data-testid=rs-verdict-gauss]")?.textContent).toBe("No status from the robot");
-    expect(h.textContent).toMatch(/No state from gauss for 60 s: showing its last report/);
-  });
-});
-
-describe("readiness dot keys", () => {
-  it("lets Escape through to close the card", () => {
-    useRobots.setState({state: {gauss: {readiness: FIX.relocalizing as unknown as Readiness}} as never, stateAt: {gauss: Date.now()}, link: {}, plan: {}});
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    const root = createRoot(host);
-    act(() =>
-      root.render(
-        <>
-          <RobotLegend />
-          <RobotStatusCard />
-        </>,
-      ),
-    );
-    const dot = host.querySelector("[data-testid=readiness-dot-gauss]") as HTMLButtonElement;
-    act(() => dot.click());
-    expect(useRobotStatus.getState().open).toBe("gauss");
     act(() => {
       dot.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
     });
     expect(useRobotStatus.getState().open).toBeNull();
-    act(() => root.unmount());
-    host.remove();
+  });
+
+  it("says when the robot stopped reporting", () => {
+    set(RELOC_IDLE, Date.now() - 60_000);
+    const h = mount(<RobotStatusBody robot="gauss" />);
+    expect(h.querySelector("[data-testid=rs-verdict-gauss]")?.textContent).toBe("No state from the robot");
+    expect(h.textContent).toMatch(/No state from gauss for 60 s: showing its last report/);
   });
 });

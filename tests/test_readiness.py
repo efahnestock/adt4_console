@@ -1,4 +1,4 @@
-"""Ready to map / ready to localize (readiness.py), with status tables modelled
+"""Localization readiness (readiness.py), with status tables modelled
 on the 2026-11-15 willow logs (gauss without DLIO, hamilton without the Spot
 driver, then a relocalized run)."""
 
@@ -64,25 +64,20 @@ def test_find_row_is_exact_on_the_node_name():
     assert find_row(None, "gauss", "hydra") is None
 
 
-def test_no_pose_is_no_odometry_and_comes_first():
+def test_no_pose_is_no_odometry_and_blocks():
     tr = ReadinessTracker(clock=lambda: 0.0)
     r = tr.observe("gauss", _state(NO_ODOM_ROWS, pose=False), now=0.0)
-    mp = r["map"]
-    assert mp["state"] == "fail" and not mp["ready"]
-    odom = _item(mp, "odom")
+    assert set(r) >= {"state", "localize", "odometry", "hydra_multi", "broken"}
+    assert "map" not in r  # no ready-to-map checklist: localization only
+    odom = r["odometry"]
     assert odom["state"] == "fail" and "No odometry" in odom["reason"]
     assert "tf lookup failed" in odom["reason"]  # fastsam corroborates
-    hydra = _item(mp, "hydra")
-    assert hydra["state"] == "fail" and "active_window, backend" in hydra["reason"]
-    assert "there is no odometry" in hydra["reason"]
-    assert r["broken"][0]["key"] == "odom"
+    assert r["state"] == "fail" and r["broken"][0]["key"] == "odom"
     assert r["summary"].startswith("No odometry")
-    # the fallback depth correction is acceptable: amber, not blocking
-    dc = _item(mp, "depth_correction")
-    assert dc["state"] == "warn" and not dc["blocking"] and "acceptable" in dc["reason"]
-    # zed_depth_quality "OK" is meaningless when not measured
-    zq = _item(mp, "zed_depth_quality")
-    assert zq["info"] and not zq["blocking"] and zq["state"] == "unknown"
+    keys = [i["key"] for i in r["localize"]["items"]]
+    assert keys[:3] == ["link", "hydra_multi", "frame_align"]
+    for gone in ("hydra", "fastsam", "depth_correction", "zed_depth_quality", "semantic_inference", "dsg"):
+        assert gone not in keys
 
 
 def test_frozen_pose_stamp_is_frozen_odometry():
@@ -90,23 +85,20 @@ def test_frozen_pose_stamp_is_frozen_odometry():
     tr.observe("gauss", _state(NO_ODOM_ROWS, t=100.0), now=0.0)
     tr.observe("gauss", _state(NO_ODOM_ROWS, t=100.1), now=0.25)
     r = tr.observe("gauss", _state(NO_ODOM_ROWS, t=100.1), now=9.0)
-    odom = _item(r["map"], "odom")
+    odom = r["odometry"]
     assert odom["state"] == "fail" and "frozen" in odom["reason"] and odom["age_s"] == 8.8
+    assert r["state"] == "fail"
 
 
-def test_ready_to_map_when_everything_runs():
+def test_link_goes_down_without_state():
     tr = ReadinessTracker()
-    dsg = {"received": 0, "processed": 0}
-    rows = _good_rows("time since last spin: 3.0 [s]", "error")
-    tr.observe("gauss", _state(rows, t=1.0, dsg=dsg), now=0.0)
-    r = tr.observe("gauss", _state(rows, t=1.2, dsg={"received": 3, "processed": 3}), now=1.0)
-    mp = r["map"]
-    assert mp["state"] == "ok" and mp["ready"], [(i["key"], i["state"], i["reason"]) for i in mp["items"]]
-    assert _item(mp, "dsg")["reason"] == "Scene graphs arriving (3 so far)"
-    # no scene graph for a while: amber
-    r = tr.compute("gauss", _state(rows, t=1.2), now=40.0)
-    assert _item(r["map"], "link")["state"] == "fail"  # and nothing for 39 s
-    assert _item(r["map"], "odom")["state"] == "unknown"
+    rows = _good_rows("7 / 9 valid interrobot loop closures")
+    tr.observe("gauss", _state(rows, t=1.0, fa=FA_OK), now=0.0)
+    r = tr.observe("gauss", _state(rows, t=1.2, fa=FA_OK), now=1.0)
+    assert r["state"] == "ok" and r["odometry"]["state"] == "ok"
+    r = tr.compute("gauss", _state(rows, t=1.2, fa=FA_OK), now=40.0)
+    assert _item(r["localize"], "link")["state"] == "fail" and r["state"] == "fail"
+    assert r["odometry"]["state"] == "unknown"
 
 
 def test_relocalized_and_remembered_count_and_optimization():
@@ -121,7 +113,7 @@ def test_relocalized_and_remembered_count_and_optimization():
     # informational rows never block
     for key in ("relocalization_monitor", "tf_network", "roman_lc", "roman_map", "gps_monitor", "ntrip_monitor"):
         assert not _item(loc, key)["blocking"], key
-    assert loc["state"] == "ok"
+    assert loc["state"] == "ok" and r["state"] == "ok"
     # hydra_multi idles: ERR "time since last spin" drops the counts -> keep the last ones, labelled
     idle = _good_rows("time since last spin: 20.0 [s]", "error")
     r = tr.observe("gauss", _state(idle, t=1.5, fa=FA_OK), now=20.0)
@@ -164,7 +156,7 @@ def test_agent_restart_forgets():
 
 def test_no_state_is_unknown():
     r = ReadinessTracker().compute("gauss", None, now=0.0)
-    assert r["map"]["state"] == "unknown" and r["localize"]["state"] == "unknown"
+    assert r["state"] == "unknown" and r["localize"]["state"] == "unknown" and r["odometry"] is None
 
 
 class _Hub:
@@ -197,6 +189,7 @@ def test_live_service_publishes_readiness_with_the_state(settings):
     topic, data = hub.msgs[-1]
     assert topic == "robot/gauss/state"
     assert data["readiness"]["broken"][0]["key"] == "odom"
+    assert data["readiness"]["state"] == "fail"
     assert "readiness" not in st  # the receiver's own state is untouched
-    assert live.state("gauss")["readiness"]["map"]["state"] == "fail"
-    assert live.robot_readiness("gauss")["map"]["state"] == "fail"
+    assert live.state("gauss")["readiness"]["state"] == "fail"
+    assert live.robot_readiness("gauss")["odometry"]["state"] == "fail"

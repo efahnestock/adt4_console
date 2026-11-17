@@ -363,8 +363,8 @@ export interface LidarState {
   bytes?: number;
 }
 
-/** Robot readiness (backend readiness.py), computed by the console from the
- *  C1 state and carried along with it as ``readiness``. */
+/** Robot localization readiness (backend readiness.py), computed by the
+ *  console from the C1 state and carried along with it as ``readiness``. */
 export type ReadyState = "ok" | "warn" | "fail" | "unknown";
 
 export interface ReadinessItem {
@@ -410,10 +410,13 @@ export interface HydraMultiSummary {
 
 export interface Readiness {
   robot: string;
-  map: ReadinessList;
+  /** the verdict: localize checklist, made "fail" by no odometry */
+  state: ReadyState;
   localize: ReadinessList;
+  /** the agent's odom -> base_link pose stamp advancing (null: no state) */
+  odometry: ReadinessItem | null;
   hydra_multi: HydraMultiSummary | null;
-  broken: {list: "map" | "localize"; key: string; name: string; state: ReadyState; reason: string}[];
+  broken: {key: string; name: string; state: ReadyState; reason: string}[];
   summary: string;
 }
 

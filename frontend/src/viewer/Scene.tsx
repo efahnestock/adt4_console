@@ -287,18 +287,18 @@ function GlyphTag({robot, color, stale}: {robot: string; color: string; stale: b
   );
 }
 
-/** A halo outside the robot's colour ring: green ready for the current phase
- *  (localize with a prior map, else map), amber partly, red blocked, grey no
- *  data (lib/readiness.ts). Wider while its card is open. */
+/** A halo outside the robot's colour ring: its localization state
+ *  (lib/readiness.ts): green relocalized, amber relocalizing / waiting, red
+ *  blocked (no odometry, no state, suspect placement), grey no data. Wider while its card is open. */
 function ReadinessHalo({robot, ring, z}: {robot: string; ring: number; z: number}) {
   const now = useTick(2000);
-  const {tone, phase} = useRobotReadiness(robot, now);
+  const {tone, staleS} = useRobotReadiness(robot, now);
   const open = useRobotStatus(s => s.open) === robot;
   const light = contrastFor(useBackground()).light;
   const color = ringColor(tone, light);
   const outer = ring + (open ? 0.7 : 0.5);
   return (
-    <mesh position={[0, 0, z]} renderOrder={3} userData={{readiness: tone, label: ringLabel(tone, phase)}}>
+    <mesh position={[0, 0, z]} renderOrder={3} userData={{readiness: tone, label: ringLabel(tone, staleS)}}>
       <ringGeometry args={[ring + 0.14, outer, 48]} />
       <meshBasicMaterial color={color} side={THREE.DoubleSide} transparent opacity={tone === "none" ? 0.45 : 0.9} depthWrite={false} />
     </mesh>
