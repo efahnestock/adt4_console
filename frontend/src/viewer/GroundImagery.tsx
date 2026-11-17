@@ -10,7 +10,8 @@ export function layerLabel(l: TileLayer): string {
 }
 
 /** Ground imagery under the map (Layers panel): on/off, which tile layer, opacity.
- *  Only for a map with a GPS anchor (no anchor: nothing to place the tiles with). */
+ *  Only for a map with a GPS anchor (no anchor: nothing to place the tiles with);
+ *  with an anchor but no tile layer, a note on how to get imagery. */
 export function GroundImageryControls() {
   const geo = useMission(s => s.geo);
   const layers = useMission(s => s.layers);
@@ -18,7 +19,19 @@ export function GroundImageryControls() {
   const opacity = useMission(s => s.satOpacity);
   const satLayer = useMission(s => s.satLayer);
   const set = useMission(s => s.set);
-  if (!geo || !layers.length) return null;
+  if (!geo) return null;
+  // anchored map but no tile layer: say why instead of hiding the section
+  if (!layers.length)
+    return (
+      <div className="ground-imagery" data-testid="ground-imagery">
+        <header className="vsec-head">
+          <h4>Ground imagery</h4>
+        </header>
+        <div className="small muted" data-testid="no-imagery">
+          No imagery: no tiles cached and live fetching is off. Start the console with --tiles-live, or fetch tiles with scripts/geo/fetch_tiles.py.
+        </div>
+      </div>
+    );
   const shown = imageryLayer({layers, satLayer, geo});
   return (
     <div className="ground-imagery" data-testid="ground-imagery">
