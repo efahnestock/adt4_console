@@ -64,6 +64,7 @@ def test_a_plan_repair_edit_that_moves_only_the_map_version_is_polled():
     src.count_nodes = lambda: db["count"]
     src.read_map_version = lambda: db["map"]
     src.read_map_change = lambda: (db["map"], None, None)
+    src._mutation_changes = lambda lo, hi: {}
     v0 = src.version()
     assert src.poll() is False
     db["map"] = 2  # the edit: same node count
@@ -82,6 +83,7 @@ def _polled_source(changes):
     src.count_nodes = lambda: db["count"]
     src.read_map_version = lambda: db["map"]
     src.read_map_change = lambda: changes.pop(0)
+    src._mutation_changes = lambda lo, hi: {}  # no GraphMutation records
     tried = []
 
     def try_apply(version, ids):
@@ -157,6 +159,141 @@ def test_edit_service_hands_the_affected_nodes_over(settings):
     }
     svc._after_commit("neo4j:penn", out, "map edit")
     assert calls == [("neo4j:penn", "map edit", 12, ["O5", "P1"])]
+
+
+# ------------------------------------------- what made each version (no database)
+def _known_source(mutations=None, last=(None, None, None)):
+    """A Neo4jSource on a fake DB at map version 4 with a loaded graph; folds are
+    recorded, not applied.  ``mutations``: {map version: affected} as heracles'
+    GraphMutation records hold them; ``last``: read_map_change's answer."""
+    from adt4_console.graph_service import Neo4jSource
+
+    src = Neo4jSource("m", "bolt://x:1", "u", "p")
+    db = {"count": 10, "map": 4}
+    src.count_nodes = lambda: db["count"]
+    src.read_map_version = lambda: db["map"]
+    src.read_map_change = lambda: last if last[0] is not None else (db["map"], None, None)
+    asked = []
+
+    def mutation_changes(lo, hi):
+        asked.append((lo, hi))
+        return {v: a for v, a in (mutations or {}).items() if lo < v <= hi}
+
+    src._mutation_changes = mutation_changes
+    tried = []
+
+    def try_apply(version, ids):
+        tried.append((version, ids))
+        src._db_key_seen = src._db_key()
+        src._version += 1
+        return ("delta", src._version)
+
+    src._try_apply = try_apply
+    src.version()
+    src._loaded = NS(version=src._version)  # a viewer loaded it
+    return src, db, tried, asked
+
+
+def test_a_gap_of_several_graph_edit_commits_is_folded_in_at_once():
+    """Two edits by other processes (another console, plan repair's graph_edit)
+    between two polls: each left a GraphMutation record with its nodes, so the poll
+    folds both in as one delta instead of reloading the map."""
+    src, db, tried, asked = _known_source({5: ["O1", "P2"], 6: ["O9"]})
+    v0 = src.version()
+    db["map"] = 6
+    assert src.poll_change() == (True, ("delta", v0 + 1))
+    assert tried == [(6, ["O1", "P2", "O9"])] and asked == [(4, 6)]
+
+
+@pytest.mark.parametrize(
+    "mutations",
+    [
+        {5: ["O1"]},  # version 6 has no record: someone bumped without saying
+        {5: ["O1"], 6: None},  # a record whose list was cut short (500 nodes)
+    ],
+)
+def test_a_gap_with_an_unexplained_version_waits_then_reloads(mutations, monkeypatch):
+    import adt4_console.graph_service as gsm
+
+    src, db, tried, _ = _known_source(mutations)
+    v0 = src.version()
+    db["map"] = 6
+    clock = {"t": 100.0}
+    monkeypatch.setattr(gsm.time, "monotonic", lambda: clock["t"])
+    assert src.poll_change() == (False, None)  # its announcement may be on the way
+    clock["t"] += gsm.UNKNOWN_CHANGE_GRACE_S + 0.1
+    assert src.poll_change() == (True, None) and src.version() == v0 + 1
+    assert tried == [] and src.poll_change() == (False, None)
+
+
+def test_an_announced_scene_change_explains_its_version():
+    """heracles' scene change writer (change detection, chat SGET via heracles_agents)
+    bumps without recording ids and announces the nodes on ROS: the announcement
+    folds it in -- whether it comes before the poll or after the poll started
+    waiting for it."""
+    src, db, tried, _ = _known_source({})
+    v0 = src.version()
+    db["map"] = 5
+    assert src.poll_change() == (False, None)  # waiting for the announcement
+    assert src.apply_change(5, ["O7"]) == ("delta", v0 + 1)
+    assert tried == [(5, ["O7"])]
+    # announced first, polled after
+    src.note_change(6, ["P3"])
+    db["map"] = 6
+    assert src.poll_change() == (True, ("delta", v0 + 2))
+    assert tried[-1] == (6, ["P3"])
+
+
+def test_an_announcement_the_poll_already_handled_changes_nothing():
+    """The old double reload: the poll reloaded a change, then its announcement on
+    /scene_graph/changes_applied invalidated the map a second time."""
+    src, db, tried, _ = _known_source({5: ["O1"]})
+    v0 = src.version()
+    db["map"] = 5
+    assert src.poll_change() == (True, ("delta", v0 + 1))
+    assert src.apply_change(5, ["O1"]) is None and src.version() == v0 + 1
+    assert len(tried) == 1
+
+
+def test_a_node_count_change_without_a_bump_reloads_at_once():
+    src, db, tried, _ = _known_source({})
+    v0 = src.version()
+    db["count"] += 3
+    assert src.poll_change() == (True, None) and src.version() == v0 + 1
+    assert tried == []
+
+
+def test_a_removed_place_brings_the_objects_it_held():
+    """scene_change relinks the objects of a removed place to their nearest place;
+    the writer reports only the place, so its objects are re-read too."""
+    from adt4_console.codec import NodeRecord
+    from adt4_console.graph_service import Loaded, _with_held_objects
+
+    recs = {
+        "P(1)": NodeRecord("P(1)", 3, 1, (0.0, 0.0, 0.0)),
+        "O(1)": NodeRecord("O(1)", 2, 0, (0.0, 0.0, 0.0)),
+        "O(2)": NodeRecord("O(2)", 2, 0, (1.0, 0.0, 0.0)),
+        "a(3)": NodeRecord("a(3)", 2, 97, (0.0, 0.0, 0.0)),
+        "R(0)": NodeRecord("R(0)", 4, 0, (0.0, 0.0, 0.0)),
+    }
+    edges = {("P(1)", "O(1)"), ("O(2)", "P(1)"), ("P(1)", "a(3)"), ("R(0)", "P(1)")}
+    loaded = Loaded(version=1, records=recs, edges=edges, labelspaces={})
+    assert sorted(_with_held_objects(loaded, ["P(1)"])) == ["O(1)", "O(2)", "P(1)"]
+    assert _with_held_objects(loaded, ["O(1)"]) == ["O(1)"]
+
+
+def test_apply_change_already_seen_sends_nothing(settings):
+    from adt4_console.graph_service import GraphService
+
+    hub = FakeHub()
+    gs = GraphService(settings, hub=hub)
+    src, db, tried, _ = _known_source({5: ["O1"]})
+    gs.sources[src.id] = src
+    db["map"] = 5
+    assert gs.apply_change(src.id, "map edit", 5, ["O1"]) is True
+    assert len(hub.frames) == 1  # the delta
+    assert gs.apply_change(src.id, "scene changes", 5, ["O1"]) is False
+    assert len(hub.frames) == 1  # the echo: nothing new, no push, no reload
 
 
 # --------------------------------------------------------------------- database

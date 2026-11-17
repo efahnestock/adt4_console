@@ -1239,6 +1239,18 @@ class FileSource(Source):
 # (relationship type, from label, to label).  tests/test_incremental_refresh.py
 # checks an incremental update against a full reload, so a drift shows there.
 INCREMENTAL_MAX_NODES = 400
+# How many map versions one fold may span (each needs its changed nodes known).
+INCREMENTAL_MAX_VERSIONS = 50
+# heracles graph_edit keeps at most this many symbols in GraphMutation.affected
+# (map_reload.MAX_CHANGED_IDS); a record holding that many may be truncated.
+MUTATION_AFFECTED_MAX = 500
+# A version bump that did not record what it changed (the scene change writer,
+# a chat SGET edit run by heracles_agents) is announced on
+# /scene_graph/changes_applied right after; the poll waits this long for it
+# before reloading.
+UNKNOWN_CHANGE_GRACE_S = 3.0
+# Announced changes kept per source (by map version).
+ANNOUNCED_KEEP = 64
 _MAP_LABELS = ("Object", "Place", "MeshPlace", "Room", "Building")
 _NODE_LABELS = _MAP_LABELS + ("Agent", "Retired")
 _EDGE_RULES = (
@@ -1291,6 +1303,25 @@ def _neo4j_image(r: dict) -> NodeImage:
     )
 
 
+def _with_held_objects(loaded: Loaded, syms: list[str]) -> list[str]:
+    """``syms`` plus the objects the places among them hold in ``loaded``: a place
+    removed or moved by a writer relinks its objects (heracles scene_change), and
+    those are not in what the writer reports."""
+    places = {
+        s for s in syms
+        if (r := loaded.records.get(s)) is not None and r.layer in (3, 20)
+    }  # fmt: skip
+    if not places:
+        return syms
+    held = []
+    for a, b in loaded.edges:
+        other = b if a in places else a if b in places else None
+        r = loaded.records.get(other) if other is not None else None
+        if r is not None and r.layer == 2 and not is_agent_record(r):
+            held.append(other)
+    return list(dict.fromkeys(syms + held))
+
+
 class Neo4jSource(Source):
     kind = "neo4j"
 
@@ -1304,6 +1335,9 @@ class Neo4jSource(Source):
         self._version: int | None = None
         self._db_key_seen: tuple[int, int] | None = None
         self._props_cache: dict[str, dict] = {}
+        # map version -> node symbols a write announced it touched (note_change)
+        self._announced: dict[int, list[str]] = {}
+        self._unknown_since: float | None = None  # an unexplained bump first seen
         self._store = None  # image stores named by _GraphMetadata, opened lazily
         self._store_lock = threading.Lock()
 
@@ -1414,13 +1448,25 @@ class Neo4jSource(Source):
         return self.poll_change()[0]
 
     def poll_change(self) -> tuple[bool, tuple | None]:
-        """Re-read the DB key: ``(changed, delta)``.  A change that is exactly one
-        map version bump past what the console has seen, and that recorded the
-        nodes it touched (heracles ``read_map_change``: a graph_edit commit, an
-        openset_query object), is folded into the loaded graph and returned as
-        ``(GraphDelta, new version)`` like :meth:`apply_change`; any other change
-        means a full reload on next use (delta None).  Under the source lock, so
-        it never interleaves with :meth:`apply_change`."""
+        """The map-version poll: :meth:`sync`, giving a bump that did not say what
+        it changed :data:`UNKNOWN_CHANGE_GRACE_S` for its announcement to arrive."""
+        return self.sync(wait_unknown=True)
+
+    def sync(self, wait_unknown: bool = False) -> tuple[bool, tuple | None]:
+        """Re-read the DB key: ``(changed, delta)``.
+
+        When the map version moved on from what the console has seen and every
+        version in between is known by the nodes it touched -- announced
+        (:meth:`note_change`: the console's own edits, scene changes heard on
+        ROS), a ``GraphMutation`` record (heracles graph_edit, from any process)
+        or the last bump's recorded ids (``map_reload.read_map_change``) -- those
+        nodes are folded into the loaded graph and ``(GraphDelta, new version)``
+        is returned.  Anything else -- an unexplained version, a node count that
+        moved without a bump, nothing loaded, too many nodes -- is a new version
+        (delta None, a full reload on next use).  ``wait_unknown``: an
+        unexplained bump waits :data:`UNKNOWN_CHANGE_GRACE_S` first (reported as
+        no change), in case its announcement is on the way.  Under the source
+        lock, so it never interleaves with a fold or a reload."""
         with self._lock:
             key = self._db_key()
             if self._version is None:
@@ -1428,21 +1474,90 @@ class Neo4jSource(Source):
                 return False, None
             seen = self._db_key_seen
             if key == seen:
+                self._unknown_since = None
                 return False, None
-            if seen is not None and key[0] == seen[0] + 1:
-                delta = None
+            if seen is not None and key[0] > seen[0]:
+                syms = None
                 try:
-                    version, _layers, ids = self.read_map_change()
-                    if version == key[0] and ids:
-                        delta = self._try_apply(version, ids)
-                except Exception:  # noqa: BLE001
-                    log.exception("%s: incremental update failed; reloading", self.id)
-                if delta is not None:
-                    return True, delta
+                    syms = self._changes_between(seen[0], key[0])
+                except Exception:  # noqa: BLE001  (unknown: reloaded below)
+                    log.warning("%s: reading what changed failed", self.id, exc_info=True)
+                if syms is not None:
+                    delta = None
+                    try:
+                        delta = self._try_apply(key[0], syms)
+                    except Exception:  # noqa: BLE001
+                        log.exception("%s: incremental update failed; reloading", self.id)
+                    if delta is not None:
+                        self._unknown_since = None
+                        return True, delta
+                elif wait_unknown and self._loaded is not None:
+                    now = time.monotonic()
+                    if self._unknown_since is None:
+                        self._unknown_since = now
+                    if now - self._unknown_since < UNKNOWN_CHANGE_GRACE_S:
+                        return False, None
+            self._unknown_since = None
             self._props_cache.clear()
             self._db_key_seen = key
             self._version += 1
             return True, None
+
+    def note_change(self, map_version, affected) -> None:
+        """A write announced the node symbols that made ``map_version``: kept for
+        :meth:`sync` (a write that bumps without recording them, e.g. heracles'
+        scene change writer, says what it changed on ROS)."""
+        try:
+            mv = int(map_version)
+        except (TypeError, ValueError):
+            return
+        syms = [str(a).strip() for a in affected or () if a and str(a).strip()]
+        if not syms:
+            return
+        with self._lock:
+            cur = self._announced.get(mv, [])
+            self._announced[mv] = list(dict.fromkeys(cur + syms))
+            for v in [v for v in self._announced if v <= mv - ANNOUNCED_KEEP]:
+                del self._announced[v]
+
+    def _mutation_changes(self, lo: int, hi: int) -> dict:
+        """``{map version: affected symbols}`` of the heracles ``GraphMutation``
+        records that made versions ``lo+1 .. hi`` (None for a record whose list may
+        have been cut short)."""
+        rows = self.query(
+            "MATCH (m:GraphMutation) WHERE m.map_version > $lo AND m.map_version <= $hi "
+            "RETURN m.map_version AS v, m.affected AS a",
+            lo=int(lo), hi=int(hi),
+        )  # fmt: skip
+        out: dict = {}
+        for r in rows:
+            try:
+                v = int(r["v"])
+            except (TypeError, ValueError):
+                continue
+            a = [str(x) for x in r["a"] or []]
+            out[v] = a if a and len(a) < MUTATION_AFFECTED_MAX else None
+        return out
+
+    def _changes_between(self, lo: int, hi: int) -> list[str] | None:
+        """The node symbols map versions ``lo+1 .. hi`` touched, or None when any
+        of them is not known."""
+        if hi <= lo or hi - lo > INCREMENTAL_MAX_VERSIONS:
+            return None
+        known = {v: self._announced[v] for v in range(lo + 1, hi + 1) if v in self._announced}
+        if hi not in known:
+            version, _layers, ids = self.read_map_change()
+            if version == hi and ids:
+                known[hi] = [str(i) for i in ids]
+        missing = [v for v in range(lo + 1, hi + 1) if v not in known]
+        if missing:
+            muts = self._mutation_changes(min(missing) - 1, max(missing))
+            for v in missing:
+                if muts.get(v):
+                    known[v] = muts[v]
+        if len(known) != hi - lo:
+            return None
+        return list(dict.fromkeys(s for v in sorted(known) for s in known[v]))
 
     # -- incremental updates ------------------------------------------------
     def apply_change(self, map_version, affected) -> tuple | None:
@@ -1450,23 +1565,24 @@ class Neo4jSource(Source):
 
         ``map_version`` is the map version (``_MapState.version``) the write bumped
         to and ``affected`` the node symbols it touched (graph_edit ``map_version``
-        and ``affected``).  When the console had seen the DB right up to
-        that write (``map_version`` is exactly one past it) and the graph is
-        loaded, only the affected nodes and their edges are re-read from Neo4j and
-        patched into a copy of the graph; returns ``(GraphDelta, new version)``.
-        A labelspace that only gained entries (a new class) is applied too.
-        Anything else -- an unknown write in between, nothing loaded, a renamed or
-        renumbered labelspace entry, too many nodes, any error -- falls back to
-        :meth:`invalidate` (full reload on next use) and returns None."""
+        and ``affected``).  They are noted (:meth:`note_change`) and the source
+        brought up to the DB (:meth:`sync`): when every version since the one the
+        console holds is known by its nodes, only those nodes and their edges are
+        re-read from Neo4j and patched into a copy of the graph; returns
+        ``(GraphDelta, new version)``.  A labelspace that only gained entries (a
+        new class) is applied too.  Anything else -- an unknown write in between,
+        nothing loaded, a renamed or renumbered labelspace entry, too many nodes,
+        any error -- is a new version (full reload on next use) and returns None;
+        so is nothing at all when the DB holds nothing the console has not seen
+        (the poll folded the write in first)."""
         with self._lock:
-            delta = None
+            self.note_change(map_version, affected)
             try:
-                delta = self._try_apply(map_version, affected)
+                return self.sync()[1]
             except Exception:  # noqa: BLE001
                 log.exception("%s: incremental update failed; reloading", self.id)
-            if delta is None:
                 self.invalidate()
-            return delta
+                return None
 
     def _try_apply(self, map_version, affected):
         loaded, seen = self._loaded, self._db_key_seen
@@ -1486,11 +1602,14 @@ class Neo4jSource(Source):
             or self._version is None
             or loaded.version != self._version
             or seen is None
-            or int(map_version) != seen[0] + 1
+            or int(map_version) <= seen[0]
             or "db_labelspaces" not in loaded.extra
         ):
             return None
         t0 = time.time()
+        syms = _with_held_objects(loaded, syms)
+        if len(syms) > INCREMENTAL_MAX_NODES:
+            return None
         db_ls, old_ls = self._db_labelspaces(), loaded.extra["db_labelspaces"]
         if db_ls != old_ls and not all(
             old_ls.get(k, {}).items() <= db_ls[k].items() for k in db_ls
@@ -2216,12 +2335,15 @@ class GraphService:
     def apply_change(self, src_id: str, reason: str, map_version, affected) -> bool:
         """A write to Neo4j source ``src_id`` that touched ``affected`` and bumped
         the map version to ``map_version``: fold it in (or invalidate) and tell
-        viewers.  True when it was applied incrementally."""
+        viewers.  Nothing is sent when the console had already seen the write (the
+        poll got there first).  True when it was applied incrementally."""
         src = self.sources.get(src_id)
         if not isinstance(src, Neo4jSource):
             return False
+        before = src._version
         delta = src.apply_change(map_version, affected)
-        self.notify_version(src_id, reason, delta)
+        if delta is not None or src._version != before:
+            self.notify_version(src_id, reason, delta)
         return delta is not None
 
     # -- live events (called from the fleetlink receiver thread) -----------
