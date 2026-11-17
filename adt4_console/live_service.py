@@ -61,6 +61,9 @@ class LiveService:
         self.started_ns = time.time_ns()
         self._started_tag = time.strftime("%Y%m%d_%H%M%S")
         self._state_thread = None
+        from .readiness import ReadinessTracker
+
+        self.readiness = ReadinessTracker()  # ready to map / localize (readiness.py)
 
     def start(self) -> None:
         if self.receiver is not None:
@@ -280,8 +283,13 @@ class LiveService:
                     self.graph.on_live(robot, kind, data)
                 if kind == "snapshot":
                     self._clear_stale_overlays(robot)
-            elif kind == "state" and self.hub is not None:
-                self.hub.publish(f"robot/{robot}/state", data)
+            elif kind == "state":
+                # the readiness rides along with the state it was computed from
+                ready = self.readiness.observe(robot, data)
+                if self.hub is not None:
+                    if isinstance(data, dict):
+                        data = {**data, "readiness": ready}
+                    self.hub.publish(f"robot/{robot}/state", data)
             elif kind == "link" and self.hub is not None:
                 self.hub.publish(f"link/{robot}", data)
             elif kind == "grid" and self.hub is not None:
@@ -326,7 +334,18 @@ class LiveService:
             return None
         st = dict(st)
         st["paths"] = self.paths(robot)
+        st["readiness"] = self.readiness.compute(robot, st)
         return st
+
+    def robot_readiness(self, robot: str) -> dict:
+        """Ready to map / localize now (the link item ages with the last state)."""
+        st = None
+        if self.receiver is not None:
+            try:
+                st = self.receiver.state(robot)
+            except Exception:  # noqa: BLE001
+                st = None
+        return self.readiness.compute(robot, st)
 
     def _call(self, name: str, robot: str):
         fn = getattr(self.receiver, name, None) if self.receiver is not None else None
