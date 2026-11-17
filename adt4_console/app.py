@@ -11,6 +11,7 @@ import html
 import logging
 import os
 import pathlib
+import threading
 from dataclasses import dataclass, field
 
 from fastapi import FastAPI, Request
@@ -97,6 +98,8 @@ class Services:
     nav_viz: object = (
         None  # nav_viz.NavViz: MPPI / mid-range markers, GPS fix (on demand)
     )
+    # set by wire_goal_arrival: stops the goal arrival-by-position thread
+    goal_arrival_stop: object = None
 
     def start(self) -> None:
         if self.settings.fleet_poll:
@@ -112,6 +115,8 @@ class Services:
         self.graph.warm()
 
     def stop(self) -> None:
+        if self.goal_arrival_stop is not None:
+            self.goal_arrival_stop.set()
         if self.trials is not None:
             self.trials.shutdown()  # only the polling: recordings keep going
         for svc in (
@@ -223,6 +228,7 @@ def build_services(
     chat.sget = SgetService(graph, ros, settings)
     svc.missions.edits = svc.edits
     wire_scene_repair(svc)
+    wire_goal_arrival(svc)
     from .trials import TrialService
 
     svc.trials = TrialService(settings, fleet, lambda: svc.helpers, hub)
@@ -269,6 +275,41 @@ def trial_context(svc) -> dict:
     put("missions", lambda: svc.missions.list()[:30] if svc.missions else [])
     put("ros", lambda: bool(svc.settings.ros))
     return out
+
+
+GOAL_ARRIVAL_PERIOD_S = 1.0
+
+
+def check_goal_arrival(svc) -> list[str]:
+    """Feed the goal tracker the relocalized position of each robot whose
+    navigation-only plan can only be seen to finish by where the robot is (no
+    per-action results: a Husky). Returns the robots checked."""
+    ros = getattr(svc, "ros", None)
+    if ros is None:
+        return []
+    goals = ros.goals
+    robots = goals.wants_pose()
+    for robot in robots:
+        try:
+            goals.on_pose(robot, relocalized_xy(svc, robot))
+        except Exception:  # noqa: BLE001 — one robot's pose must not stop the loop
+            pass
+    return robots
+
+
+def wire_goal_arrival(svc, period_s: float = GOAL_ARRIVAL_PERIOD_S) -> None:
+    """A daemon thread that checks goal arrival by position every ``period_s``."""
+    stop = threading.Event()
+    svc.goal_arrival_stop = stop
+
+    def loop():
+        while not stop.wait(period_s):
+            try:
+                check_goal_arrival(svc)
+            except Exception:  # noqa: BLE001
+                pass
+
+    threading.Thread(target=loop, name="goal-arrival", daemon=True).start()
 
 
 def _live_target(svc):

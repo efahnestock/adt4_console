@@ -32,6 +32,7 @@ import {pickRadius, TapTracker} from "../lib/tap";
 import {useMission} from "../stores/mission";
 import {usePlanPreview} from "../stores/planPreview";
 import {planCleared, useClearedPaths} from "../stores/clearedPaths";
+import {robotCleared, STALE_MS, trimTrajectory, useMapCleared} from "../stores/mapCleared";
 import {EditOverlay} from "./EditOverlay";
 import {fitTopView} from "../lib/fitView";
 import {useRobotStatus} from "../stores/robotStatus";
@@ -68,6 +69,9 @@ function SourceContent({src, cb}: {src: SourceView; cb: SceneCallbacks}) {
   const colors = useColorOpts();
   const bg = useBackground();
   const edgeInk = contrastFor(bg, vizStyle).edge;
+  // "Clear map": only the trajectory drawn since (stores/mapCleared.ts)
+  const trajHidden = useMapCleared(s => s.traj[src.id]);
+  const trajectory = useMemo(() => trimTrajectory(src.trajectory, trajHidden), [src.trajectory, trajHidden]);
   const layout = useMemo(
     () => (src.model ? layoutGraph(src.model, {hiddenLayers, edgeKinds, flat, stackHeight, style: vizStyle, text: showText, placeLabels, heights, colors, regionHulls}) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -100,7 +104,7 @@ function SourceContent({src, cb}: {src: SourceView; cb: SceneCallbacks}) {
           layout={layout}
           showBBoxes={showBBoxes}
           showTrajectory={showTrajectory}
-          trajectory={src.trajectory}
+          trajectory={trajectory}
           trajectoryRobots={src.trajectoryRobots}
           edgeKinds={edgeKinds}
           style={vizStyle}
@@ -360,15 +364,17 @@ function RobotGlyphs() {
   const states = useRobots(s => s.state);
   const stateAt = useRobots(s => s.stateAt);
   const robotColor = useRobotColor3D();
+  const cleared = useMapCleared(s => s.robots);
   const now = Date.now();
   return (
     <>
       {Object.entries(states).map(([r, st]) => {
         const p = st.pose;
         if (!p || !Number.isFinite(p.x)) return null;
+        if (robotCleared({robots: cleared}, r, stateAt[r])) return null; // stale at "Clear map"
         const yaw = quatYaw(p.qw ?? 1, p.qx ?? 0, p.qy ?? 0, p.qz ?? 0);
         const color = robotColor(r);
-        const stale = now - (stateAt[r] ?? 0) > 5000;
+        const stale = now - (stateAt[r] ?? 0) > STALE_MS;
         return (
           <RobotGlyph key={r} robot={r}>
           <AlignedGroup robot={r} frame={p.frame}>

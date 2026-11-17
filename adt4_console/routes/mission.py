@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Response
+import re
+from typing import Any
+
+from fastapi import APIRouter, Body, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
@@ -49,6 +52,27 @@ def world(request: Request, src: str | None = None):
 def create(body: dict, request: Request):
     """A new mission (or a revision, when ``id`` names an existing one)."""
     return _svc(request).put(_mission(body))
+
+
+@router.get("/export_all")
+def export_all(request: Request, drafts: bool = False):
+    """Every saved mission (``drafts=true``: unsaved ones too) as one JSON file."""
+    data = _svc(request).export_all(saved_only=not drafts)
+    return Response(data, media_type="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="missions_all.json"'})  # fmt: skip
+
+
+@router.post("/import_all")
+def import_all(request: Request, body: Any = Body(...)):
+    """Several missions at once (a bundle from ``export_all``, or a list); each a new
+    saved mission. Bad entries are reported and skipped."""
+    return _get(_svc(request).import_all, body)
+
+
+@router.post("/import")
+def import_mission(body: dict, request: Request):
+    """A mission from an exported JSON file, as a new saved mission (API.md §15)."""
+    return _get(_svc(request).import_mission, body)
 
 
 @router.get("/{mid}")
@@ -154,9 +178,11 @@ def abort(mid: str, request: Request):
 
 @router.get("/{mid}/export")
 def export(mid: str, request: Request):
-    data = _get(_svc(request).export, mid)
+    svc = _svc(request)
+    data = _get(svc.export, mid)
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", svc.get(mid).name).strip("_") or mid
     return Response(data, media_type="application/json",
-                    headers={"Content-Disposition": f'attachment; filename="mission_{mid}.json"'})  # fmt: skip
+                    headers={"Content-Disposition": f'attachment; filename="mission_{stem}.json"'})  # fmt: skip
 
 
 class OmniBody(BaseModel):
@@ -169,6 +195,8 @@ class OmniBody(BaseModel):
     areas: list[dict] | None = None
     # which omniplanner engine plans it: fast_downward (default) or grstaps (GRSTAPS-X)
     engine: str | None = None
+    # the mission's mock objects [{label, pos, sym?}]: a goal may name them (o900001)
+    planted: list[dict] | None = None
 
 
 def _engine_or_503(omni_planner, engine):
@@ -201,7 +229,8 @@ def plan_omniplanner(body: OmniBody, request: Request):
     if body.pddl_goal:
         try:
             m, planned = omni_planner.plan_pddl(body.pddl_goal, body.agents, src, svc, body.constraints,
-                                                text=body.text, engine=engine, areas=body.areas)  # fmt: skip
+                                                text=body.text, engine=engine, areas=body.areas,
+                                                planted=body.planted)  # fmt: skip
         except ValueError as e:
             return _planning_failed(e)
         out = svc.put(m)
@@ -305,7 +334,7 @@ def replan(mid: str, body: ReplanBody, request: Request):
     try:
         new, planned = omni_planner.plan_pddl(goal, agents, m.src, svc, m.goal.get("constraints"), m.geofences,
                                               text=m.text, name=m.name, engine=engine,
-                                              areas=m.goal.get("areas"))  # fmt: skip
+                                              areas=m.goal.get("areas"), planted=m.planted)  # fmt: skip
     except ValueError as e:
         return _planning_failed(e)
     new = new.model_copy(

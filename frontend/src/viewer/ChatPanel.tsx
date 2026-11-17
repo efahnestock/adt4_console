@@ -2,6 +2,7 @@
 // the scene graph (heracles_agents chatdsg). Nothing changes the map or moves a
 // robot without the operator: writes, SAM3 objects and goals arrive as cards to
 // approve, and each decision goes back to the assistant as a note.
+import {eventLine, type GoalEvent} from "../lib/goalEvents";
 import {useEffect, useRef, useState} from "react";
 import {useViewer} from "../stores/viewer";
 import {getToken, withToken} from "../lib/auth";
@@ -16,6 +17,7 @@ import {clearPreview, previewPddl, PreviewError, previewRobots, usePlanPreview, 
 import {FastDownwardDetails} from "./FastDownward";
 import {PlannerSchedule} from "./PlannerSchedule";
 import {EnginePicker} from "./EnginePicker";
+import {MapResetButton, neo4jTarget} from "./MapResetButton";
 import {GoalImages} from "./GoalImages";
 import {GoalStatus} from "./GoalStatus";
 import {NOTABLE, trackNote, useGoalTracks} from "../lib/goalTrack";
@@ -31,6 +33,7 @@ import {ENGINE_LABEL, refreshEngines, useEngines, type EngineId} from "../stores
 import {chatEngineNow, useChatEngine, type ChatEngineInfo} from "../stores/chatEngine";
 import {ChatEnginePicker} from "./ChatEnginePicker";
 import {PlannerStatePanel} from "./PlannerState";
+import {PlanningAgents} from "./PlanningAgents";
 import type {FastDownwardInfo} from "../lib/fastDownward";
 import {decideMapEdit, MapEditCard, mapEditNote, statusOf, toMapEditItem, type MapEditItem} from "./MapEditCard";
 import {decideSceneEdit, SceneEditCard, sceneEditNote, sceneEditStatus, toSceneEditItem, undoSceneEdit, type SceneEditItem} from "./SceneEditCard";
@@ -49,7 +52,8 @@ export type ChatItem =
   | SceneEditItem
   | ImagesItem
   | ObjectCandidate
-  | AutoSendItem;
+  | AutoSendItem
+  | {type: "goal_event"; event: GoalEvent};
 
 /** A plan the chat sent by itself ("Auto-send to online robots"): local only. */
 export interface AutoSendItem {
@@ -448,7 +452,8 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
       // the mission planner's context: agents, drawn areas, the open mission (propose_mission)
       const ms = useMission.getState();
       // auto-send: plan for the robots that are online now, whatever the Mission panel holds
-      const auto = useAutoSend.getState().on;
+      // never in the mission planner: it only simulates
+      const auto = !missionMode && useAutoSend.getState().on;
       const engineNow = useEngines.getState().engine;
       const autoFleet = auto ? autoSendRobots(engineNow) : null;
       const withMission = auto || missionMode || (ms.chatOn && (ms.roster.length > 0 || !!ms.current));
@@ -458,7 +463,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
         src: withMission ? (ms.world?.src ?? src) : src,
         history: trimTranscript(transcript.current),
         model: chosenModel,
-        mission_ctx: withMission ? (autoFleet ? {...missionContext(), roster: autoRoster(autoFleet.online), auto_send: true} : missionContext()) : undefined,
+        mission_ctx: withMission ? (autoFleet ? {...missionContext(), roster: autoRoster(autoFleet.online), auto_send: true} : {...missionContext(), ...(missionMode ? {sim_only: true} : {})}) : undefined,
         reasoning: isReasoningModel(chosenModel ?? defaultModel) ? reasoning : undefined,
         // the planner toggle: the engine of the goals the chat proposes (undefined: older backend)
         engine: chatEngineNow(),
@@ -537,6 +542,7 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
     if (missionMode) closeMission();
   };
   const current = useMission(s => s.current);
+  const worldSrc = useMission(s => s.world?.src);
   const [saveName, setSaveName] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const doSave = async () => {
@@ -736,20 +742,37 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           </select>
         )}
         <ChatEnginePicker onOpen={() => void loadUsage()} />
-        <label className="row gap-xs small chat-autosend" title="Plans the chat makes are sent at once to the robots that are online (fleetlink up, executor status, not E-stopped); sending takes a Spot's lease">
+        {!missionMode && <label className="row gap-xs small chat-autosend" title="Plans the chat makes are sent at once to the robots that are online (fleetlink up, executor status, not E-stopped); sending takes a Spot's lease">
           <input type="checkbox" checked={autoOn} onChange={e => setAutoSend(e.target.checked)} data-testid="auto-send-toggle" />
           Auto-send to online robots
-        </label>
-        {autoOn && (
+        </label>}
+        {!missionMode && autoOn && (
           <span data-testid="auto-send-on">
             <Badge tone="warn">AUTO-SEND ON</Badge>
           </span>
         )}
         <span className="grow" />
-        {missionMode && current && saveName === null && (
-          <button className="btn btn-xs" onClick={() => setSaveName(current.name || "")} title="Keep this mission with its chat and the approvals of its simulated run, to replay or continue later">
-            {savedNote ? "✓ Saved" : current.saved ? "Save again" : "Save mission"}
-          </button>
+        {missionMode && saveName === null && (
+          <span className="row gap-xs">
+            <button
+              className="btn btn-xs btn-primary"
+              data-testid="chat-save"
+              disabled={!current}
+              onClick={() => void doSave()}
+              title={
+                current
+                  ? `Save "${current.name}" with its chat and the approvals of its simulated run, to replay, continue or export later`
+                  : "Plan a mission in the chat first, then save it"
+              }
+            >
+              {savedNote ? "✓ Saved" : current?.saved ? "Save again" : "Save mission"}
+            </button>
+            {current && (
+              <button className="btn btn-xs" data-testid="chat-rename" onClick={() => setSaveName(current.name || "")} title="Rename the mission and save it">
+                ✎
+              </button>
+            )}
+          </span>
         )}
         {missionMode && saveName !== null && (
           <span className="row gap">
@@ -779,10 +802,11 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           {missionMode ? "Clear" : "New chat"}
         </button>
       </div>
-      <PlannerStatePanel compact />
+      {missionMode ? <PlanningAgents /> : <PlannerStatePanel compact />}
       {missionMode && (
         <div className="chat-engine">
           <EnginePicker label="planner" />
+          <MapResetButton target={neo4jTarget(worldSrc ?? src)} />
         </div>
       )}
       <div className="chat-log" ref={scroller}>
@@ -813,7 +837,8 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
           if (it.type === "tool") return <ToolCard key={i} it={it} />;
           if (it.type === "mission") return <MissionCard key={i} it={it} />;
           if (it.type === "autosend") return <AutoSendCard key={i} it={it} />;
-          return <GoalCard key={i} it={it} robot={it.robot ?? planRobot} src={src ?? null} onSend={() => void sendProposal(i)} />;
+          if (it.type === "goal_event") return <GoalEventLine key={i} event={it.event} />;
+          return <GoalCard key={i} it={it} robot={it.robot ?? planRobot} src={src ?? null} onSend={missionMode ? undefined : () => void sendProposal(i)} />;
         })}
         {busy && <Spinner label="thinking" />}
       </div>
@@ -1127,7 +1152,8 @@ function ImagesCard({it}: {it: ImagesItem}) {
 }
 
 
-export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"}>; robot: string | null; src: string | null; onSend: () => void}) {
+/** ``onSend`` absent (the mission planner, which only simulates): no Send button. */
+export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type: "goal"}>; robot: string | null; src: string | null; onSend?: () => void}) {
   const b = it.body as {goal?: string; points?: string[]; command?: string; engine?: string; constraints?: {predicate: string; symbols: string[]}[]};
   const sent = it.sent;
   const {engines, engine: chosen, loaded} = useEngines();
@@ -1193,7 +1219,7 @@ export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type:
             {pv?.busy ? "planning…" : shown ? "Hide preview" : "Preview"}
           </button>
         )}
-        <button
+        {onSend ? <button
           className="btn btn-sm btn-primary goal-send-btn"
           disabled={Boolean(it.superseded) || Boolean(sent && sent.tone !== "err")}
           onClick={onSend}
@@ -1201,7 +1227,7 @@ export function GoalCard({it, robot, src, onSend}: {it: Extract<ChatItem, {type:
           data-testid="goal-send"
         >
           Send to {sendLabel(robot, it.team)}
-        </button>
+        </button> : <span className="small muted" data-testid="goal-send-viewer-only">Sending goals to robots is in the Robot view</span>}
       </div>
       {pv?.err && (
         <div className="small tone-err">
@@ -1362,6 +1388,17 @@ function AutoSendCard({it}: {it: AutoSendItem}) {
           skipped: {it.skipped.map(s => `${s.name} (${s.reason})`).join(", ")}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A robot reached / failed its goal (lib/goalEvents): one line in the log. */
+function GoalEventLine({event}: {event: GoalEvent}) {
+  const tone = event.stage === "done" ? "ok" : event.stage === "failed" ? "err" : "warn";
+  return (
+    <div className={`msg msg-goal-event tone-${tone}`} data-testid="goal-event-line" title={event.text}>
+      <span aria-hidden="true">{event.stage === "done" ? "✓" : event.stage === "failed" ? "✕" : "■"}</span> {eventLine(event)}
+      {event.text && <div className="small muted">{event.text}</div>}
     </div>
   );
 }

@@ -19,7 +19,7 @@ import {ObjectImages, SearchThumb, useImaged, type ImageInfo} from "./objectImag
 import {PlaceKeyframes, usePlaceReturn} from "./PlaceKeyframes";
 import {placeLabelsKey, useViewStyle, type PlaceLabelsKey} from "../stores/viewStyle";
 import {BackgroundControl, HeightsControl, PathControls, RegionControls, RobotLookControl, ThemeControl} from "./StylePanels";
-import {ClearPathsRow} from "./ClearPaths";
+import {ClearMapRow, ClearPathsRow} from "./ClearPaths";
 import {GroundImageryControls} from "./GroundImagery";
 
 const KIND_LABEL: Record<string, string> = {neo4j: "Neo4j", file: "file", live: "live"};
@@ -275,6 +275,7 @@ export function DisplayPanel() {
       <Toggle checked={showText} onChange={v => set({showText: v})} label="Text labels" />
       <PlaceLabelsToggles />
       <ClearPathsRow />
+      <ClearMapRow />
       <label className="slider-row">
         <span>Other robots</span>
         <select

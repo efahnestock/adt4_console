@@ -6,6 +6,7 @@
 // Satellite display lives here too (§14).
 import {create} from "zustand";
 import {ApiError, deleteJSON, errorText, getJSON, postJSON, putJSON} from "../lib/api";
+import {withToken} from "../lib/auth";
 import {fastDownwardOf, type FastDownwardInfo} from "../lib/fastDownward";
 import {geoCenter, pickLayer, type GeoInfo, type TileLayer} from "../lib/geo";
 import {roundXY, startLockReason, type StartDrag} from "../lib/agentStart";
@@ -49,6 +50,18 @@ export interface Planted {
   label: string;
   pos: number[];
   size_m?: number;
+  /** its object symbol, the next free one after the map's objects (O(700) on a map
+   *  ending at O(699)): a ground goal names it like any object (o700) */
+  sym?: string;
+}
+
+/** The next free mock-object symbol: after the map's real objects (`nextObject`,
+ *  from api/missions/world) and the mission's other mock objects. The server
+ *  renumbers one a real object takes later. */
+export function nextMockSym(planted: readonly Planted[], nextObject?: number): string | undefined {
+  if (nextObject === undefined) return undefined; // the server numbers it
+  const used = planted.map(p => Number(/\d+/.exec(p.sym ?? "")?.[0])).filter(n => Number.isFinite(n));
+  return `O(${Math.max(nextObject, ...used.map(n => n + 1))})`;
 }
 
 export interface Mission {
@@ -193,6 +206,8 @@ export type MapTool = {kind: "none"} | {kind: "start"; agent: string} | {kind: "
 export interface Area {
   name: string;
   polygon: number[][];
+  /** saved to the map but the edit is staged (robots live): listed as the map's once published */
+  staged?: boolean;
 }
 
 export type AreaPurpose = "search" | "no_go";
@@ -248,7 +263,7 @@ interface MissionStore {
   satOpacity: number;
   /** imagery layer picked in the Satellite section (null: the manifest's default) */
   satLayer: string | null;
-  world: {src: string | null; bounds: number[] | null; start_hint: number[] | null} | null;
+  world: {src: string | null; bounds: number[] | null; start_hint: number[] | null; next_object?: number} | null;
   // operator inputs
   roster: Agent[];
   areas: Area[];
@@ -350,7 +365,7 @@ export async function loadGeo(src: string | null): Promise<void> {
   try {
     const layers = await getJSON<{layers: TileLayer[]}>("api/geo/layers");
     st().set({layers: layers.layers});
-    const world = await getJSON<{src: string | null; bounds: number[] | null; start_hint: number[] | null}>(`api/missions/world${src ? `?src=${enc(src)}` : ""}`).catch(() => null);
+    const world = await getJSON<{src: string | null; bounds: number[] | null; start_hint: number[] | null; next_object?: number}>(`api/missions/world${src ? `?src=${enc(src)}` : ""}`).catch(() => null);
     st().set({world});
     // no mission map (a console on a bag or a live robot map): the map the viewer shows
     const s = src ?? world?.src ?? viewerGeoSrc();
@@ -538,6 +553,91 @@ export async function saveCurrent(name: string, chat: {items: unknown[]; transcr
   }
 }
 
+/** The mission file the Export button downloads (`?token=` added where needed). */
+export function exportUrl(id: string): string {
+  return withToken(`api/missions/${enc(id)}/export`);
+}
+
+/** Import an exported mission file as a new saved mission and open it.
+ *  Returns false (with the reason in `error`) for a file that is not one. */
+/** Every saved mission as one JSON file (``drafts``: unsaved ones too). */
+export function exportAllUrl(drafts = false): string {
+  return withToken(`api/missions/export_all${drafts ? "?drafts=true" : ""}`);
+}
+
+/** A file holding several missions: an "Export all" bundle or a JSON list. */
+export const isBundle = (data: unknown) => Array.isArray(data) || (!!data && typeof data === "object" && Array.isArray((data as {missions?: unknown}).missions));
+
+export interface ImportReport {
+  imported: {id: string; name: string}[];
+  errors: {file: string; name?: string | null; error: string}[];
+}
+
+/** Import one or more files, each a single mission or a bundle; every mission
+ *  becomes a new saved one. One mission alone opens; otherwise the list refreshes. */
+export async function importMissionFiles(files: File[]): Promise<ImportReport> {
+  const rep: ImportReport = {imported: [], errors: []};
+  st().set({busy: "save", error: null});
+  let single: {mission: Mission; preview: Preview} | null = null;
+  try {
+    for (const f of files) {
+      let data: unknown;
+      try {
+        data = JSON.parse(await f.text());
+      } catch {
+        rep.errors.push({file: f.name, error: "not a JSON file"});
+        continue;
+      }
+      try {
+        if (isBundle(data)) {
+          const r = await postJSON<{imported: {id: string; name: string}[]; errors: {index: number; name?: string | null; error: string}[]}>("api/missions/import_all", data);
+          rep.imported.push(...r.imported);
+          rep.errors.push(...r.errors.map(e => ({file: f.name, name: e.name, error: e.error})));
+        } else {
+          const r = await postJSON<{mission: Mission; preview: Preview}>("api/missions/import", data);
+          rep.imported.push({id: r.mission.id, name: r.mission.name});
+          single = r;
+        }
+      } catch (e) {
+        rep.errors.push({file: f.name, error: errorText(e)});
+      }
+    }
+    if (rep.imported.length === 1 && single) {
+      st().set({current: single.mission, preview: single.preview, run: null});
+      follow(single.mission.id);
+      fitMission();
+    }
+    if (rep.errors.length) st().set({error: `import: ${rep.errors.map(e => `${e.name ?? e.file}: ${e.error}`).join("; ")}`});
+    void refreshList();
+    return rep;
+  } finally {
+    st().set({busy: null});
+  }
+}
+
+export async function importMission(file: File): Promise<boolean> {
+  st().set({busy: "save", error: null});
+  try {
+    let data: unknown;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      throw new Error(`${file.name} is not a JSON file`);
+    }
+    const r = await postJSON<{mission: Mission; preview: Preview}>("api/missions/import", data);
+    st().set({current: r.mission, preview: r.preview, run: null});
+    follow(r.mission.id);
+    fitMission();
+    void refreshList();
+    return true;
+  } catch (e) {
+    st().set({error: `import: ${errorText(e)}`});
+    return false;
+  } finally {
+    st().set({busy: null});
+  }
+}
+
 export async function deleteMission(id: string) {
   await deleteJSON(`api/missions/${enc(id)}`).catch(e => st().set({error: errorText(e)}));
   if (st().current?.id === id) closeMission();
@@ -717,7 +817,7 @@ export function onMapClick(p: number[], sym: string | null = null): boolean {
       void moveStart(t.agent, xy);
       return true;
     case "plant":
-      s.set({planted: [...s.planted, {label: t.label, pos: xy, size_m: 1.5}]});
+      s.set({planted: [...s.planted, {label: t.label, pos: xy, size_m: 1.5, sym: nextMockSym(s.planted, s.world?.next_object)}]});
       return true;
     case "area":
       s.set({draft: [...s.draft, xy]});
@@ -839,7 +939,8 @@ export function finishDraft(): boolean {
   return pts.length >= 3;
 }
 
-/** Area names in use (case-insensitive), mission and map scope. */
+/** Area names in use (case-insensitive), mission and map scope: only for picking a
+ *  fresh default name. Names need not be unique (a map can have two "loading dock"s). */
 export function takenAreaNames(mapNames: readonly (string | null | undefined)[] = []): Set<string> {
   const s = st();
   return new Set([...s.areas.map(a => a.name), ...s.fences.map(f => f.id), ...mapNames].filter((n): n is string => !!n).map(n => n.trim().toLowerCase()));
@@ -858,10 +959,11 @@ export function addMissionArea(name: string, polygon: number[][], purpose: AreaP
   else s.set({areas: [...s.areas, {name, polygon}], pendingArea: null});
 }
 
-export function removeMissionArea(name: string, purpose: AreaPurpose) {
+/** Remove a mission-only area by its place in the list (names may repeat). */
+export function removeMissionArea(index: number, purpose: AreaPurpose) {
   const s = st();
-  if (purpose === "no_go") s.set({fences: s.fences.filter(f => f.id !== name)});
-  else s.set({areas: s.areas.filter(a => a.name !== name)});
+  if (purpose === "no_go") s.set({fences: s.fences.filter((_, i) => i !== index)});
+  else s.set({areas: s.areas.filter((_, i) => i !== index)});
 }
 
 // ------------------------------------------------------ fixing a mission
