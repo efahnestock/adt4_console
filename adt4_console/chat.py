@@ -1172,12 +1172,71 @@ class ChatService:
         return ("; ".join(parts) + ": this goal does not name it, so it is put down where the robot "
                 "stands before the plan starts. To carry it, use object-placed-by (or keep holding in the goal)")  # fmt: skip
 
+    def _busy(self) -> dict:
+        """{robot: goal summary} of the robots executing a goal now ({} when the
+        console does not track goals)."""
+        goals = getattr(self.ros, "goals", None)
+        try:
+            return dict(goals.busy_robots()) if goals is not None else {}
+        except Exception:  # noqa: BLE001 — a warning must never block a goal
+            return {}
+
+    def _available(self, row: dict) -> bool:
+        """A roster robot that can be given a task now: connected, or, when the
+        console has no link state for it, one it has a pose from (the topology
+        also lists robots that are not out at all)."""
+        if row["online"] is not None:
+            return bool(row["online"])
+        try:
+            return self._robot_pos(row["robot"]) is not None
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _scope_suggestion(self, message: str, roster: list, offline: set) -> str:
+        """For a goal with a robot-free task and no use-robots, proposed while
+        robots are executing: say so and which robots are free.
+
+        The planner treats such a goal as the whole team's. It may then replan
+        every robot, and a later replan of the mission (a place removed on a
+        route) is the team's too. A goal limited to robots (use-robots, or -by
+        tasks) touches only those robots, now and when it is replanned.
+        Nothing when the operator asked for the whole team."""
+        if WHOLE_TEAM.search(message or ""):
+            return ""
+        executing = self._busy()
+        busy = [
+            r["robot"]
+            for r in roster
+            if r["robot"] in executing and r["robot"] not in offline
+        ]
+        if not busy:
+            return ""
+        free = [
+            r["robot"] for r in roster if r["robot"] not in busy and self._available(r)
+        ]
+        them = "it" if len(busy) == 1 else "them"
+        text = (
+            f"{_and(busy)} {'is' if len(busy) == 1 else 'are'} executing a goal and this "
+            f"goal has a task naming no robot: the planner plans it for the whole team and may "
+            f"interrupt {them}. "
+        )
+        if free:
+            return text + (
+                f"To leave {them} alone, limit it to the free robot"
+                f"{'' if len(free) == 1 else 's'}: use-robots {' '.join(free)}"
+            )
+        return text + (
+            "No robot is free: name the robot that should do it (use-robots, or a "
+            "-by task) so only that robot is replanned"
+        )
+
     def _roster_text(self, selected: str | None = None) -> str:
         """ " Fleet roster: ..." for the system prompt ("" without robots)."""
         rows = fleet_roster(self.ros, self.live)
         if not rows:
             return ""
         holding = self._holding()
+        busy = self._busy()
         lines = []
         for r in rows:
             line = f"- {r['robot']}: {r['label']} — {r['can']}"
@@ -1186,6 +1245,8 @@ class ChatService:
             if holding.get(r["robot"]):
                 # the planner puts a held object down before a goal that does not name it
                 line += f"; HOLDING {', '.join(holding[r['robot']])}"
+            if r["robot"] in busy:
+                line += "; EXECUTING a goal now"
             if r["robot"] == selected:
                 line += " (selected)"
             lines.append(line)
@@ -1448,6 +1509,13 @@ class ChatService:
         )
         if put_down:
             card["warning"] = "; ".join(x for x in (card.get("warning"), put_down) if x)
+        scope = (
+            self._scope_suggestion(message, roster, offline)
+            if unnamed and not self._sim_only(turn)
+            else ""
+        )
+        if scope:
+            card["warning"] = "; ".join(x for x in (card.get("warning"), scope) if x)
         if replaces:
             card["replaces"] = True
         note = "The operator approves and sends it once, to the whole team."
@@ -1456,6 +1524,12 @@ class ChatService:
         out = {"proposed": True, "note": note, "team": team, "sent_through": target}
         if card.get("warning"):
             out["warning"] = card["warning"]
+        if scope:
+            out["suggest_to_operator"] = (
+                f"{scope}. Tell the operator this in one or two sentences and offer to "
+                "propose the goal again with that constraint. Do not propose it again "
+                "until the operator says so; the goal as proposed stays on screen."
+            )
         return [card], out
 
     def _show_images(self, symbols, src):
@@ -1934,6 +2008,21 @@ PLATFORM_CAN = {
         "navigates and inspects only; never picks, places or drags",
     ),
 }
+
+
+# the operator asks for every robot, or to replace what is running
+WHOLE_TEAM = re.compile(
+    r"\b(?:all|every|each|whole|entire)\s+(?:of\s+)?(?:the\s+|our\s+)?(?:\w+\s+)?"
+    r"(?:robots?|spots?|husk(?:y|ies)|team|fleet)\b"
+    r"|\bthe\s+(?:whole\s+|entire\s+)?(?:team|fleet)\b|\beveryone\b|\beverybody\b"
+    r"|\bany\s+(?:free\s+)?robot\b|\bnew\s+mission\b|\breplan\s+(?:the\s+)?(?:team|mission)\b",
+    re.I,
+)
+
+
+def _and(names) -> str:
+    names = list(names)
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def operator_named_robots(message: str, robots) -> set[str]:
