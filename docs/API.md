@@ -543,6 +543,39 @@ answerable, expires it after 5 min, and drops the images once answered.
   `nlu_interface_rviz` must be importable in `spark_env` (it is where the RViz panel is built),
   else the bridge logs a warning and `pending` stays empty.
 
+### 9d. Pick result (`routes/pick_result.py`, `pick_result_service.py`)
+
+After a pick Spot believes worked, `spot_executor_node` asks the operator whether the robot
+really holds the object, and waits with the object in the gripper (executor parameter
+`confirm_pick_result`, default true). The question is one `std_msgs/String` JSON on
+`/<r>/spot_executor_node/pick_result_request` (latched, repeated every 20 s while unanswered):
+`{request_id, object_id, object_class, attempt, gripper_holding, images: [{name, jpeg_b64}]}`.
+The answer is one `std_msgs/String` JSON on `/<r>/spot_executor_node/pick_result`:
+`{request_id, result}`. When the robot stops waiting it publishes
+`{request_id, closed: <result | "stopped">}` on the question topic.
+
+| result | what the robot does |
+|---|---|
+| `picked` | reports holding to the map and continues with the plan |
+| `retry` | opens the gripper, stows the arm and runs the pick again (a new grasp approval, then a new question); not counted against the executor's three attempts |
+| `give_up` | opens the gripper, stows, reports the pick `FAILED` and ends its action sequence |
+
+* `GET /api/pick_result/pending` → `{available, error, requests: [{id, robot, object_id,
+  object_class, attempt, gripper_holding, images: [{name, width, height}], received_at}]}`:
+  one open question per robot, oldest first. `id` is the robot's `request_id`.
+* `GET /api/pick_result/requests/{id}/images/{index}` → the JPEG (`no-store`).
+* `POST /api/pick_result/requests/{id}/respond` `{result}` → publishes the answer. 404: the
+  question is no longer open (answered, closed by the robot, or replaced). 422: unknown
+  result. 503: nothing received the answer (no subscriber in router mode; not relayed or
+  not acknowledged in fleetlink mode); the question stays open and can be answered again,
+  because the robot ignores an answer whose `request_id` it is not waiting on.
+* Hub topic `manipulation/pick_result` carries the same payload as `pending` on every change.
+* The web console opens the question by itself on every page ("Later" hides it behind a
+  button; the robot keeps waiting). A console started while a robot waits shows the
+  question at the robot's next repeat. A stop or a new plan for the robot closes the question:
+  the robot then keeps its own belief that it holds the object.
+* fleetlink mode needs `relay.yaml` to carry `pick_result_request` up and `pick_result` down.
+
 ## 10. Chat (optional LLM): Cypher-first
 
 Modelled on heracles_agents `chatdsg`: Cypher over the planner's Neo4j map is how the

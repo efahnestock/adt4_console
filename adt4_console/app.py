@@ -32,6 +32,7 @@ from .manipulation_service import (
     ros_response_publisher,
 )
 from .optional import FeatureUnavailable
+from .pick_result_service import PickResultService, ros_answer_publisher
 from .ros_bridge import RosBridge, RosUnavailable
 from .settings import Settings
 from .teleop_service import TeleopService
@@ -87,6 +88,8 @@ class Services:
         None  # scene_repair.SceneRepair: scene change -> replan (API.md §20)
     )
     manipulation: ManipulationApprovalService | None = None
+    # pick_result_service.PickResultService: "did the robot pick it up?"
+    pick_result: PickResultService | None = None
     planner_state: object = (
         None  # planner_state.PlannerState: what the planner believes
     )
@@ -191,6 +194,13 @@ def build_services(
         error=lambda: svc.ros.error,
     )
     ros.manipulation = svc.manipulation
+    svc.pick_result = PickResultService(
+        ros_answer_publisher(ros),
+        hub,
+        available=lambda: svc.ros.available,
+        error=lambda: svc.ros.error,
+    )
+    ros.pick_result = svc.pick_result
     from .planner_state import PlannerState
 
     svc.planner_state = PlannerState(settings, ros, svc.maps, fleet, hub)
@@ -481,6 +491,7 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
         maps,
         mission,
         network,
+        pick_result,
         plan,
         planner_state,
         quad,
@@ -493,8 +504,8 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
     )
 
     for mod in (fleet, launch, jobs, network, maps, graph, plan, live, chat, sam3, teleop, terminal,
-                geo, mission, quad, edit, change_detection, scene_repair, manipulation, planner_state,
-                drives, trials, ws):  # fmt: skip
+                geo, mission, quad, edit, change_detection, scene_repair, manipulation, pick_result,
+                planner_state, drives, trials, ws):  # fmt: skip
         app.include_router(mod.router)
     app.include_router(live.robots_router)
 
