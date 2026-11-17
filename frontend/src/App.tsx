@@ -6,6 +6,7 @@ import {FleetPage} from "./pages/Fleet";
 import {LaunchPage} from "./pages/Launch";
 import {MapsPage} from "./pages/Maps";
 import {NetworkPage} from "./pages/Network";
+import {DrivesPage} from "./pages/Drives";
 import {ConfigPage} from "./pages/Config";
 import {ManipulationApprovalHost} from "./viewer/ManipulationApproval";
 import {PickResultHost} from "./viewer/PickResult";
@@ -39,6 +40,7 @@ const router = createHashRouter([
         ),
       },
       {path: "network", element: <NetworkPage />},
+      {path: "drives", element: <DrivesPage />},
       {path: "config", element: <ConfigPage />},
       {path: "*", element: <Navigate to="/fleet" replace />},
     ],
