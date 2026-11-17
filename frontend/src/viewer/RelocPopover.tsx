@@ -81,9 +81,14 @@ export function RelocPopover({robot, ctx, onClose}: {robot: string; ctx: RelocCo
         <dt>Last Hydra optimization</dt>
         <dd data-testid={`reloc-pop-opt-${robot}`}>
           {opt ? (
-            <>
-              {fmtAgo(opt.agoS + since)} · took {fmtTook(opt.tookS)}
-            </>
+            // Hydra main's note says only how long it took (no "s ago")
+            opt.agoS !== null ? (
+              <>
+                {fmtAgo(opt.agoS + since)} · took {fmtTook(opt.tookS)}
+              </>
+            ) : (
+              <>took {fmtTook(opt.tookS)}</>
+            )
           ) : (
             optText
           )}

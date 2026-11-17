@@ -182,16 +182,21 @@ export function hydraMatches(node: HealthNode | null | undefined): {accepted: nu
  *  routes/change_detection.py RELOC_MIN_HYDRA_LCS). */
 export const RELOC_MIN_HYDRA_LCS = 5;
 
-/** "...; last optimization took 0.412 s, 12.3 s ago" (hydra_multi status note,
- *  Hydra feat/hydra-multi-status-optimization). */
-const HYDRA_OPT_RE = /last\s+optimization\s+took\s+([\d.]+)\s*s\s*,\s*([\d.]+)\s*s\s+ago/i;
+/** "...; last optimization took 0.412 s" (hydra_multi status note, Hydra #224 on
+ *  Hydra main) or "... took 0.412 s, 12.3 s ago" (the earlier
+ *  feat/hydra-multi-status-optimization branch). The ", Y s ago" part is
+ *  optional: requiring it never matched Hydra main's note (backend
+ *  routes/change_detection.py HYDRA_OPT_RE). */
+const NUM = String.raw`[\d.]+(?:e[-+]?\d+)?`;
+const HYDRA_OPT_RE = new RegExp(String.raw`last\s+optimization\s+took\s+(${NUM})\s*s\b(?:\s*,\s*(${NUM})\s*s\s+ago)?`, "i");
 
-/** hydra_multi's last optimization: how long it took and how long before the
- *  note was published it finished; null when the note does not say (no
+/** hydra_multi's last optimization: how long it took and, when the note says
+ *  (older branch only), how long before the note was published it finished
+ *  (`agoS` null on Hydra main); null when the note has no timing (no
  *  optimization yet, or an older hydra_multi). */
-export function hydraOptimization(node: HealthNode | null | undefined): {tookS: number; agoS: number} | null {
+export function hydraOptimization(node: HealthNode | null | undefined): {tookS: number; agoS: number | null} | null {
   const m = node?.notes ? HYDRA_OPT_RE.exec(node.notes) : null;
-  return m ? {tookS: Number(m[1]), agoS: Number(m[2])} : null;
+  return m ? {tookS: Number(m[1]), agoS: m[2] ? Number(m[2]) : null} : null;
 }
 
 /** A ``map -> odom`` this far from the initial estimate is an alignment, not
