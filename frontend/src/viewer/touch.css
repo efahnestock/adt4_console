@@ -38,7 +38,8 @@
   .phone-bar .segmented button {
     min-width: 52px;
   }
-  .pop-btn,
+  /* (panes.css loads after this file: these need the extra class) */
+  .vright-head .pop-btn,
   .drive-cam .pop-btn {
     width: 44px;
     height: 44px;
