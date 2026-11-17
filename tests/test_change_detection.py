@@ -345,6 +345,19 @@ def test_hydra_optimization_from_the_monitor_note():
     assert hydra_optimization(None) is None
 
 
+def test_hydra_optimization_note_of_hydra_main():
+    """Hydra #224 (Hydra main) writes no "Y s ago": the timing must still parse
+    (the console never showed it on 2026-11-15 because the regex required it)."""
+    h = _hydra("7 / 9")
+    h["nodes"][1]["notes"] = "7 / 9 valid interrobot loop closures; last optimization took 0.412 s"
+    assert hydra_matches(h) == (7, 9)
+    assert hydra_optimization(h) == {"took_s": 0.412, "ago_s": None}
+    r = relocalized({"frame_align": FA_OK, "reloc": RELOC_ZERO, "health": h})
+    assert r["ok"] and r["optimization"] == {"took_s": 0.412, "ago_s": None}
+    h["nodes"][1]["notes"] = "7 / 9 valid interrobot loop closures; last optimization took 1.25e-01 s"
+    assert hydra_optimization(h) == {"took_s": 0.125, "ago_s": None}
+
+
 def test_map_odom_move_is_reported_but_not_relocalized():
     # from identity (agent started after the relocalization: no move of its own)
     r = relocalized({"frame_align": FA_MOVED, "reloc": RELOC_ZERO}, "hamilton")

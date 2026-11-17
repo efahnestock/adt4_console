@@ -131,6 +131,12 @@ describe("relocalization status", () => {
     expect(hydraOptimization({notes: "0 / 0 valid interrobot loop closures; no optimization yet"})).toBeNull();
     expect(hydraOptimization(hydra("3 / 4"))).toBeNull();
   });
+  it("reads Hydra main's optimization note, which has no 's ago' part (Hydra #224)", () => {
+    const n = {notes: "7 / 9 valid interrobot loop closures; last optimization took 0.412 s"};
+    expect(hydraMatches(n)).toEqual({accepted: 7, total: 9});
+    expect(hydraOptimization(n)).toEqual({tookS: 0.412, agoS: null});
+    expect(hydraOptimization({notes: "7 / 9 valid interrobot loop closures; last optimization took 1.25e-01 s"})).toEqual({tookS: 0.125, agoS: null});
+  });
   it("says aligned (no hydra count) when map -> odom moved from the initial estimate", () => {
     // from identity: the agent started after the relocalization
     const s = relocStatus({...FA, T: [-25, 7.5, 0, 1, 0, 0, 0]}, none(), 1, 0, {hydraMulti: null});
