@@ -8,6 +8,9 @@
 // is focused, else one main camera (its first) per live robot; clicking a
 // robot's tile focuses that robot. `compact` (phone drive layout) keeps only
 // the picture and the camera picker.
+// `preferVideo` (the drive layout, i.e. teleop): a focused robot's camera opens
+// as live video; stills are the backup, picked by hand or automatically when no
+// video arrives (VideoView onUnavailable).
 import {useEffect, useRef, useState} from "react";
 import {getJSON, errorText} from "../lib/api";
 import {getToken} from "../lib/auth";
@@ -204,10 +207,10 @@ function RobotMainTile({robot}: {robot: string}) {
   );
 }
 
-export function CameraPanel({compact = false}: {compact?: boolean}) {
+export function CameraPanel({compact = false, preferVideo = false}: {compact?: boolean; preferVideo?: boolean}) {
   const robots = useLiveRobots();
   const focused = useFocusedRobot();
-  if (focused) return <RobotCameras key={focused} robot={focused} live={robots.includes(focused)} compact={compact} />;
+  if (focused) return <RobotCameras key={focused} robot={focused} live={robots.includes(focused)} compact={compact} preferVideo={preferVideo} />;
   if (!robots.length) return <Empty title="No live robots">Camera frames come from a robot's fleetlink agent. None has reported yet.</Empty>;
   return (
     <div className={`camera-panel ${compact ? "compact" : ""}`}>
@@ -221,13 +224,24 @@ export function CameraPanel({compact = false}: {compact?: boolean}) {
   );
 }
 
-function RobotCameras({robot: r, live, compact: dense}: {robot: string; live: boolean; compact: boolean}) {
+function RobotCameras({robot: r, live, compact: dense, preferVideo = false}: {robot: string; live: boolean; compact: boolean; preferVideo?: boolean}) {
   // compact (drive layout panes): picture + camera picker; "⋯" shows the rest
   const [more, setMore] = useState(false);
   const compact = dense && !more;
   const [cams, setCams] = useState<string[]>([]);
   const [cam, setCam] = useState<string>("");
-  const [mode, setMode] = useState<"still" | "video" | "grid">("still");
+  const [mode, setMode] = useState<"still" | "video" | "grid">(preferVideo ? "video" : "still");
+  // why video fell back to stills by itself (null: the operator's own choice)
+  const [fallback, setFallback] = useState<string | null>(null);
+  // entering the drive layout with the panel already open: switch to video
+  const prevPrefer = useRef(preferVideo);
+  useEffect(() => {
+    if (preferVideo && !prevPrefer.current) {
+      setMode(m => (m === "still" ? "video" : m));
+      setFallback(null);
+    }
+    prevPrefer.current = preferVideo;
+  }, [preferVideo]);
   const [gridKind, setGridKindRaw] = useState<"stills" | "video">(loadGridKind);
   const setGridKind = (k: "stills" | "video") => {
     setGridKindRaw(k);
@@ -263,7 +277,12 @@ function RobotCameras({robot: r, live, compact: dense}: {robot: string; live: bo
   };
   const pickMode = (m: "still" | "video" | "grid") => {
     takeOver();
+    setFallback(null);
     setMode(m);
+  };
+  const videoFailed = (reason: string) => {
+    setFallback(reason);
+    setMode("still");
   };
   const pickCam = (c: string) => {
     takeOver();
@@ -425,7 +444,7 @@ function RobotCameras({robot: r, live, compact: dense}: {robot: string; live: bo
           ))}
         </div>
       ) : effMode === "video" ? (
-        r && shownCam ? <VideoView key={`${r}/${shownCam}${grasp ? "/grasp" : ""}`} robot={r} cam={shownCam} tune={grasp ? GRASP_TUNE : undefined} /> : <div className="muted small">No camera</div>
+        r && shownCam ? <VideoView key={`${r}/${shownCam}${grasp ? "/grasp" : ""}`} robot={r} cam={shownCam} tune={grasp ? GRASP_TUNE : undefined} onUnavailable={grasp ? undefined : videoFailed} /> : <div className="muted small">No camera</div>
       ) : (
         stillView()
       )}
@@ -435,6 +454,14 @@ function RobotCameras({robot: r, live, compact: dense}: {robot: string; live: bo
   function stillView() {
     return (
       <>
+        {fallback && (
+          <div className="small tone-warn row gap-sm wrap" data-testid="video-fallback">
+            <span>Video unavailable ({fallback}): showing stills.</span>
+            <button className="btn btn-xs" onClick={() => pickMode("video")}>
+              Try video
+            </button>
+          </div>
+        )}
         {!compact && (
           <div className="row gap-sm wrap">
             <Toggle checked={auto} onChange={setAuto} label="Auto refresh" />

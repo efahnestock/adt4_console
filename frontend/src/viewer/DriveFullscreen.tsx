@@ -31,7 +31,9 @@ const stickRadius = (w: number, h: number) => Math.max(48, Math.min(90, Math.min
 const POLL_MS = 3000;
 const VIEW_KEY = "adt4.driveFull.view";
 const QUALITY_KEY = "adt4.driveFull.quality";
-const MEDIA_KEY = "adt4.driveFull.media";
+// video first, stills as the backup: ".v2" drops a Stills choice remembered
+// before video fell back to stills by itself (an explicit pick is kept again)
+const MEDIA_KEY = "adt4.driveFull.media.v2";
 
 export type DriveView = {kind: "cam"; cam: string} | {kind: "all"} | {kind: "map"};
 type Media = "video" | "still";
@@ -140,6 +142,12 @@ export function DriveFullscreen({robot, onExit}: {robot: string; onExit: () => v
     takeOver();
     setMediaRaw(m);
     save(MEDIA_KEY, m);
+    if (m === "video") setNote(null); // a fallback note is stale now
+  };
+  /** no video frames: stills for now (not remembered: the next drive tries video again) */
+  const videoFailed = (reason: string) => {
+    setMediaRaw("still");
+    setNote(`Video unavailable (${reason}): showing stills. View menu › Video retries.`);
   };
   useEffect(() => {
     let alive = true;
@@ -373,7 +381,7 @@ export function DriveFullscreen({robot, onExit}: {robot: string; onExit: () => v
           ))}
         </div>
       );
-    return media === "video" ? <VideoView key={`${robot}/${view.cam}`} robot={robot} cam={view.cam} bare tune={QUALITY[quality]} /> : <StillPicture key={`${robot}/${view.cam}`} robot={robot} cam={view.cam} />;
+    return media === "video" ? <VideoView key={`${robot}/${view.cam}`} robot={robot} cam={view.cam} bare tune={QUALITY[quality]} onUnavailable={grasp ? undefined : videoFailed} /> : <StillPicture key={`${robot}/${view.cam}`} robot={robot} cam={view.cam} />;
   };
 
   const moving = armed && !isZero(cmd);
