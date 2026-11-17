@@ -61,7 +61,11 @@ def fallback_rgb(root: pathlib.Path, layer: str | None, z: int, x: int, y: int):
     for dz in range(0, z + 1):
         base = root / layer / str(z - dz) / str(x >> dz) / str(y >> dz)
         p = next(
-            (q for q in (base.with_suffix(e) for e in (".jpg", ".png", ".jpeg")) if q.exists()),
+            (
+                q
+                for q in (base.with_suffix(e) for e in (".jpg", ".png", ".jpeg"))
+                if q.exists()
+            ),
             None,
         )
         if p is None:
@@ -124,7 +128,11 @@ def cut(args) -> dict:
         for (x, y), t in rgba.items():
             alpha = t[..., 3:4].astype(np.float32) / 255.0
             fb = fallback_rgb(args.tiles_dir, args.fallback, z, x, y)
-            base = fb.astype(np.float32) if fb is not None else np.full((256, 256, 3), 128, np.float32)
+            base = (
+                fb.astype(np.float32)
+                if fb is not None
+                else np.full((256, 256, 3), 128, np.float32)
+            )
             rgb = (t[..., :3] * alpha + base * (1 - alpha)).round().astype(np.uint8)
             p = out / str(z) / str(x) / f"{y}.jpg"
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -136,7 +144,9 @@ def cut(args) -> dict:
         parents = {}
         for (x, y), t in rgba.items():
             P = parents.setdefault((x >> 1, y >> 1), np.zeros((512, 512, 4), np.uint8))
-            P[(y & 1) * 256 : (y & 1) * 256 + 256, (x & 1) * 256 : (x & 1) * 256 + 256] = t
+            P[
+                (y & 1) * 256 : (y & 1) * 256 + 256, (x & 1) * 256 : (x & 1) * 256 + 256
+            ] = t
         rgba = {}
         for k, P in parents.items():
             f = P.astype(np.float32)
@@ -145,8 +155,17 @@ def cut(args) -> dict:
             pre = pre.reshape(256, 2, 256, 2, 4).mean((1, 3))
             a_ = pre[..., 3:4] / 255.0
             rgb = np.where(a_ > 0, pre[..., :3] / np.maximum(a_, 1e-6), 0)
-            rgba[k] = np.concatenate([rgb, pre[..., 3:4]], -1).clip(0, 255).round().astype(np.uint8)
-    fill = f"transparent areas filled from {args.fallback}" if args.fallback else "no fallback"
+            rgba[k] = (
+                np.concatenate([rgb, pre[..., 3:4]], -1)
+                .clip(0, 255)
+                .round()
+                .astype(np.uint8)
+            )
+    fill = (
+        f"transparent areas filled from {args.fallback}"
+        if args.fallback
+        else "no fallback"
+    )
     return {
         "layer": args.layer,
         "attribution": args.attribution,
@@ -173,13 +192,22 @@ def main(argv=None) -> None:
         help="GeoTIFF orthophoto (RGB or RGBA, any CRS; left out with --manifest-only), "
         "the console's --tiles-dir, the layer name (letters, digits, _ and -)",
     )
-    ap.add_argument("--zmin", type=int, default=15, help="coarsest zoom to write (default 15)")
-    ap.add_argument("--zmax", type=int, default=22, help="finest zoom, warped from the GeoTIFF (default 22)")
+    ap.add_argument(
+        "--zmin", type=int, default=15, help="coarsest zoom to write (default 15)"
+    )
+    ap.add_argument(
+        "--zmax",
+        type=int,
+        default=22,
+        help="finest zoom, warped from the GeoTIFF (default 22)",
+    )
     ap.add_argument(
         "--fallback",
         help="layer under --tiles-dir that fills transparent pixels and is served around the ortho",
     )
-    ap.add_argument("--attribution", default="", help="credit line shown in the console")
+    ap.add_argument(
+        "--attribution", default="", help="credit line shown in the console"
+    )
     ap.add_argument(
         "--priority",
         type=int,
@@ -195,7 +223,11 @@ def main(argv=None) -> None:
     args = ap.parse_args(argv)
     want = 2 if args.manifest_only else 3
     if len(args.args) != want:
-        ap.error("expected TILES_DIR LAYER" if args.manifest_only else "expected SRC TILES_DIR LAYER")
+        ap.error(
+            "expected TILES_DIR LAYER"
+            if args.manifest_only
+            else "expected SRC TILES_DIR LAYER"
+        )
     args.src = None if args.manifest_only else args.args[0]
     args.tiles_dir, args.layer = pathlib.Path(args.args[-2]), args.args[-1]
     if not args.layer.replace("_", "").replace("-", "").isalnum():
