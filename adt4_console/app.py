@@ -241,7 +241,10 @@ def trial_context(svc) -> dict:
 
     def live_map():
         st = svc.maps.status()
-        keep = {k: st.get(k) for k in ("target", "uri", "run", "name", "dsg", "nodes", "ready")}
+        keep = {
+            k: st.get(k)
+            for k in ("target", "uri", "run", "name", "dsg", "nodes", "ready")
+        }
         dsg = keep.get("dsg")
         if dsg and os.path.isfile(str(dsg)) and os.path.getsize(str(dsg)) < 4 * 10**9:
             h = hashlib.sha256()

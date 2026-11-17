@@ -840,7 +840,9 @@ def test_a_machine_is_removed_and_added_while_the_trial_records(rig):
     rig.t.poll_once()  # a removed machine does not end the trial or get polled
     assert rig.c.get("/api/trials").json()["active"]["state"] == "recording"
     # add it back, and add one that was never in the trial
-    g = rig.c.post("/api/trials/machines/gauss/start").json()["active"]["machines"]["gauss"]
+    g = rig.c.post("/api/trials/machines/gauss/start").json()["active"]["machines"][
+        "gauss"
+    ]
     assert g["state"] == "recording" and g["removed"] is False
     h = rig.c.post("/api/trials/machines/hamilton/start").json()["active"]["machines"]
     assert h["hamilton"]["state"] == "recording"
