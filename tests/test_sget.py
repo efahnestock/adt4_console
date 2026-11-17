@@ -167,6 +167,31 @@ def test_object_changes_are_announced_like_the_writer_does():
     assert c["old_position"] == {"x": 1.0, "y": 2.0, "z": 0.0}
 
 
+def test_the_console_skips_its_own_announcement_when_it_comes_back():
+    """The console subscribes to the topic it announces an edit on.  The copy that
+    came back counted as someone else's change and invalidated the map, so every
+    edit was followed by a full reload, folded in or not."""
+    from adt4_console.scene_repair import SceneRepair
+
+    svc, graph, ros, mod = service()
+    reloads = []
+    ros.scene_repair = SceneRepair(invalidate=lambda: reloads.append(1))
+    card, _ = svc.propose("remove_scene_object", {"symbol": "O3"}, "neo4j:live")
+    assert svc.decide(card["id"], True)["ok"]
+    ((_, _, fields),) = ros.published
+    echo = [{"kind": c["kind"], "symbol": c["symbol"], "label": c["semantic_label"]}
+            for c in fields["changes"]]  # fmt: skip
+    # the announcement as ROS hands it back: already known, nothing reloaded
+    assert ros.scene_repair.on_applied("sget/chat", fields["map_version"], echo) is None
+    assert reloads == []
+    # the repair panel still got the edit, once
+    (batch,) = ros.scene_repair._changes
+    assert batch["source"] == "sget/chat" and batch["changes"][0]["symbol"] == "O3"
+    # somebody else's change still reloads the map
+    ros.scene_repair.on_applied("awcd/euclid", fields["map_version"] + 1, echo)
+    assert reloads == [1]
+
+
 def test_undo_clear_and_reset_call_the_writer_services():
     svc, graph, ros, mod = service()
     for tool, srv in (("undo_scene_edit", "undo_last_edit"), ("clear_scene_edits", "clear_edits"),
@@ -390,3 +415,121 @@ def test_stream_marks_an_sget_message_as_an_edit_turn(monkeypatch):
     list(c.stream("SGET: move object 52 to t142", None, "neo4j:live"))
     list(c.stream("move object 52 to t142", None, "neo4j:live"))
     assert seen == [True, False]
+
+
+# ------------------------------------------- map edits: incremental refresh
+class StoredSrc(FakeSrc):
+    """A Neo4j source over a small stored map: ``{stored nodeSymbol: [held objects]}``."""
+
+    def __init__(self, stored):
+        super().__init__()
+        import threading
+
+        self._lock = threading.RLock()
+        self.stored = dict(stored)
+        self.queries = []
+
+    def query(self, cypher, **params):
+        assert cypher == sget._STORED
+        self.queries.append(sorted(params["names"]))
+        return [{"s": s, "held": held} for s, held in self.stored.items()
+                if s.lower() in params["names"]]  # fmt: skip
+
+
+class ApplyGraph(FakeGraph):
+    """GraphService.apply_change as the console runs it: folds the change in."""
+
+    def __init__(self, src, fail=False):
+        super().__init__()
+        self.src, self.fail, self.applied = src, fail, []
+
+    def apply_change(self, sid, reason, map_version, affected):
+        if self.fail:
+            raise RuntimeError("neo4j went away")
+        self.applied.append((sid, reason, map_version, list(affected)))
+        self.notified.append((sid, reason))
+        return True
+
+
+def incremental(stored, fail=False):
+    src = StoredSrc(stored)
+    graph, ros, mod = ApplyGraph(src, fail), FakeRos(), FakeSge()
+    return sget.SgetService(graph, ros, module=mod), graph, ros, mod
+
+
+def test_a_map_edit_is_folded_in_not_reloaded():
+    svc, graph, ros, mod = incremental({"O3": []})
+    out = svc.run("remove_scene_object", {"symbol": "O3"}, "neo4j:live")
+    assert out["ok"] and out["map_version"] == 2
+    ((sid, reason, version, affected),) = graph.applied
+    assert (sid, reason, version) == ("neo4j:live", "scene edit", 2)
+    assert "O3" in affected and graph.src.invalidated == 0
+
+
+def test_a_place_edit_uses_the_symbol_the_map_stores_and_the_objects_it_held():
+    # scene_change lowercases place ids; the map stores Hydra's T(i) as "T5571"
+    svc, graph, ros, mod = incremental({"T5571": ["O7", "O8"], "T12": []})
+    out = svc.run("remove_scene_place", {"symbol": "t5571"}, "neo4j:live")
+    assert out["ok"]
+    ((_, _, version, affected),) = graph.applied
+    # the objects it held are relinked to their nearest place: their edges change
+    assert version == 2 and set(affected) == {"T5571", "O7", "O8"}
+    assert graph.src.invalidated == 0
+
+
+def test_a_connection_edit_refreshes_both_places():
+    svc, graph, ros, mod = incremental({"T1": [], "T2": [], "T3": []})
+    assert svc.run("disconnect_scene_places", {"place_a": "t1", "place_b": "T2"},
+                   "neo4j:live")["ok"]  # fmt: skip
+    ((_, _, _, affected),) = graph.applied
+    assert set(affected) == {"T1", "T2"}
+
+
+def test_an_added_place_refreshes_itself_and_its_neighbours():
+    svc, graph, ros, mod = incremental({"T1": [], "T2": [], "t999": []})
+    assert svc.run("add_scene_place", {"x": 1, "y": 2, "connect_to": "t1, t2",
+                                       "symbol": "t999"}, "neo4j:live")["ok"]  # fmt: skip
+    ((_, _, _, affected),) = graph.applied
+    assert set(affected) == {"T1", "T2", "t999"}
+
+
+def test_the_poll_cannot_see_an_edit_before_it_is_folded_in():
+    import threading
+
+    svc, graph, ros, mod = incremental({"O3": []})
+    held = []
+    inner = mod.remove_scene_object
+
+    def edit(**kw):
+        # the map-version poll runs on another thread under the source lock
+        t = threading.Thread(
+            target=lambda: held.append(not graph.src._lock.acquire(blocking=False))
+        )
+        t.start()
+        t.join()
+        return inner(**kw)
+
+    mod.remove_scene_object = edit
+    assert svc.run("remove_scene_object", {"symbol": "O3"}, "neo4j:live")["ok"]
+    assert held == [True]
+    assert graph.src._lock.acquire(blocking=False)  # released afterwards
+
+
+def test_an_edit_falls_back_to_a_reload_when_it_cannot_be_folded_in():
+    svc, graph, ros, mod = incremental({"O3": []}, fail=True)
+    assert svc.run("remove_scene_object", {"symbol": "O3"}, "neo4j:live")["ok"]
+    assert graph.src.invalidated == 1 and graph.notified == [
+        ("neo4j:live", "scene edit")
+    ]
+    # nothing named and nothing reported: what changed is unknown, reload it all
+    svc, graph, ros, mod = incremental({})
+    assert svc.run("connect_scene_places", {"place_a": "t1", "place_b": "t2"},
+                   "neo4j:live")["ok"]  # fmt: skip
+    assert graph.applied == [] and graph.src.invalidated == 1
+
+
+def test_writer_tools_still_reload_the_whole_map():
+    svc, graph, ros, mod = incremental({"O3": []})
+    assert svc.run("undo_scene_edit", {}, "neo4j:live")["ok"]
+    assert graph.applied == [] and graph.src.invalidated == 1
+    assert graph.src.queries == []
