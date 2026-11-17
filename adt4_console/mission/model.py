@@ -105,6 +105,9 @@ class PlantedObject(BaseModel):
     label: str
     pos: list[float]  # map [x, y]
     size_m: float = 1.5
+    # its object symbol: the next free one after the map's objects (O(700) on a map ending
+    # at O(699)); a PDDL goal names it as o700 (see mocks)
+    sym: str | None = None
 
 
 class Mission(BaseModel):

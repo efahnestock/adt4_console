@@ -113,9 +113,12 @@ def mission_plan(mission, extra_constraints=()) -> dict | None:
     if mission.planner == "omniplanner" and goal.get("pddl"):
         pddl = str(goal["pddl"])
         if AREA_SYMBOL.search(pddl) or goal.get("areas"):
-            return {
-                "fallback": "the goal names a drawn mission area, which only the console can plan"
-            }
+            # drawn areas: the goal as planned, with each area spelled as its places
+            pddl = str(goal.get("pddl_places") or "")
+            if not pddl or AREA_SYMBOL.search(pddl):
+                return {
+                    "fallback": "the goal names a drawn mission area; plan it again so it is spelled as places"
+                }
         by_id = {pddl_name(a.id): a for a in mission.agents}
         named = [m.group(2) for m in BY_ROBOT.finditer(pddl)]
         if not named:
