@@ -53,6 +53,9 @@ ARRIVE_M = 1.5
 MAX_NOTICES = 50
 
 TERMINAL = ("done", "failed", "preempted")
+# stages of a robot that is on a plan now / that has one it was not heard on yet
+_BUSY = ("executing", "paused", "lease_wait", "lease_unknown")
+_NOT_HEARD = ("planned", "delivered")
 FAIL_WORDS = ("FAIL", "ABORT", "ERROR", "REJECT", "CANCEL")
 
 
@@ -294,6 +297,26 @@ class GoalTracker:
     def recent(self, n: int = 20) -> list[dict]:
         with self._lock:
             return [g.view() for g in list(self._goals.values())[-n:]]
+
+    def busy_robots(self, t=None) -> dict[str, str]:
+        """{robot: the goal it is on} for every robot whose latest plan is not
+        over: executing, paused, waiting for the lease, or planned / delivered
+        within the match window (an executor never heard from says nothing
+        for ever). A robot's newest plan decides; older goals do not count."""
+        t = self.clock() if t is None else t
+        out, seen = {}, set()
+        with self._lock:
+            for g in reversed(list(self._goals.values())):
+                for robot, rt in g.robots.items():
+                    if rt.plan_id is None or robot in seen:
+                        continue
+                    seen.add(robot)
+                    stage = rt.stage()[0]
+                    if stage in _BUSY or (
+                        stage in _NOT_HEARD and t - g.t <= MATCH_WINDOW_S
+                    ):
+                        out[robot] = g.summary
+        return out
 
     # ------------------------------------------------------------- feeding
     def goal_sent(

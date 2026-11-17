@@ -921,7 +921,8 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
           </>
         )}
         {/* the second phone toolbar row: while a map tool needs the map only the
-            robot switcher stays (it must always be reachable; not in the mission planner) */}
+            robot switcher stays (it must always be reachable); the mission
+            planner keeps only the screenshot */}
         {isPhone && !searchOpen && (
           <div className={`vtoolbar phone-bar phone-bar2 ${armed.owner === "none" ? "" : "tool-armed"}`}>
             {!missionMode && <RobotFocusPicker compact />}
@@ -929,14 +930,10 @@ export default function ViewerPage({mode = "viewer"}: {mode?: "viewer" | "missio
               <>
                 <span className="grow" />
                 <ScreenshotButton onDone={setToast} compact />
-                {!missionMode && (
-                  <>
-                    <ClearPathsButton compact />
-                    {follow}
-                    {driveBtn}
-                    {fullBtn}
-                  </>
-                )}
+                {!missionMode && <ClearPathsButton compact />}
+                {!missionMode && follow}
+                {!missionMode && driveBtn}
+                {!missionMode && fullBtn}
               </>
             )}
           </div>
