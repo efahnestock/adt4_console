@@ -156,6 +156,7 @@ class TileCache:
             if m.get("url"):
                 self.urls.setdefault(name, m["url"])
         self._fetch = fetch or _http_get
+        self._one: dict[str, tuple[float, dict]] = {}  # layer -> (mtime, tiles.json)
         self._lock = threading.Lock()
         self._failed: dict[
             str, float
@@ -173,25 +174,66 @@ class TileCache:
                         out[d.name] = {}
         return out
 
+    def _manifest(self, layer: str) -> dict:
+        """One layer's ``tiles.json`` ({} without one), re-read when it changes."""
+        p = self.root / layer / "tiles.json"
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            self._one.pop(layer, None)
+            return {}
+        hit = self._one.get(layer)
+        if hit is None or hit[0] != mtime:
+            try:
+                m = json.loads(p.read_text())
+            except (OSError, ValueError):
+                m = {}
+            hit = self._one[layer] = (mtime, m if isinstance(m, dict) else {})
+        return hit[1]
+
+    def _fallback(self, layer: str) -> str | None:
+        """The layer a manifest names to show where its own tiles are missing
+        (an orthophoto over a small area, the city's aerial around it)."""
+        fb = self._manifest(layer).get("fallback")
+        return fb if isinstance(fb, str) and fb and fb != layer else None
+
     def layers(self) -> list[dict]:
         out = []
         manifests = self._manifests()
         names = set(manifests) | (set(self.urls) if self.live else set())
+
+        def can_fetch(name: str) -> bool:
+            return self.live and name in self.urls
+
         for name in sorted(names):
             manifest = manifests.get(name, {})
-            out.append(
-                {
-                    "id": name,
-                    "attribution": manifest.get("attribution")
-                    or LAYER_ATTRIBUTION.get(name, ""),
-                    "zmin": manifest.get("zmin"),
-                    "zmax": manifest.get("zmax"),
-                    "bbox_lonlat": manifest.get("bbox_lonlat"),
-                    "cached": manifest.get("count"),
-                    "live": self.live and name in self.urls,
-                    "default": bool(manifest.get("default")),
-                }
-            )
+            row = {
+                "id": name,
+                "attribution": manifest.get("attribution")
+                or LAYER_ATTRIBUTION.get(name, ""),
+                "zmin": manifest.get("zmin"),
+                "zmax": manifest.get("zmax"),
+                "bbox_lonlat": manifest.get("bbox_lonlat"),
+                "cached": manifest.get("count"),
+                "live": can_fetch(name),
+                "default": bool(manifest.get("default")),
+                # "ortho": a flown orthophoto (sharper than the satellite layers);
+                # the browser prefers the highest priority layer covering the map
+                "kind": manifest.get("kind") or "satellite",
+                "priority": _number(manifest.get("priority"), 0),
+                "fallback": None,
+            }
+            fb = manifest.get("fallback")
+            if isinstance(fb, str) and fb and fb != name and fb in names:
+                # what the browser may ask for: this layer's area plus the fallback's
+                fm = manifests.get(fb, {})
+                row["fallback"] = fb
+                row["live"] = row["live"] or can_fetch(fb)
+                row["zmin"] = _min_none(row["zmin"], fm.get("zmin"))
+                row["bbox_lonlat"] = _bbox_union(
+                    row["bbox_lonlat"], fm.get("bbox_lonlat")
+                )
+            out.append(row)
         return out
 
     def path(self, layer: str, z: int, x: int, y: int) -> pathlib.Path:
@@ -200,7 +242,20 @@ class TileCache:
         return self.root / layer / str(int(z)) / str(int(x)) / f"{int(y)}.jpg"
 
     def get(self, layer: str, z: int, x: int, y: int) -> bytes | None:
-        """Cached tile bytes; on a miss fetch it (live only) and keep it."""
+        """Cached tile bytes; on a miss fetch it (live only) and keep it. A
+        layer whose manifest names a ``fallback`` serves that layer's tile
+        where it has none of its own (not cached under this layer)."""
+        seen = {layer}
+        data = self._get(layer, z, x, y)
+        while data is None:
+            layer = self._fallback(layer)
+            if layer is None or layer in seen:
+                return None
+            seen.add(layer)
+            data = self._get(layer, z, x, y)
+        return data
+
+    def _get(self, layer: str, z: int, x: int, y: int) -> bytes | None:
         p = self.path(layer, z, x, y)
         try:
             return p.read_bytes()
@@ -233,6 +288,27 @@ class TileCache:
             except OSError as e:
                 log.warning("could not cache tile %s: %s", p, e)
         return data
+
+
+def _number(v, default: float) -> float:
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return v  # 10 stays 10 in the JSON
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _min_none(a, b):
+    vals = [v for v in (a, b) if v is not None]
+    return min(vals) if vals else None
+
+
+def _bbox_union(a, b):
+    """Union of two lon/lat boxes; None (unbounded) when either is."""
+    if not a or not b:
+        return None
+    return [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
 
 
 def _http_get(url: str) -> bytes:

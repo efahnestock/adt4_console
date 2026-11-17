@@ -209,7 +209,9 @@ code,
 body.map-full .sidenav,
 body.map-full .topbar,
 body.map-full .tabbar,
-body.map-full .banner {
+body.map-full .banner,
+body.map-full .trial-bar {
+  /* the trial bar stays mounted (a screen recording it runs goes on) */
   display: none;
 }
 body.map-full .shell,
@@ -5268,4 +5270,240 @@ input[type="checkbox"] {
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* Drives page */
+.drive-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.drive-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.drive-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.bag-picker {
+  margin-top: 10px;
+}
+/* a run output badge carries a folder name: let it wrap instead of running out of the card */
+.bag-picker .badge {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.bag-picker tr.clickable {
+  cursor: pointer;
+}
+.bag-picker th.num,
+.bag-picker td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.bag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.bag-actions .btn-primary {
+  margin-left: auto;
+}
+.drives-offline {
+  margin-top: 12px;
+}
+
+/* ---------- trial recording bar (components/TrialBar.tsx) ---------- */
+.trial-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  font-size: 13px;
+}
+.trial-bar-on {
+  display: block;
+  background: var(--ok-bg);
+  border-bottom-color: var(--ok);
+}
+.trial-bar-on.trial-bar-warn {
+  background: var(--err-bg);
+  border-bottom-color: var(--err);
+}
+.trial-row,
+.trial-machines {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.trial-machines {
+  margin-top: 4px;
+  gap: 4px 8px;
+  font-size: 12px;
+}
+.trial-bar:not(.trial-bar-on) .trial-machines {
+  margin-top: 0;
+  flex-basis: 100%;
+}
+.trial-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.trial-count {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.trial-desc {
+  min-width: 0;
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+.rec-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--err);
+  animation: rec-blink 1.4s steps(2, jump-none) infinite;
+}
+.rec-dot-off {
+  animation: none;
+  background: var(--warn);
+}
+@keyframes rec-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot {
+    animation: none;
+  }
+}
+.trial-chip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  font-variant-numeric: tabular-nums;
+}
+.trial-ask {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.trial-chip-has-pop {
+  position: relative;
+  cursor: pointer;
+}
+.trial-pop {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 70;
+  flex-direction: column;
+  gap: 6px;
+  width: max-content;
+  max-width: min(640px, 90vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.35);
+  cursor: default;
+  white-space: normal;
+}
+.trial-chip-has-pop:hover > .trial-pop,
+.trial-chip-pinned > .trial-pop {
+  display: flex;
+}
+.trial-pop-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-weight: 600;
+}
+.trial-pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 12px;
+}
+.trial-pop-foot {
+  font-size: 12px;
+  white-space: pre-line;
+}
+.trial-chip-warn {
+  border-color: var(--warn);
+}
+.trial-chip-err {
+  border-color: var(--err);
+  background: var(--err-bg);
+}
+.trial-note {
+  color: var(--warn);
+  font-weight: 600;
+}
+.trial-chip-err .trial-note,
+.trial-bar-warn > .trial-machines > .trial-note {
+  color: var(--err);
+}
+.trial-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.trial-flag .input {
+  width: 30ch;
+  max-width: 46vw;
+}
+.trial-pre {
+  margin-top: 12px;
+}
+.trial-row .grow {
+  flex: 1;
+}
+.trial-video-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+.trial-screen {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }

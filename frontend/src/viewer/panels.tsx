@@ -377,7 +377,7 @@ export function SearchBox({autoFocus, onPicked}: {autoFocus?: boolean; onPicked?
   );
 }
 
-export function Inspector({onVisit, onGoto}: {onVisit: (src: string, sym: string) => void; onGoto: (src: string, sym: string) => void}) {
+export function Inspector({onVisit, onGoto, onInsert}: {onVisit: (src: string, sym: string) => void; onGoto: (src: string, sym: string) => void; onInsert?: (sym: string) => void}) {
   const {selected, sources, fly, flat, stackHeight, select, vizStyle} = useViewer();
   const heights = useViewStyle(s => s.heights);
   const placeReturn = usePlaceReturn(s => s.from);
@@ -436,6 +436,11 @@ export function Inspector({onVisit, onGoto}: {onVisit: (src: string, sym: string
         </button>
       </div>
       <div className="row gap-sm wrap">
+        {onInsert && (
+          <button className="btn btn-sm insert-sym-btn" onClick={() => onInsert(node.sym)} title={`Type ${node.sym} into the chat message at the cursor (the chat cannot see map clicks)`} data-testid="insert-into-chat">
+            Insert {node.sym} in chat
+          </button>
+        )}
         <button className="btn btn-sm" onClick={() => fly(applyPoint(sourceMatrix(selected.src), displayPos(node, flat, stackHeight, vizStyle, heights)))}>
           Fly to
         </button>

@@ -25,10 +25,9 @@ import logging
 import threading
 import time
 import uuid
-from types import SimpleNamespace
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image
 
 log = logging.getLogger(__name__)
 
@@ -289,8 +288,7 @@ class ManipulationApprovalService:
     one ``ManipulationApprovalResponse`` (see :func:`ros_response_publisher`);
     raising :class:`ApprovalError` leaves the request answerable, any other
     exception closes it (the message may have gone out).  ``available()`` /
-    ``error()`` report the transport (the ROS bridge); simulated requests never
-    publish and work without it."""
+    ``error()`` report the transport (the ROS bridge)."""
 
     def __init__(
         self,
@@ -299,20 +297,16 @@ class ManipulationApprovalService:
         *,
         available=lambda: True,
         error=lambda: None,
-        default_robot=lambda: "euclid",
         clock=time.time,
         request_ttl: float = 300.0,
     ):
         self.publish_hook = publish
         self.hub = hub
         self._available, self._error = available, error
-        self._default_robot = default_robot
         self.clock, self.request_ttl = clock, request_ttl
         self._lock = threading.RLock()
         self._requests: dict[str, dict] = {}
-        self._current: dict[
-            str, str
-        ] = {}  # "<robot>" / "simulation:<robot>" -> request id
+        self._current: dict[str, str] = {}  # robot -> request id
 
     @property
     def available(self) -> bool:
@@ -354,7 +348,7 @@ class ManipulationApprovalService:
             requests = [
                 self._public(r) for r in self._requests.values() if r["status"] in OPEN
             ]
-            requests.sort(key=lambda r: (r["simulated"], r["received_at"]))
+            requests.sort(key=lambda r: r["received_at"])
             return {
                 "available": self.available,
                 "error": self.error,
@@ -370,13 +364,11 @@ class ManipulationApprovalService:
             log.exception("publishing %s", HUB_TOPIC)
 
     # ----------------------------------------------------------- requests
-    def receive_request(self, robot: str, message, *, simulated=False) -> dict:
-        """A ManipulationApprovalRequest from ``robot`` (or a simulated one):
-        decode its images, supersede the robot's previous open request."""
+    def receive_request(self, robot: str, message) -> dict:
+        """A ManipulationApprovalRequest from ``robot``: decode its images, supersede the robot's previous open request."""
         declared = str(getattr(message, "robot_id", "") or "")
         if declared and declared != robot:
             raise ValueError("Request robot_id does not match its subscription")
-        key = ("simulation:" if simulated else "") + robot
         identifier, now = uuid.uuid4().hex, self.clock()
         names = list(getattr(message, "image_source_names", []))
         raw_images = list(getattr(message, "images", []) or [])
@@ -452,7 +444,6 @@ class ManipulationApprovalService:
             "received_at": now,
             "expires_at": now + self.request_ttl,
             "status": "pending",
-            "simulated": bool(simulated),
             "images": images,
             "_images": encoded,
             "_depth": depth,
@@ -471,25 +462,15 @@ class ManipulationApprovalService:
         }
         with self._lock:
             self._expire_locked()
-            if simulated and self._live_open_locked():
-                raise ApprovalError(
-                    409,
-                    "A live manipulation request is pending; resolve it before opening a simulation",
-                )
-            old = self._current.get(key)
+            old = self._current.get(robot)
             if old in self._requests and self._requests[old]["status"] in OPEN:
                 self._requests[old]["status"] = "superseded"
                 self._drop_media(self._requests[old])
-            self._current[key] = identifier
+            self._current[robot] = identifier
             self._requests[identifier] = request
             self._expire_locked()
         self._notify()
         return self._public(request)
-
-    def _live_open_locked(self) -> bool:
-        return any(
-            not r["simulated"] and r["status"] in OPEN for r in self._requests.values()
-        )
 
     def get_image(self, identifier: str, index: int) -> tuple[bytes, str]:
         """(bytes, media type) of one candidate image."""
@@ -556,8 +537,10 @@ class ManipulationApprovalService:
         request = self._requests.get(identifier)
         if request is None:
             raise ApprovalError(404, "Unknown manipulation request")
-        key = ("simulation:" if request["simulated"] else "") + request["robot"]
-        if request["status"] not in statuses or self._current.get(key) != identifier:
+        if (
+            request["status"] not in statuses
+            or self._current.get(request["robot"]) != identifier
+        ):
             raise ApprovalError(
                 409, f"Request is {request['status']}; refresh the pending dialog"
             )
@@ -639,26 +622,14 @@ class ManipulationApprovalService:
                     payload.update(
                         has_stand_point=True, stand_x=stand_x, stand_y=stand_y
                     )
-            if request["simulated"]:
-                request["status"] = "simulated"
-                request["response"] = payload
-                self._drop_media(request)
-                result = {
-                    "ok": True,
-                    "status": "simulated",
-                    "request_id": identifier,
-                    "robot": request["robot"],
-                    "response": payload,
-                }
-            else:
-                if not self.available:
-                    raise ApprovalError(
-                        503,
-                        self.error
-                        or "ROS unavailable: manipulation responses cannot be sent",
-                    )
-                request["status"] = "responding"
-                result = self._publish_locked(request, payload)
+            if not self.available:
+                raise ApprovalError(
+                    503,
+                    self.error
+                    or "ROS unavailable: manipulation responses cannot be sent",
+                )
+            request["status"] = "responding"
+            result = self._publish_locked(request, payload)
         self._notify()
         return result
 
@@ -691,66 +662,6 @@ class ManipulationApprovalService:
             "response": payload,
             **details,
         }
-
-    # --------------------------------------------------------------- demo
-    def create_demo(self, robot: str | None = None) -> dict:
-        """A synthetic request (two cameras, depth, walk-to geometry) whose
-        answers are recorded locally and never published."""
-        robot = robot or self._default_robot()
-        with self._lock:
-            self._expire_locked()
-            if self._live_open_locked():
-                raise ApprovalError(
-                    409,
-                    "A live manipulation request is pending; resolve it before opening a simulation",
-                )
-        images, depth_images = [], []
-        rows = np.linspace(6.0, 0.6, 400, dtype=np.float32)[:, None].repeat(640, axis=1)
-        rows[130:301, 180:421] = 1.5  # the simulated object stands 1.5 m away
-        rows[:60, :] = 0.0  # no return from the sky: shown without depth
-        for name, color in [("frontleft", "#34435b"), ("hand_color_image", "#493c35")]:
-            image = Image.new("RGB", (640, 400), color)
-            draw = ImageDraw.Draw(image)
-            draw.rectangle(
-                (180, 130, 420, 300), fill="#c29b52", outline="white", width=3
-            )
-            draw.text((22, 22), "SIMULATION - no robot response", fill="white")
-            draw.text(
-                (22, 48),
-                name + ": select a grasp point or use the suggested detection",
-                fill="white",
-            )
-            images.append(
-                SimpleNamespace(
-                    width=640,
-                    height=400,
-                    encoding="rgb8",
-                    step=1920,
-                    data=image.tobytes(),
-                )
-            )
-            buffer = io.BytesIO()
-            Image.fromarray((rows * 1000).astype(np.uint16)).save(buffer, format="PNG")
-            depth_images.append(SimpleNamespace(data=buffer.getvalue()))
-        message = SimpleNamespace(
-            robot_id=robot,
-            images=images,
-            depth_images=depth_images,
-            depth_scales=[1000.0, 1000.0],
-            # a forward-looking camera 0.6 m up at the front of a robot at the origin
-            camera_intrinsics=[400.0, 400.0, 320.0, 200.0] * 2,
-            camera_poses=[0.3, 0.0, 0.6, 0.5, -0.5, 0.5, -0.5] * 2,
-            ground_plane=[0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-            robot_pose=[0.0, 0.0, 0.0],
-            walk_to_standoff=1.0,
-            walk_to_max_distance=5.0,
-            image_source_names=["frontleft", "hand_color_image"],
-            has_detection=True,
-            detection_image_index=0,
-            image_x=300,
-            image_y=210,
-        )
-        return self.receive_request(robot, message, simulated=True)
 
 
 # ---------------------------------------------------------------- ROS hook

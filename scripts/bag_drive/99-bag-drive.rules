@@ -1,0 +1,17 @@
+# Auto-mount USB drives that carry a filesystem, via bag-drive@<kernel name>.service.
+# Internal disks (nvme, sata) never match, so they are never touched.
+# UDISKS_AUTO=0 stops a logged-in desktop session from mounting the same drive
+# a second time under /media.
+
+ACTION=="remove", GOTO="bag_drive_end"
+SUBSYSTEM!="block", GOTO="bag_drive_end"
+ENV{ID_FS_USAGE}!="filesystem", GOTO="bag_drive_end"
+ENV{ID_BUS}=="usb", GOTO="bag_drive_match"
+ENV{ID_USB_DRIVER}=="?*", GOTO="bag_drive_match"
+GOTO="bag_drive_end"
+
+LABEL="bag_drive_match"
+ENV{UDISKS_AUTO}="0"
+TAG+="systemd", ENV{SYSTEMD_WANTS}+="bag-drive@%k.service"
+
+LABEL="bag_drive_end"

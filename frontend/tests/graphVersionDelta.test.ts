@@ -47,6 +47,31 @@ describe("graph version push with a delta", () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
+  it("applies a delta spanning several versions (a reload the server diffed) when its base matches", () => {
+    const fetch = vi.spyOn(globalThis, "fetch");
+    push({version: 9, base: 5, reason: "scene changes", delta: DELTA});
+    const src = useViewer.getState().sources[ID];
+    expect(reload).not.toHaveBeenCalled();
+    expect(src.version).toBe(9);
+    expect(src.model!.nodes.has("O(2)")).toBe(false);
+    // no keyframe changed: nothing is downloaded (no snapshot, mesh or trajectory)
+    expect(fetch).not.toHaveBeenCalled();
+    fetch.mockRestore();
+  });
+
+  it("refetches only the trajectory when the delta changes keyframes", () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}", {headers: {"Content-Type": "application/json"}}));
+    const d = DELTA as {del: string[]};
+    push({version: 6, base: 5, reason: "neo4j", delta: {...d, del: [...d.del, "a(0)"]}});
+    const src = useViewer.getState().sources[ID];
+    expect(reload).not.toHaveBeenCalled();
+    expect(src.model!.nodes.has("a(0)")).toBe(false);
+    const urls = fetch.mock.calls.map(c => String(c[0]));
+    expect(urls.length).toBe(1);
+    expect(urls[0]).toMatch(/\/trajectory$/);
+    fetch.mockRestore();
+  });
+
   it("reloads when the delta was made against another version (a frame was missed)", () => {
     push({version: 8, base: 7, reason: "sam3", delta: DELTA});
     expect(reload).toHaveBeenCalledTimes(1);

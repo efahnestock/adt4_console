@@ -33,9 +33,12 @@ MOVED_DEG = 2.0
 HYDRA_LC_RE = re.compile(
     r"(\d+)\s*/\s*(\d+)\s+valid\s+inter-?robot\s+loop\s+closures", re.I
 )
-# ... "; last optimization took 0.412 s, 12.3 s ago" (Hydra feat/hydra-multi-status-optimization)
+# ... "; last optimization took 0.412 s" (Hydra #224, on Hydra main) or, from the
+# earlier feat/hydra-multi-status-optimization branch, "... took 0.412 s, 12.3 s ago".
+# The ", Y s ago" part is optional: requiring it never matched Hydra main's note.
 HYDRA_OPT_RE = re.compile(
-    r"last\s+optimization\s+took\s+([\d.]+)\s*s\s*,\s*([\d.]+)\s*s\s+ago", re.I
+    r"last\s+optimization\s+took\s+([\d.]+(?:e[-+]?\d+)?)\s*s\b(?:\s*,\s*([\d.]+(?:e[-+]?\d+)?)\s*s\s+ago)?",
+    re.I,
 )
 # A robot counts as relocalized once hydra_multi has accepted this many inter-robot
 # (prior-map) loop closures for it (frontend lib/frameAlign.ts RELOC_MIN_HYDRA_LCS).
@@ -75,12 +78,23 @@ def hydra_matches(health: dict | None) -> tuple[int, int] | None:
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
+def parse_hydra_optimization(note: str | None) -> dict | None:
+    """``{"took_s", "ago_s"}`` from a hydra_multi monitor note ("...; last
+    optimization took 0.412 s" or "... took 0.412 s, 12.3 s ago"); ``ago_s`` is
+    None when the note does not say how long ago (Hydra main).  None when the
+    note has no timing (no optimization yet, or an older hydra_multi)."""
+    m = HYDRA_OPT_RE.search(note or "")
+    if not m:
+        return None
+    return {
+        "took_s": float(m.group(1)),
+        "ago_s": float(m.group(2)) if m.group(2) else None,
+    }
+
+
 def hydra_optimization(health: dict | None) -> dict | None:
-    """``{"took_s", "ago_s"}`` of hydra_multi's last optimization from its
-    monitor note ("...; last optimization took 0.412 s, 12.3 s ago"); None when
-    the note does not say (no optimization yet, or an older hydra_multi)."""
-    m = HYDRA_OPT_RE.search(_hydra_note(health) or "")
-    return {"took_s": float(m.group(1)), "ago_s": float(m.group(2))} if m else None
+    """:func:`parse_hydra_optimization` of the robot's hydra_multi row."""
+    return parse_hydra_optimization(_hydra_note(health))
 
 
 def _yaw_deg(T) -> float:
