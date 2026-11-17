@@ -311,8 +311,8 @@ def wire_scene_repair(svc) -> None:
     def map_changed(map_version, changes):
         """A scene change batch from ROS (change detection, plan repair, a chat
         edit made elsewhere): fold the nodes it names into the loaded map; one
-        that names none (a connection edit) or cannot be folded is reloaded
-        (GraphService.apply_change)."""
+        that names none (a connection edit) or cannot be folded is reloaded and
+        viewers get the difference (GraphService.apply_change / refresh)."""
         t = _live_target(svc)
         if t is None:
             return
@@ -320,8 +320,7 @@ def wire_scene_repair(svc) -> None:
         if map_version is not None:  # nothing named: still a no-op if already seen
             svc.graph.apply_change(t.id, "scene changes", map_version, syms)
         else:
-            t.invalidate()
-            svc.graph.notify_version(t.id, "scene changes")
+            svc.graph.refresh(t.id, "scene changes")
 
     def send(robot, pddl, constraints, engine):
         return svc.ros.send_pddl_goal(
