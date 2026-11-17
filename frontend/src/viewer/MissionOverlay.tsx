@@ -326,6 +326,7 @@ export function MissionOverlay({groundZ}: {groundZ: number}) {
           </mesh>
           <Html position={[0, 0, 1]} center className="mission-plant-tag" zIndexRange={[20, 0]}>
             mock {p.label}
+            {p.sym ? ` ${p.sym}` : ""}
           </Html>
         </group>
       ))}

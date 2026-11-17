@@ -14,6 +14,7 @@ import {useViewer} from "../stores/viewer";
 import {useMedia} from "../lib/media";
 import {ws} from "../ws";
 import {regionColor} from "./EditOverlay";
+import {SaveMapFile} from "./SaveMapFile";
 import {errorText} from "../lib/api";
 import {clearPreview, previewPddl, previewRobots, usePlanPreview} from "../stores/planPreview";
 import {refreshEngines, useEngines} from "../stores/engines";
@@ -29,17 +30,20 @@ export interface AreaRow {
   color: string;
   /** map scope: the Room */
   region?: Region;
+  /** mission scope: its place in the mission's areas (or no-go zones) list */
+  index?: number;
 }
 
-/** One list over both scopes. A mission area named like a map area is the same
- *  area (e.g. saved to the map while robots were live): listed once, as the map's. */
-export function areaRows(areas: {name: string}[], fences: {id: string}[], regions: Region[]): AreaRow[] {
-  const mapNames = new Set(regions.map(r => (r.name ?? "").trim().toLowerCase()).filter(Boolean));
-  return [
-    ...regions.map((r, i): AreaRow => ({key: `map:${r.symbol}`, name: r.name || "unnamed area", purpose: "search", scope: "map", color: regionColor(i), region: r})),
-    ...areas.filter(a => !mapNames.has(a.name.trim().toLowerCase())).map((a): AreaRow => ({key: `mission:${a.name}`, name: a.name, purpose: "search", scope: "mission", color: AREA_BLUE})),
-    ...fences.map((f): AreaRow => ({key: `nogo:${f.id}`, name: f.id, purpose: "no_go", scope: "mission", color: NOGO_RED})),
-  ];
+/** One list over both scopes. Names may repeat (two "loading dock" Rooms); a
+ *  mission area saved to the map while robots were live (staged) is listed once,
+ *  as the map's. */
+export function areaRows(areas: {name: string; staged?: boolean}[], fences: {id: string}[], regions: Region[]): AreaRow[] {
+  const rows: AreaRow[] = regions.map((r, i): AreaRow => ({key: `map:${r.symbol}`, name: r.name || "unnamed area", purpose: "search", scope: "map", color: regionColor(i), region: r}));
+  areas.forEach((a, i) => {
+    if (!a.staged) rows.push({key: `mission:${i}`, name: a.name, purpose: "search", scope: "mission", color: AREA_BLUE, index: i});
+  });
+  fences.forEach((f, i) => rows.push({key: `nogo:${i}`, name: f.id, purpose: "no_go", scope: "mission", color: NOGO_RED, index: i}));
+  return rows;
 }
 
 /** A search area's symbol in a GRSTAPS-X goal: a Room's PDDL symbol (R(6) / R6 -> r6),
@@ -48,9 +52,9 @@ export function areaRows(areas: {name: string}[], fences: {id: string}[], region
 export function regionGoalSymbol(row: AreaRow, areas: {name: string; polygon: number[][]}[]): string | null {
   if (row.purpose !== "search") return null;
   if (row.region) return row.region.symbol.replace(/[()]/g, "").toLowerCase();
-  const drawn = areas.filter(a => a.polygon.length >= 3);
-  const i = drawn.findIndex(a => a.name === row.name);
-  return i < 0 ? null : `area${i + 1}`;
+  const at = row.index ?? -1;
+  if (!areas[at] || areas[at].polygon.length < 3) return null;
+  return `area${areas.slice(0, at).filter(a => a.polygon.length >= 3).length + 1}`;
 }
 
 /** "Visit" / "Explore" a search area with GRSTAPS-X: the plan is previewed on the
@@ -167,7 +171,7 @@ export function AreasSection() {
               </Badge>
               <span className="grow" />
               {r.scope === "mission" && r.purpose === "search" && (
-                <button className="btn btn-xs" disabled={!neo4j || busy} onClick={() => void promoteArea(r.name)} title={neo4j ? "Save to the map as a Room (places and objects inside become its members)" : "Needs a Neo4j map"}>
+                <button className="btn btn-xs" disabled={!neo4j || busy} onClick={() => r.index !== undefined && void promoteArea(r.index)} title={neo4j ? "Save to the map as a Room (places and objects inside become its members)" : "Needs a Neo4j map"}>
                   Save to map
                 </button>
               )}
@@ -184,7 +188,7 @@ export function AreasSection() {
                 onClick={() =>
                   r.scope === "map" && r.region
                     ? void applyOps([{op: "retire_node", symbol: r.region.symbol, reason: "area removed by the operator"}], `remove area ${r.name}`)
-                    : removeMissionArea(r.name, r.purpose)
+                    : r.index !== undefined && removeMissionArea(r.index, r.purpose)
                 }
               >
                 Remove
@@ -194,6 +198,7 @@ export function AreasSection() {
           ))}
         </ul>
       )}
+      <SaveMapFile src={neo4j} />
     </section>
   );
 }
@@ -210,7 +215,7 @@ export function MockObjects() {
         <button
           className={`btn btn-xs ${tool.kind === "plant" ? "on" : ""}`}
           onClick={() => armMissionTool(tool.kind === "plant" ? {kind: "none"} : {kind: "plant", label: label.trim() || "object"})}
-          title="Place mock objects only the simulated quad camera sees (rehearsals); a search finds one when its query matches the label"
+          title="Place mock objects for this mission: objects the planner can use (inspect, move) and the simulated quad camera can find; staged for real before the mission runs on robots"
         >
           Plant mock
         </button>
@@ -218,8 +223,9 @@ export function MockObjects() {
       {planted.length > 0 && (
         <ul className="mission-chips">
           {planted.map((p, i) => (
-            <li key={`p-${i}`} className="chip chip-plant">
+            <li key={`p-${i}`} className="chip chip-plant" title={p.sym ? `${p.sym}: a goal names it ${p.sym.replace(/[()]/g, "").toLowerCase()}` : undefined}>
               mock {p.label}
+              {p.sym && <span className="mono muted"> {p.sym}</span>}
               <button aria-label={`Remove mock ${p.label}`} onClick={() => set({planted: planted.filter((_, k) => k !== i)})}>
                 ×
               </button>

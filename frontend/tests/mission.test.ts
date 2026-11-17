@@ -100,7 +100,7 @@ describe("mission store", () => {
     expect(useMission.getState().fences).toEqual([{id: "No-go 1", polygon: [[0, 0], [1, 0], [1, 1]], kind: "no_go"}]);
     useMission.setState({tool: {kind: "plant", label: "crate"}});
     onMapClick([3, 4]);
-    expect(useMission.getState().planted).toEqual([{label: "crate", pos: [3, 4], size_m: 1.5}]);
+    expect(useMission.getState().planted).toEqual([{label: "crate", pos: [3, 4], size_m: 1.5, sym: undefined}]);
     const ctx = missionContext();
     expect(ctx.roster[0]).toEqual({id: "spot1", kind: "spot", start: [1.23, 2.35], binding: null});
     expect(ctx.areas[0]).toMatchObject({name: "courtyard", scope: "mission"});

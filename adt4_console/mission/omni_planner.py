@@ -27,6 +27,7 @@ Fast Downward one is also kept under its old name ``fast_downward``.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import time
@@ -34,7 +35,7 @@ import time
 import numpy as np
 
 from .model import Mission, Task, new_id
-from .paths import point_in_polygon
+from .paths import point_in_polygon, polygon_centroid
 
 log = logging.getLogger(__name__)
 
@@ -195,6 +196,31 @@ def area_symbols(areas) -> dict[str, dict]:
     return out
 
 
+SUSPICIOUS_ENV = "OMNIPLANNER_OBJECTS_SUSPICIOUS"
+_SAFE = re.compile(
+    r"\(\s*not\s*\(\s*suspicious\s+([a-z]\d+)\s*\)\s*\)|\(\s*safe\s+([a-z]\d+)\s*\)",
+    re.I,
+)
+
+
+def inspect_goals(goal: str, robots: list[str]) -> str:
+    """``(safe o4)`` / ``(not (suspicious o4))`` spelled as an inspection by one of
+    ``robots``: ``(or (inspected-by spot1 o4) (inspected-by husky1 o4))``. The domain
+    derives safe as "not suspicious"; the console plans with every object suspicious
+    (:data:`SUSPICIOUS_ENV`), but the robots' goal manager starts every object safe,
+    where the goal as written would be true before any robot moves. Spelled this way
+    it means the same to both."""
+    if not robots:
+        return goal
+
+    def one(m):
+        o = (m.group(1) or m.group(2)).lower()
+        alts = [f"(inspected-by {r} {o})" for r in robots]
+        return alts[0] if len(alts) == 1 else f"(or {' '.join(alts)})"
+
+    return _SAFE.sub(one, goal)
+
+
 def goal_areas(goal: str, areas) -> dict[str, dict]:
     """The drawn areas ``goal`` names: {symbol: {name, polygon}}; ValueError for an
     area symbol no drawn area has."""
@@ -205,6 +231,149 @@ def goal_areas(goal: str, areas) -> dict[str, dict]:
         raise ValueError(f"{', '.join(missing)} is not a drawn mission area"
                          + (f" (drawn: {', '.join(known)})" if known else " (none are drawn)"))  # fmt: skip
     return {s: known[s] for s in named}
+
+
+# Drawn mission areas with Fast Downward: the area's atoms become atoms over the
+# reachable mesh places inside its outline, so the goal is ordinary PDDL the
+# robots' planner (and plan repair's goal manager) can take as it is.
+AREA_CORE_PLACES = 6  # a visit / end position: any of this many central places
+AREA_COVER_SPACING_M = 8.0  # explored: visit places about this far apart ...
+AREA_COVER_MAX = 30  # ... at most this many
+_AREA_ATOM = re.compile(
+    r"\(\s*(visited-region|explored-region|visited-region-by|explored-region-by|in-region)"
+    r"((?:\s+[A-Za-z0-9_-]+)*?)\s+(area\d+)\s*\)",
+    re.IGNORECASE,
+)
+
+
+def _mesh_places(G):
+    """(symbols, xy [n, 2], component id per place) of the mesh places layer."""
+    import spark_dsg
+
+    layer = G.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
+    ids, xy = [], []
+    for n in layer.nodes:
+        ids.append(n.id.value)
+        xy.append(np.asarray(n.attributes.position)[:2])
+    index = {v: i for i, v in enumerate(ids)}
+    parent = list(range(len(ids)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for e in layer.edges:
+        a, b = index.get(e.source), index.get(e.target)
+        if a is not None and b is not None:
+            parent[find(a)] = find(b)
+    comp = np.array([find(i) for i in range(len(ids))])
+    syms = [spark_dsg.NodeSymbol(v).str(True).lower() for v in ids]
+    return syms, np.asarray(xy, dtype=float).reshape(-1, 2), comp
+
+
+def _cover(xy: np.ndarray, spacing: float, cap: int) -> list[int]:
+    """Indices of places about ``spacing`` apart covering ``xy`` (farthest-point)."""
+    if not len(xy):
+        return []
+    centre = xy.mean(axis=0)
+    chosen = [int(np.argmin(np.linalg.norm(xy - centre, axis=1)))]
+    d = np.linalg.norm(xy - xy[chosen[0]], axis=1)
+    while len(chosen) < cap and d.max() > spacing:
+        k = int(np.argmax(d))
+        chosen.append(k)
+        d = np.minimum(d, np.linalg.norm(xy - xy[k], axis=1))
+    return chosen
+
+
+def expand_areas(
+    goal: str, named: dict, G, starts: dict, geofences=None
+) -> tuple[str, dict]:
+    """``goal`` with every drawn area (area1, ...) replaced by mesh places inside it,
+    for Fast Downward: (visited-region area1) -> (or (visited-place t..) ...) over a
+    few central places, (in-region r area1) -> (or (at-place r t..) ...), and
+    (explored-region area1) -> (and (visited-place t..) ...) over places about
+    ``AREA_COVER_SPACING_M`` apart (the -by forms keep their robot). Only places the
+    robots can reach (their mesh-places component) and outside no-go zones count.
+    Returns (goal, {area: [place symbols]}); ValueError for an area with none."""
+    if not named:
+        return goal, {}
+    syms, xy, comp = _mesh_places(G)
+    if not len(syms):
+        raise ValueError("the map has no mesh places to plan drawn areas on")
+    reach = {int(comp[int(np.argmin(np.linalg.norm(xy - np.asarray(p, float)[:2], axis=1)))])
+             for p in starts.values()}  # fmt: skip
+    fences = [
+        g["polygon"] if isinstance(g, dict) else g.polygon for g in geofences or []
+    ]
+    places: dict[str, list[int]] = {}
+    for sym, a in named.items():
+        poly = a["polygon"]
+        inside = [i for i in range(len(syms))
+                  if int(comp[i]) in reach and point_in_polygon(xy[i], poly)
+                  and not any(point_in_polygon(xy[i], f) for f in fences)]  # fmt: skip
+        if not inside:
+            raise ValueError(
+                f"{sym} ({a.get('name') or sym}) has no place the robots can reach inside it"
+            )
+        places[sym] = inside
+    used: dict[str, list[str]] = {}
+
+    def core(sym):
+        idx = places[sym]
+        P = xy[idx]
+        centre = np.asarray(polygon_centroid(named[sym]["polygon"]), float)
+        order = np.argsort(np.linalg.norm(P - centre, axis=1))
+        half = order[: max(1, (len(order) + 1) // 2)]
+        pick = [idx[int(i)] for i in half[_spread(len(half), AREA_CORE_PLACES)]]
+        # and the core place nearest each robot, so a visit need not drive to the middle
+        for p in starts.values():
+            k = half[
+                int(
+                    np.argmin(
+                        np.linalg.norm(P[half] - np.asarray(p, float)[:2], axis=1)
+                    )
+                )
+            ]
+            pick.append(idx[int(k)])
+        return list(dict.fromkeys(pick))
+
+    def cover(sym):
+        idx = places[sym]
+        return [idx[k] for k in _cover(xy[idx], AREA_COVER_SPACING_M, AREA_COVER_MAX)]
+
+    def sub(m):
+        pred, args, sym = m.group(1).lower(), m.group(2).split(), m.group(3).lower()
+        if sym not in places:
+            return m.group(0)
+        robot = args[0] if args else None
+        explored = pred.startswith("explored")
+        chosen = cover(sym) if explored else core(sym)
+        used[sym] = [syms[i] for i in chosen]
+        if pred == "in-region":
+            atoms = [f"(at-place {robot} {syms[i]})" for i in chosen]
+        elif robot:
+            atoms = [f"(visited-place-by {robot} {syms[i]})" for i in chosen]
+        else:
+            atoms = [f"(visited-place {syms[i]})" for i in chosen]
+        if len(atoms) == 1:
+            return atoms[0]
+        return f"({'and' if explored else 'or'} {' '.join(atoms)})"
+
+    out = _AREA_ATOM.sub(sub, goal)
+    left = sorted({s.lower() for s in AREA_SYMBOL.findall(out)} & set(named))
+    if left:
+        raise ValueError(f"{', '.join(left)}: a drawn area can be visited, explored or ended in "
+                         "(visited-region / explored-region / in-region and their -by forms) only")  # fmt: skip
+    return out, used
+
+
+def _spread(n: int, k: int) -> np.ndarray:
+    """``k`` indices spread evenly over range(n) (all of them when n <= k)."""
+    if n <= k:
+        return np.arange(n)
+    return np.unique(np.linspace(0, n - 1, k).round().astype(int))
 
 
 def _geofence_constraints(G, geofences, ConstraintFact):
@@ -282,6 +451,7 @@ def solve(
     engine: str = DEFAULT_ENGINE,
     kinds: dict | None = None,
     areas=None,
+    planted=None,
 ) -> dict:
     """Plan ``goal`` for robots at ``starts`` ({pddl robot name: [x, y]}).
 
@@ -292,12 +462,14 @@ def solve(
     :func:`area_symbols`), which a GRSTAPS-X goal may name as regions.
     Raises ValueError for a goal that cannot be planned (the reason in words).
     """
+    from . import mocks
+
+    # mock objects the goal names join a copy of the graph's object layer
+    G = mocks.graph_with(G, mocks.named(goal, planted))
     named = goal_areas(goal, areas)
     if check_engine(engine) == "grstaps":
         return _solve_grstaps(goal, starts, G, constraints, geofences, kinds, named)
-    if named:
-        raise ValueError(f"drawn mission areas ({', '.join(named)}) are planned by GRSTAPS-X only: "
-                         "switch the planner, or name a map region (r...)")  # fmt: skip
+    area_goal, area_places = expand_areas(goal, named, G, starts, geofences)
     om = _modules()
     if any(c["predicate"] == "before" for c in constraints or []):
         raise ValueError(
@@ -310,15 +482,24 @@ def solve(
     t0 = time.perf_counter()
     try:
         extra = {}
-        if kinds and "robot_types" in getattr(
-            om["PddlGoal"], "__dataclass_fields__", {}
-        ):
+        fields = getattr(om["PddlGoal"], "__dataclass_fields__", {})
+        no_arm = {r for r in robots if (kinds or {}).get(r) == "husky"}
+        if kinds and "robot_types" in fields:  # older omniplanner (with GRSTAPS-X)
             extra["robot_types"] = {
                 r: kinds.get(r, "spot") for r in robots
             }  # husky -> no arm
+        elif no_arm and "world_state" in fields:
+            # omniplanner main: robots without an arm are the world state's
+            # cannot_manipulate (only the others get can-manipulate)
+            from omniplanner.world_state import WorldState
+
+            extra["world_state"] = WorldState(cannot_manipulate=no_arm)
         goal_obj = om["PddlGoal"](
-            pddl_goal=goal, robot_id=first, constraints=facts, **extra
+            pddl_goal=area_goal, robot_id=first, constraints=facts, **extra
         )
+        # mission planning: every object starts suspicious (not yet inspected),
+        # so (safe o4) takes an inspection and a pick looks first
+        os.environ.setdefault(SUSPICIOUS_ENV, "1")
         grounded = om["ground_problem"](om["domain"], G, robots, goal_obj).value
         t1 = time.perf_counter()
         plan = om["make_plan"](grounded, G)
@@ -355,6 +536,7 @@ def solve(
     pois = sum(1 for s in grounded.symbols.values() if s.layer in ("place", "object"))
     return {"actions": actions, "routes": routes, "driven_m": driven, "ground_s": t1 - t0,
             "solve_s": t2 - t1, "pois": pois, "fast_downward": stats,
+            "area_goal": area_goal if area_places else None, "area_places": area_places,
             "planner_log": {"planner": ENGINES["fast_downward"], **stats} if stats else None}  # fmt: skip
 
 
@@ -377,7 +559,7 @@ def _grstaps_tasks(steps, back) -> list[Task]:
 
 def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constraints=None,
               geofences=None, text: str = "", name: str = "",
-              engine: str = DEFAULT_ENGINE, areas=None) -> tuple[Mission, dict]:  # fmt: skip
+              engine: str = DEFAULT_ENGINE, areas=None, planted=None) -> tuple[Mission, dict]:  # fmt: skip
     """A mission for the ground agents that achieves ``goal`` (see :func:`solve`).
     The drawn ``areas`` the goal names are kept with it (``goal.areas``), so a
     replan plans the same polygons."""
@@ -386,7 +568,7 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
     engine = check_engine(engine)
     src = src or service._default_src()
     m0 = Mission(text=text or goal, name=name, src=src, agents=agents, planner="omniplanner",
-                 geofences=geofences or [],
+                 geofences=geofences or [], planted=[p if isinstance(p, dict) else p.model_dump() for p in planted or []],
                  goal={"pddl": goal, "constraints": list(constraints or []), "engine": engine})  # fmt: skip
     named = goal_areas(goal, areas)
     if named:
@@ -394,10 +576,17 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
     ground = [a for a in m0.agents if a.is_ground]
     if not ground:
         raise ValueError("omniplanner plans ground robots (spot, husky) only")
+    if engine != "grstaps":
+        goal = inspect_goals(goal, [pddl_name(a.id) for a in ground])
+        m0.goal["pddl"] = goal
     world = service.world(m0)
     if world.graph is None or world.graph.G is None:
         raise ValueError("no scene graph to plan on")
     G = world.graph.G
+    if m0.planted and hasattr(service, "next_object"):
+        from . import mocks
+
+        mocks.fill_symbols(m0.planted, service.next_object(src))
     starts, back = {}, {}
     for a in ground:
         s = start_of(m0, world, a.id)
@@ -417,7 +606,11 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
         engine=engine,
         kinds=kinds,
         areas=m0.goal.get("areas"),
+        planted=m0.planted,
     )
+    from . import mocks
+
+    G = mocks.graph_with(G, mocks.named(goal, m0.planted))  # to_node sees them too
     if engine == "grstaps":
         m0.tasks = _grstaps_tasks(out["steps"], back)
         if not m0.tasks:
@@ -491,6 +684,9 @@ def plan_pddl(goal: str, agents: list[dict], src: str | None, service, constrain
     if not tasks:
         raise ValueError("the goal is already satisfied: the plan has no actions")
     m0.tasks = tasks
+    if out.get("area_goal"):
+        # the goal as the robots' planner takes it: drawn areas spelled as places
+        m0.goal["pddl_places"] = out["area_goal"]
     info = {"driven_m": {back.get(r, r): round(v, 1) for r, v in out["driven_m"].items()},
             "planning_s": round(out["ground_s"] + out["solve_s"], 2), "points_of_interest": out["pois"],
             "fast_downward": out["fast_downward"], "engine": engine,

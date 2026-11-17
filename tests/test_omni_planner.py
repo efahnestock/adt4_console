@@ -351,3 +351,188 @@ def test_success_reports_the_search(svc):
     _, service = svc
     _, planned = omni.plan_pddl("(visited-object o0)", [SPOT1], None, service)
     assert "solution found" in planned["fast_downward"]["digest"]
+
+
+AREA = {"name": "staging", "polygon": [[2.5, 2.5], [6.5, 2.5], [6.5, 6.5], [2.5, 6.5]]}
+
+
+def _inside(service, task, poly):
+    import re
+
+    import spark_dsg as dsg
+
+    from adt4_console.mission.paths import point_in_polygon
+
+    k, n = re.fullmatch(r"([A-Za-z])\((\d+)\)", task.target).groups()
+    node = _G(service).get_node(dsg.NodeSymbol(k, int(n)))
+    return point_in_polygon(node.attributes.position[:2], poly)
+
+
+def test_fast_downward_plans_a_drawn_area_as_its_places(svc, monkeypatch):
+    """A drawn mission area (area1) is planned with Fast Downward: the goal is spelled
+    as places inside it, kept for the robots' planner (pddl_places)."""
+    _, service = svc
+    m, planned = omni.plan_pddl("(visited-region-by spot1 area1)", [SPOT1, SPOT2], None, service,
+                                areas=[AREA])  # fmt: skip
+    assert planned["engine"] == "fast_downward"
+    assert [t.agent for t in m.tasks] == ["spot1"]
+    assert _inside(service, m.tasks[-1], AREA["polygon"])
+    assert m.goal["pddl"] == "(visited-region-by spot1 area1)"
+    places = m.goal["pddl_places"]
+    assert places.startswith("(or (visited-place-by spot1 ") and "area1" not in places
+
+    # a 4 x 4 m area is one look at 8 m spacing; at 2 m it takes several
+    monkeypatch.setattr(omni, "AREA_COVER_SPACING_M", 2.0)
+    m, _ = omni.plan_pddl(
+        "(explored-region area1)", [SPOT1], None, service, areas=[AREA]
+    )
+    assert len(m.tasks) >= 2 and all(
+        _inside(service, t, AREA["polygon"]) for t in m.tasks
+    )
+    assert m.goal["pddl_places"].startswith("(and (visited-place ")
+
+    m, _ = omni.plan_pddl(
+        "(in-region spot2 area1)", [SPOT1, SPOT2], None, service, areas=[AREA]
+    )
+    assert m.tasks[-1].agent == "spot2" and _inside(
+        service, m.tasks[-1], AREA["polygon"]
+    )
+
+
+def test_a_drawn_area_with_no_reachable_place_is_explained(svc):
+    _, service = svc
+    far = {"name": "lake", "polygon": [[100, 100], [101, 100], [101, 101]]}
+    with pytest.raises(ValueError, match="no place the robots can reach"):
+        omni.plan_pddl("(visited-region area1)", [SPOT1], None, service, areas=[far])
+    with pytest.raises(ValueError, match="visited, explored or ended in"):
+        omni.plan_pddl("(visited-object area1)", [SPOT1], None, service, areas=[AREA])
+
+
+def test_expand_areas_spells_each_form():
+    import numpy as np
+
+    class _Fake:  # expand_areas only needs the mesh places
+        pass
+
+    named = {"area1": AREA}
+    syms = [f"p{i}" for i in range(9)]
+    xy = np.array([[x, y] for x in (3, 4.5, 6) for y in (3, 4.5, 6)], float)
+    comp = np.zeros(9, int)
+    orig = omni._mesh_places
+    omni._mesh_places = lambda G: (syms, xy, comp)
+    try:
+        g, used = omni.expand_areas("(and (visited-region area1) (in-region spot1 area1))", named, _Fake(),
+                                    {"spot1": [0, 0]})  # fmt: skip
+    finally:
+        omni._mesh_places = orig
+    assert (
+        "area1" not in g
+        and "(or (visited-place p" in g
+        and "(or (at-place spot1 p" in g
+    )
+    assert set(used["area1"]) <= set(syms)
+
+
+CRATE = {"label": "crate", "pos": [5.0, 5.0]}
+
+
+def test_mock_objects_are_objects_to_the_planner(svc):
+    """A planted mock object gets the next object symbol after the map's (the grid
+    ends at O(1): O(2)) in a copy of the planner's object layer: a ground goal
+    inspects or moves it; the shared graph is not changed."""
+    import spark_dsg as dsg
+
+    _, service = svc
+    G = _G(service)
+    assert service.next_object(service._default_src()) == 2
+    m, _ = omni.plan_pddl(
+        "(inspected-by spot1 o2)", [SPOT1, SPOT2], None, service, planted=[dict(CRATE)]
+    )
+    assert [(t.agent, t.type, t.target) for t in m.tasks] == [
+        ("spot1", "inspect", "O(2)")
+    ]
+    assert m.planted[0].sym == "O(2)"
+    assert not G.has_node(dsg.NodeSymbol("O", 2))  # only the planning copy has it
+    m, _ = omni.plan_pddl(f"(object-in-place o2 {_place(G, 0, 0)})", [SPOT1], None, service,
+                          planted=[dict(CRATE)])  # fmt: skip
+    assert {t.type for t in m.tasks} >= {"pick", "place"}
+    # a mock's symbol that is a real object elsewhere: refused, re-plan renumbers it
+    with pytest.raises(ValueError, match="real object"):
+        omni.plan_pddl(
+            "(visited-object o0)",
+            [SPOT1],
+            None,
+            service,
+            planted=[{**CRATE, "sym": "O(0)"}],
+        )
+    moved = service.fix_mock_symbols(
+        planted := [{**CRATE, "sym": "O(0)"}], service._default_src()
+    )
+    assert moved == {"o0": "o2"} and planted[0]["sym"] == "O(2)"
+
+
+def test_mock_object_targets_simulate_and_stage_on_execute(svc):
+    """The simulator finds a mock target where it was planted (no missing-target
+    error), and Execute stages the mock objects the goal names in the map first."""
+    _, service = svc
+    m, _ = omni.plan_pddl(
+        "(visited-object-by spot1 o2)", [SPOT1], None, service, planted=[dict(CRATE)]
+    )
+    pv = service.preview(m)
+    assert not [i for i in pv["issues"] if i["level"] == "error"], pv["issues"]
+    assert not [i for i in pv["issues"] if i.get("code") == "planted_unmatched"]
+    applied = []
+
+    class _Edits:
+        def apply(self, sid, ops, **kw):
+            applied.append((sid, ops))
+
+    service.edits, src = _Edits(), m.src
+    m.src = "neo4j:test"
+    assert (
+        service._stage_mocks(m, service.world(m), "(visited-object-by euclid o2)")
+        == "(visited-object-by euclid o2)"
+    )
+    assert applied == [("neo4j:test", [{"op": "create_node", "layer": "Object", "symbol": "O2", "class": "crate",
+                                        "name": "crate", "pos": [5.0, 5.0]}])]  # fmt: skip
+    m.src = src
+    with pytest.raises(ValueError, match="Neo4j map"):
+        service._stage_mocks(m, service.world(m), "(visited-object-by euclid o2)")
+
+
+def test_execute_waits_for_the_planner_to_have_the_staged_map(svc, monkeypatch):
+    _, service = svc
+    seen = iter([{"map_version": 4}, {"map_version": 5}])
+
+    class _Ros:
+        available = True
+
+        def planner_view(self):
+            return next(seen, {"map_version": 5})
+
+    service.ros = _Ros()
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    service._await_planner_map(5)  # returns once the planner reports version 5
+    service.MAP_WAIT_S = 0.0
+    with pytest.raises(ValueError, match="has not received"):
+        service._await_planner_map(9)
+
+
+def test_safe_is_spelled_as_an_inspection_by_one_of_the_robots():
+    assert omni.inspect_goals(
+        "(and (safe o4) (not (suspicious O7)))", ["spot1", "husky1"]
+    ) == (
+        "(and (or (inspected-by spot1 o4) (inspected-by husky1 o4)) "
+        "(or (inspected-by spot1 o7) (inspected-by husky1 o7)))"
+    )
+    assert omni.inspect_goals("(safe o4)", ["spot1"]) == "(inspected-by spot1 o4)"
+    assert omni.inspect_goals("(visited-object o4)", ["spot1"]) == "(visited-object o4)"
+
+
+def test_safe_takes_an_inspection_not_an_empty_plan(svc):
+    """Objects start safe on the robots' planner; the mission sends and plans an
+    inspection by one of its robots, which the planner picks."""
+    _, service = svc
+    m, _ = omni.plan_pddl("(safe o0)", [SPOT1, SPOT2], None, service)
+    assert [(t.type, t.target) for t in m.tasks] == [("inspect", "O(0)")]
+    assert m.goal["pddl"] == "(or (inspected-by spot1 o0) (inspected-by spot2 o0))"
