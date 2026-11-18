@@ -18,6 +18,8 @@ id "$DRIVE_USER" >/dev/null
 install -m 0755 "$HERE/bag-drive" /usr/local/sbin/bag-drive
 install -m 0644 "$HERE/99-bag-drive.rules" /etc/udev/rules.d/99-bag-drive.rules
 install -m 0644 "$HERE/bag-drive@.service" /etc/systemd/system/bag-drive@.service
+install -D -m 0644 "$HERE/bag-drive.bash" /usr/share/bash-completion/completions/bag-drive
+install -D -m 0644 "$HERE/_bag-drive" /usr/local/share/zsh/site-functions/_bag-drive
 install -d -m 0755 /mnt/bag_drives
 echo "BAG_DRIVE_USER=$DRIVE_USER" > /etc/default/bag-drive
 

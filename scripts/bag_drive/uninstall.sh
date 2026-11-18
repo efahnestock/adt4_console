@@ -17,7 +17,9 @@ fi
 rm -f /etc/udev/rules.d/99-bag-drive.rules /etc/systemd/system/bag-drive@.service \
       /etc/sudoers.d/bag-drive /etc/default/bag-drive \
       /usr/local/sbin/bag-drive /usr/local/bin/bag-drive \
-      /etc/polkit-1/rules.d/50-bag-drive.rules
+      /etc/polkit-1/rules.d/50-bag-drive.rules \
+      /usr/share/bash-completion/completions/bag-drive \
+      /usr/local/share/zsh/site-functions/_bag-drive
 rmdir /mnt/bag_drives 2>/dev/null || true
 systemctl daemon-reload
 udevadm control --reload

@@ -18,7 +18,8 @@ On the robot:
     bag-drive unmount NAME      # the same as eject
 
 NAME is the name `status` shows, or the drive's label, UUID, mount path or
-`/dev` partition. `eject` gets root through sudo itself (the installer adds a
+`/dev` partition; Tab completes commands and drive names in bash and zsh
+(open a new shell after installing). `eject` gets root through sudo itself (the installer adds a
 password-free rule for `bag-drive eject` only). It prints what it did and
 exits 0 only once the drive is unmounted; an unknown name or a busy drive is
 an error that says why, with the processes holding the drive open.
@@ -31,7 +32,8 @@ Files: `bag-drive` (the helper, installed to `/usr/local/sbin`),
 `99-bag-drive.rules` (udev: USB filesystems only, never internal disks),
 `bag-drive@.service` (one unit per mounted partition, runs the helper's
 `_hook-mount`/`_hook-unmount`), `bag-drive.rules.in` (the polkit rule; needs
-Ubuntu 23.10 or later), `install.sh`, `uninstall.sh`.
+Ubuntu 23.10 or later), `bag-drive.bash` and `_bag-drive` (Tab completion for
+bash and zsh), `install.sh`, `uninstall.sh`.
 
 A drive whose root folder is root-owned (ext4) gets a `bags/` folder the robot
 user can write to; `write_dir` in the status says where to write. A link under
