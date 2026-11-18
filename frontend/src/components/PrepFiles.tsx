@@ -122,13 +122,18 @@ export function PrepFiles({
   const picked = mode === "launch" ? files : live;
   const setPicked = (f: PrepFile[]) =>
     mode === "launch" ? onFiles?.(f) : setLive(f);
-  const applied = status.data?.applied ?? [];
+  const applied = Array.isArray(status.data?.applied)
+    ? status.data.applied
+    : [];
 
   // files on the base station (settings.prep_dir), the usual source
   const baseFiles = useApi<{ dir: string; files: BaseFile[] }>(
     "api/prep/files",
   );
   const [basePick, setBasePick] = useState("");
+  const baseList = Array.isArray(baseFiles.data?.files)
+    ? baseFiles.data.files
+    : [];
   const addBase = async (path: string) => {
     if (!path) return;
     setErr(null);
@@ -279,11 +284,11 @@ export function PrepFiles({
               ? "base station files unavailable"
               : !baseFiles.data
                 ? "loading files…"
-                : baseFiles.data.files.length
-                  ? `${mode === "launch" ? "Add" : "Load"} a file from the base station (${baseFiles.data.files.length})…`
+                : baseList.length
+                  ? `${mode === "launch" ? "Add" : "Load"} a file from the base station (${baseList.length})…`
                   : `no edit files in ${baseFiles.data.dir}`}
           </option>
-          {(baseFiles.data?.files ?? []).map((f) => (
+          {baseList.map((f) => (
             <option key={f.path} value={f.path}>
               {f.path}
               {f.prior ? ` [${f.prior}]` : ""}

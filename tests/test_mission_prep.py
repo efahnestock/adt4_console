@@ -448,3 +448,15 @@ def test_files_on_the_base_station_are_listed_and_read_inside_the_folder_only(tm
     ):
         with pytest.raises(PrepError):
             svc.read_file(bad)
+
+
+def test_restore_all_puts_back_every_removed_place():
+    _, _, after = compile_intent(
+        [{"do": "retire_places", "places": ["T5", "T6", "T9"]}], grid_snapshot()
+    )
+    ops, rep, back = compile_intent([{"do": "restore_places", "places": "all"}], after)
+    assert [o["symbol"] for o in ops] == ["T5", "T6", "T9"] and not back.retired
+    ops, _, _ = compile_intent(
+        [{"do": "restore_places", "places": "all"}], grid_snapshot()
+    )
+    assert ops == []  # nothing removed: nothing to do

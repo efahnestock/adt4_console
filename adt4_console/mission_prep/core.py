@@ -17,7 +17,8 @@ Intent steps (place symbols are matched ignoring case: ``t5840`` = ``T5840``):
   one object on each place (at its center), attached to it (place CONTAINS object).
 * ``{"do": "retire_places", "places": [...]}`` -- take places out of the map (an
   obstacle): ``retire_node``, which the planner never sees; ``restore_places`` undoes it.
-* ``{"do": "restore_places", "places": [...]}``
+* ``{"do": "restore_places", "places": [...] | "all"}`` -- ``"all"`` puts back every
+  removed place, whichever file removed it (a generic "remove obstacles" file).
 * ``{"do": "add_region", "name": "base camp", "class"?: "base camp",
   "places"?: [...], "polygon_from"?: [...], "expand"?: "adjacent"}`` -- a new region
   (Room).  ``places`` (+ their 1-hop neighbours with ``expand: adjacent``) or the
@@ -376,7 +377,19 @@ class _Compiler:
 
     def do_restore_places(self, st):
         done = []
-        for n in st.get("places") or []:
+        names = st.get("places")
+        if names in (None, "all", "*"):
+            names = sorted(
+                (
+                    k
+                    for k, v in self.s.retired.items()
+                    if v.get("label") in (PLACE, None)
+                ),
+                key=_symkey,
+            )
+        elif isinstance(names, str):
+            names = [names]
+        for n in names:
             p = self.s.retired_place(str(n))
             if p is None:
                 if self.s.place(str(n)):

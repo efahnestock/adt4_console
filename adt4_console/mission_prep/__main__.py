@@ -98,6 +98,10 @@ def cmd_compile(a):
     f = make_file(a.name, intent, snap, a.summary or "")
     if a.after:
         f["after"] = [pathlib.Path(p).name for p in a.after]
+    if (
+        a.any_map
+    ):  # generic: not tied to one prior map (the console warns on another prior)
+        f["map"] = {"prior": None}
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(f, indent=1))
@@ -181,6 +185,11 @@ def main(argv=None):
     c.add_argument("--out", required=True)
     c.add_argument(
         "--after", nargs="*", help="earlier files (not yet applied) this one builds on"
+    )
+    c.add_argument(
+        "--any-map",
+        action="store_true",
+        help="a generic file, not tied to this prior map",
     )
     r = sub.add_parser("render")
     common(r)
