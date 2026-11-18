@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
-"""bag-drive: mount, list and eject USB bag drives at a fixed path.
+"""bag-drive: USB bag drives on a robot, mounted at /mnt/bag_drives/<name>.
 
-Installed at /usr/local/sbin/bag-drive.
+  bag-drive status [--json]        list bag drives, free space, USB link speed
+  bag-drive eject NAME [NAME...]   sync, unmount and power down; then it is safe to unplug
+  bag-drive eject --all            eject every bag drive
+  bag-drive unmount ...            the same as eject
 
-  bag-drive status [--json]     list mounted bag drives (no root needed)
-  sudo bag-drive eject NAME     sync, unmount and power down a drive
-  bag-drive mount /dev/sdX1     (root; run by bag-drive@.service on plug-in)
-  bag-drive unmount /dev/sdX1   (root; run by bag-drive@.service on removal)
+NAME is the drive's name from `bag-drive status`, its label, UUID, mount path
+or /dev partition. eject asks sudo for root on its own (no password for the
+drive user). Every eject says what it did, and exits 0 only if the drive is
+unmounted. The desktop's file manager can eject bag drives too.
 
-Drives mount at /mnt/bag_drives/<label, or UUID if unlabeled>. State for each
-mounted partition is kept in /run/bag_drives/<kernel name>.json.
+Run by bag-drive@.service, not by people:
+  bag-drive _hook-mount /dev/sdX1     on plug-in
+  bag-drive _hook-unmount /dev/sdX1   on removal
+
+State for each partition is kept in /run/bag_drives/<kernel name>.json.
 """
+import argparse
 import json
 import os
 import pwd
@@ -21,6 +28,7 @@ import subprocess
 import sys
 import time
 
+SELF = "/usr/local/sbin/bag-drive"
 MOUNT_ROOT = "/mnt/bag_drives"
 STATE_DIR = "/run/bag_drives"
 CONFIG = "/etc/default/bag-drive"
@@ -28,15 +36,20 @@ POSIX_FS = {"ext4", "ext3", "ext2", "xfs", "btrfs", "f2fs"}
 OWNED_FS = {"exfat": "exfat", "vfat": "vfat", "ntfs": "ntfs3"}
 
 
-def run(cmd, check=False):
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    if check and p.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd)}: {p.stdout.strip()}")
+class Fail(Exception):
+    """A failure to report to the user as one plain line (exit 1)."""
+
+
+def run(cmd, timeout=60):
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 127, str(e)
     return p.returncode, p.stdout.strip()
 
 
-def owner():
-    """The user that should be able to write to mounted drives."""
+def drive_user():
+    """The user that writes to and ejects the drives."""
     name = "swarm"
     try:
         for line in open(CONFIG):
@@ -44,16 +57,48 @@ def owner():
                 name = line.split("=", 1)[1].strip().strip('"')
     except OSError:
         pass
-    pw = pwd.getpwnam(name)
-    return pw.pw_uid, pw.pw_gid
+    return pwd.getpwnam(name)
+
+
+# --------------------------------------------------------------- the system
+def mounts():
+    """[(device, mountpoint)] from the kernel's mount table (the truth, unlike the state files)."""
+    out = []
+    try:
+        lines = open("/proc/self/mounts").read().splitlines()
+    except OSError:
+        return out
+    unescape = lambda s: re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
+    for line in lines:
+        f = line.split()
+        if len(f) >= 2:
+            out.append((unescape(f[0]), unescape(f[1])))
+    return out
+
+
+def mountpoints_of(dev):
+    real = os.path.realpath(dev)
+    return [mp for d, mp in mounts() if d == dev or (d.startswith("/dev/") and os.path.realpath(d) == real)]
 
 
 def devinfo(dev):
     rc, out = run(["lsblk", "-J", "-b", "-o", "NAME,KNAME,PKNAME,FSTYPE,LABEL,UUID,SIZE,MODEL,MOUNTPOINT", dev])
     if rc != 0:
-        raise RuntimeError(f"lsblk {dev}: {out}")
+        raise Fail(f"lsblk {dev}: {out}")
     d = json.loads(out)["blockdevices"][0]
-    return {k: (d.get(k) or "") for k in ("kname", "pkname", "fstype", "label", "uuid", "size", "model", "mountpoint")}
+    info = {k: (d.get(k) or "") for k in ("kname", "pkname", "fstype", "label", "uuid", "size", "model", "mountpoint")}
+    if not info["fstype"]:
+        # lsblk reads udev's database, which can lag behind a fresh plug-in; ask the disk itself.
+        rc, out = run(["blkid", "-o", "export", dev])
+        tags = dict(line.split("=", 1) for line in out.splitlines() if "=" in line) if rc == 0 else {}
+        info.update(fstype=tags.get("TYPE", ""), label=info["label"] or tags.get("LABEL", ""), uuid=info["uuid"] or tags.get("UUID", ""))
+    return info
+
+
+def partitions_of(disk):
+    """The disk and every partition on it, as /dev paths."""
+    rc, out = run(["lsblk", "-nrpo", "NAME", disk])
+    return out.split() if rc == 0 else [disk]
 
 
 def usb_speed_mbps(disk):
@@ -67,6 +112,43 @@ def usb_speed_mbps(disk):
     return 0
 
 
+def users_of(mp):
+    """[(pid, user, command, path)] for processes with a file, cwd or root on the mount."""
+    out = []
+    inside = lambda p: p == mp or p.startswith(mp + "/")
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        base = f"/proc/{pid}"
+        hit = ""
+        try:
+            for link in ("cwd", "root", "exe"):
+                t = os.readlink(f"{base}/{link}")
+                if inside(t):
+                    hit = t if link != "cwd" else f"{t} (working directory)"
+                    break
+            if not hit:
+                for fd in os.listdir(f"{base}/fd"):
+                    try:
+                        t = os.readlink(f"{base}/fd/{fd}")
+                    except OSError:
+                        continue
+                    if inside(t):
+                        hit = t
+                        break
+            if not hit:
+                continue
+            cmd = open(f"{base}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace").strip()
+            cmd = cmd or open(f"{base}/comm").read().strip()
+            try:
+                user = pwd.getpwuid(os.stat(base).st_uid).pw_name
+            except KeyError:
+                user = str(os.stat(base).st_uid)
+        except OSError:
+            continue
+        out.append((int(pid), user, cmd[:100], hit))
+    return out
+
+
+# ------------------------------------------------------------------- state
 def state_path(kname):
     return os.path.join(STATE_DIR, kname + ".json")
 
@@ -95,6 +177,58 @@ def read_states():
     return out
 
 
+def remove_state(state):
+    try:
+        os.remove(state_path(os.path.basename(state["dev"])))
+    except OSError:
+        pass
+    mp = state.get("mountpoint", "")
+    if state.get("managed") and mp.startswith(MOUNT_ROOT + "/") and not os.path.ismount(mp):
+        try:
+            os.rmdir(mp)
+        except OSError:
+            pass
+
+
+def drives():
+    """The state files, checked against the kernel's mount table.
+
+    A drive unmounted or remounted some other way (the desktop, a plain umount)
+    shows up as it really is. A state file whose device is gone is dropped.
+    """
+    out = []
+    for s in read_states():
+        if not s.get("dev") or not os.path.exists(s["dev"]):
+            if os.geteuid() == 0:
+                remove_state(s)
+            continue
+        s = dict(s)
+        where = mountpoints_of(s["dev"])
+        if s.get("mountpoint") in where:
+            s["mounted"] = True
+        elif where:
+            # Unmounted from /mnt/bag_drives, then mounted somewhere else (e.g. by the desktop).
+            s.update(mounted=True, mountpoint=where[0], managed=False)
+        else:
+            s["mounted"] = False
+        out.append(s)
+    return out
+
+
+def find(name, ds):
+    keys = lambda s: {s.get("name"), s.get("label"), s.get("uuid"), s.get("dev"), s.get("mountpoint")} - {"", None}
+    want = name.rstrip("/") or name
+    hits = [s for s in ds if want in keys(s)]
+    if not hits:
+        hits = [s for s in ds if want.lower() in {k.lower() for k in keys(s)}]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        raise Fail(f"'{name}' matches more than one drive ({', '.join(s['name'] for s in hits)}): use the name from bag-drive status")
+    have = ", ".join(s["name"] for s in ds) or "none plugged in"
+    raise Fail(f"no bag drive '{name}'. Bag drives: {have}")
+
+
 def pick_name(info):
     base = re.sub(r"[^A-Za-z0-9._-]+", "_", info["label"]).strip("._") or info["uuid"] or info["kname"]
     name = base
@@ -104,7 +238,13 @@ def pick_name(info):
     return name
 
 
-def cmd_mount(dev):
+def gib(n):
+    return f"{n / 2 ** 30:.0f} GiB"
+
+
+# ------------------------------------------------------------------- hooks
+def hook_mount(dev):
+    drives()  # drops state left by drives that were pulled
     info = devinfo(dev)
     kname = info["kname"]
     state = {
@@ -112,7 +252,7 @@ def cmd_mount(dev):
         "disk": "/dev/" + info["pkname"] if info["pkname"] else "/dev/" + kname,
         "label": info["label"], "uuid": info["uuid"], "fstype": info["fstype"],
         "model": info["model"].strip(), "mounted_at": int(time.time()),
-        "name": "", "mountpoint": "", "managed": False, "error": "",
+        "name": info["label"] or kname, "mountpoint": "", "managed": False, "error": "",
     }
     state["usb_speed_mbps"] = usb_speed_mbps(state["disk"])
     fstype = info["fstype"]
@@ -126,7 +266,7 @@ def cmd_mount(dev):
         write_state(kname, state)
         print(state["error"], file=sys.stderr)
         return 0
-    uid, gid = owner()
+    pw = drive_user()
     name = pick_name(info)
     mp = os.path.join(MOUNT_ROOT, name)
     state.update(name=name, mountpoint=mp)
@@ -135,9 +275,12 @@ def cmd_mount(dev):
     mtype = fstype
     if fstype in OWNED_FS:
         mtype = OWNED_FS[fstype]
-        opts += f",uid={uid},gid={gid}"
-        opts += ",umask=0022" if fstype != "ntfs" else ",umask=022"
-    rc, out = run(["mount", "-t", mtype, "-o", opts, "/dev/" + kname, mp])
+        opts += f",uid={pw.pw_uid},gid={pw.pw_gid},umask=0022"
+    # x-gvfs-* are never passed to the kernel: they make the desktop's file
+    # manager list the drive (with an eject button) although it is under /mnt.
+    rc, out = run(["mount", "-t", mtype, "-o", f"{opts},x-gvfs-show,x-gvfs-name={name}", state["dev"], mp])
+    if rc != 0:
+        rc, out = run(["mount", "-t", mtype, "-o", opts, state["dev"], mp])
     if rc != 0:
         state["error"] = f"mount failed: {out}"
         write_state(kname, state)
@@ -155,123 +298,150 @@ def cmd_mount(dev):
         try:
             if not os.path.exists(bags):
                 os.mkdir(bags, 0o775)
-                os.chown(bags, uid, gid)
+                os.chown(bags, pw.pw_uid, pw.pw_gid)
         except OSError as e:
             state["error"] = f"mounted, but could not create bags/: {e}"
     write_state(kname, state)
-    print(f"mounted /dev/{kname} at {mp}")
+    print(f"mounted {state['dev']} at {mp}")
     return 0
 
 
-def cmd_unmount(dev, lazy_if_gone=True):
+def hook_unmount(dev):
+    """The device went away, or its unit was stopped. Clean up whatever is left."""
     kname = os.path.basename(dev)
     try:
         state = json.load(open(state_path(kname)))
     except (OSError, ValueError):
         return 0
-    rc = 0
     mp = state.get("mountpoint", "")
     if state.get("managed") and mp and os.path.ismount(mp):
+        gone = not os.path.exists(state["dev"])
         rc, out = run(["umount", mp])
-        if rc != 0 and lazy_if_gone and not os.path.exists(state["dev"]):
+        if rc != 0 and gone:
             # The drive was pulled without ejecting. Detach the dead mount.
             rc, out = run(["umount", "-l", mp])
         if rc != 0:
             print(f"unmount of {mp} failed: {out}", file=sys.stderr)
             return 1
-    if state.get("managed") and mp.startswith(MOUNT_ROOT + "/") and not os.path.ismount(mp):
-        try:
-            os.rmdir(mp)
-        except OSError:
-            pass
-    try:
-        os.remove(state_path(kname))
-    except OSError:
-        pass
-    return rc
-
-
-def cmd_eject(name):
-    if os.geteuid() != 0:
-        print("eject needs root: run  sudo bag-drive eject NAME", file=sys.stderr)
-        return 2
-    matches = [s for s in read_states() if name in (s.get("name"), s.get("dev"), s.get("mountpoint"))]
-    if not matches:
-        print(f"no bag drive named '{name}'. Mounted: {', '.join(s['name'] for s in read_states()) or 'none'}", file=sys.stderr)
-        return 1
-    state = matches[0]
-    if not state.get("managed"):
-        print(f"{state['name']} was not mounted by bag-drive (it is at {state['mountpoint']}); eject it from the desktop", file=sys.stderr)
-        return 1
-    mp, dev, disk = state["mountpoint"], state["dev"], state["disk"]
-    os.sync()
-    if os.path.ismount(mp):
-        rc, out = run(["umount", mp])
-        if rc != 0:
-            print(f"cannot unmount {mp}: {out}", file=sys.stderr)
-            rc2, users = run(["fuser", "-vm", mp]) if shutil.which("fuser") else (1, "")
-            if users:
-                print("processes using the drive:\n" + users, file=sys.stderr)
-            return 1
-    kname = os.path.basename(dev)
-    run(["systemctl", "stop", f"bag-drive@{kname}.service"])
-    cmd_unmount(dev)
-    # Power the drive down only when no other partition on it is still mounted.
-    others = [s for s in read_states() if s.get("disk") == disk and s.get("mountpoint") and os.path.ismount(s["mountpoint"])]
-    powered = False
-    if not others:
-        rc, out = run(["udisksctl", "power-off", "-b", disk]) if shutil.which("udisksctl") else (1, "")
-        if rc == 0:
-            powered = True
-        else:
-            delete = f"/sys/block/{os.path.basename(disk)}/device/delete"
-            try:
-                with open(delete, "w") as f:
-                    f.write("1")
-                powered = True
-            except OSError:
-                pass
-    print(f"ejected {state['name']}: unmounted" + (" and powered down, safe to unplug" if powered else ", safe to unplug (could not power down)"))
+    remove_state(state)
     return 0
 
 
+# ------------------------------------------------------------------- eject
+def eject_one(s):
+    """Unmount and power down one drive (as root). Returns the line to print; raises Fail."""
+    name, dev, disk = s["name"], s["dev"], s.get("disk") or s["dev"]
+    os.sync()
+    was_mounted = False
+    for mp in mountpoints_of(dev):
+        was_mounted = True
+        rc, out = run(["umount", mp])
+        if rc != 0:
+            msg = f"{name} was NOT ejected: cannot unmount {mp}: {out}"
+            procs = users_of(mp)
+            if procs:
+                msg += "\n  in use by:" + "".join(f"\n    pid {p} ({u}): {c}\n      {path}" for p, u, c, path in procs[:10])
+                msg += "\n  stop these (or cd out of the drive), then eject again"
+            raise Fail(msg)
+    left = mountpoints_of(dev)
+    if left:
+        raise Fail(f"{name} was NOT ejected: still mounted at {', '.join(left)}")
+    kname = os.path.basename(dev)
+    run(["systemctl", "stop", f"bag-drive@{kname}.service"])  # runs _hook-unmount
+    remove_state(s)
+    what = "unmounted" if was_mounted else "already unmounted"
+    others = [p for p in partitions_of(disk) if p != dev and mountpoints_of(p)]
+    if others:
+        return f"ejected {name}: {what}. NOT powered down: {', '.join(others)} on the same disk is still mounted, eject that too before unplugging"
+    rc, out = run(["udisksctl", "power-off", "--no-user-interaction", "-b", disk]) if shutil.which("udisksctl") else (1, "udisksctl not installed")
+    if rc != 0:
+        try:
+            with open(f"/sys/block/{os.path.basename(disk)}/device/delete", "w") as f:
+                f.write("1")
+            rc = 0
+        except OSError as e:
+            out = f"{out}; {e}"
+    if rc == 0:
+        return f"ejected {name}: {what} and powered down. Safe to unplug."
+    return f"ejected {name}: {what}, but could not power it down ({out}). Safe to unplug."
+
+
+def cmd_eject(names, all_drives):
+    ds = drives()
+    if all_drives:
+        targets = ds
+        if not targets:
+            print("no bag drives plugged in: nothing to eject")
+            return 0
+    else:
+        targets = [find(n, ds) for n in names]  # check every name before touching anything
+    if os.geteuid() != 0:
+        return reexec_with_sudo(["eject"] + (["--all"] if all_drives else [t["name"] for t in targets]))
+    rc = 0
+    for t in targets:
+        try:
+            line = eject_one(t)
+            print(line)
+        except Fail as e:
+            rc = 1
+            print(e, file=sys.stderr)
+    return rc
+
+
+def reexec_with_sudo(args):
+    exe = SELF if os.path.exists(SELF) else os.path.realpath(sys.argv[0])
+    p = subprocess.run(["sudo", "-n", exe] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    sys.stdout.write(p.stdout)
+    if p.returncode != 0 and "password is required" in p.stderr:
+        msg = (f"eject needs root, and this user has no password-free sudo rule for bag-drive.\n"
+               f"  run: sudo bag-drive {' '.join(args)}\n"
+               f"  or reinstall bag-drive for this user (sudo ./install.sh {pwd.getpwuid(os.getuid()).pw_name})")
+        print(msg, file=sys.stderr)
+        return 1
+    sys.stderr.write(p.stderr)
+    return p.returncode
+
+
+# ------------------------------------------------------------------ status
 def cmd_status(as_json):
-    drives = []
-    for s in read_states():
-        mp = s.get("mountpoint", "")
-        d = {k: s.get(k, "") for k in ("name", "label", "uuid", "fstype", "model", "dev", "mountpoint", "managed", "error", "mounted_at")}
+    out = []
+    for s in drives():
+        d = {k: s.get(k, "") for k in ("name", "label", "uuid", "fstype", "model", "dev", "mountpoint", "managed", "error", "mounted_at", "mounted")}
         d["usb_speed_mbps"] = s.get("usb_speed_mbps", 0)
         d["slow_link"] = 0 < d["usb_speed_mbps"] < 5000
-        d["mounted"] = bool(mp) and os.path.ismount(mp)
         d["size_bytes"] = d["free_bytes"] = 0
         d["write_dir"] = ""
         if d["mounted"]:
             try:
-                st = os.statvfs(mp)
+                st = os.statvfs(d["mountpoint"])
                 d["size_bytes"] = st.f_blocks * st.f_frsize
                 d["free_bytes"] = st.f_bavail * st.f_frsize
             except OSError:
                 pass
-            for cand in (mp, os.path.join(mp, "bags")):
+            for cand in (d["mountpoint"], os.path.join(d["mountpoint"], "bags")):
                 if os.path.isdir(cand) and os.access(cand, os.W_OK):
                     d["write_dir"] = cand
                     break
-        drives.append(d)
+        out.append(d)
     if as_json:
-        print(json.dumps({"host": socket.gethostname(), "time": int(time.time()), "drives": drives}, indent=1))
+        print(json.dumps({"host": socket.gethostname(), "time": int(time.time()), "drives": out}, indent=1))
         return 0
-    if not drives:
-        print("no bag drives mounted")
+    if not out:
+        print("no bag drives plugged in")
         return 0
-    for d in drives:
+    for d in out:
         g = 2 ** 30
-        line = f"{d['name']:24s} {d['fstype']:6s} {d['free_bytes'] / g:7.0f}G free of {d['size_bytes'] / g:6.0f}G  {d['mountpoint']}"
-        if not d["mounted"]:
-            line += "  [not mounted]"
-        elif not d["write_dir"]:
-            line += "  [read-only for this user]"
-        elif d["write_dir"] != d["mountpoint"]:
-            line += f"  [write to {d['write_dir']}]"
+        line = f"{d['name']:24s} {d['fstype']:6s} "
+        if d["mounted"]:
+            line += f"{d['free_bytes'] / g:7.0f}G free of {d['size_bytes'] / g:6.0f}G  {d['mountpoint']}"
+            if not d["managed"]:
+                line += "  [mounted outside bag-drive]"
+            if not d["write_dir"]:
+                line += "  [read-only for this user]"
+            elif d["write_dir"] != d["mountpoint"]:
+                line += f"  [write to {d['write_dir']}]"
+        else:
+            line += f"{'':29s} {d['dev']}  [not mounted: eject it, or unplug and replug to mount it]"
         if d["slow_link"]:
             line += f"  [SLOW: USB 2.0 link, {d['usb_speed_mbps']} Mbit/s. Use a blue/USB-C port and a USB 3 cable]"
         if d["error"]:
@@ -280,22 +450,49 @@ def cmd_status(as_json):
     return 0
 
 
+# -------------------------------------------------------------------- main
+def need_root(what):
+    if os.geteuid() != 0:
+        raise Fail(f"{what} is run by bag-drive@.service as root; to remove a drive use: bag-drive eject NAME")
+
+
 def main(argv):
-    if len(argv) >= 2 and argv[1] == "status":
-        return cmd_status("--json" in argv[2:])
-    if len(argv) == 3 and argv[1] == "eject":
-        return cmd_eject(argv[2])
-    if len(argv) == 3 and argv[1] == "mount":
-        return cmd_mount(argv[2])
-    if len(argv) == 3 and argv[1] == "unmount":
-        return cmd_unmount(argv[2])
-    print(__doc__, file=sys.stderr)
+    ap = argparse.ArgumentParser(prog="bag-drive", description=__doc__.split("\n\n")[0],
+                                 epilog="eject asks sudo for root itself. See bag-drive status for drive names.")
+    sub = ap.add_subparsers(dest="cmd", metavar="{status,eject,unmount}")
+    st = sub.add_parser("status", help="list bag drives")
+    st.add_argument("--json", action="store_true")
+    for c in ("eject", "unmount", "umount"):
+        e = sub.add_parser(c, **({"help": "sync, unmount and power down drives"} if c == "eject" else {}))
+        e.add_argument("names", nargs="*", metavar="NAME")
+        e.add_argument("--all", action="store_true", help="every bag drive")
+    for c in ("_hook-mount", "_hook-unmount"):
+        h = sub.add_parser(c)
+        h.add_argument("dev")
+    a = ap.parse_args(argv[1:])
+    if a.cmd == "status":
+        return cmd_status(a.json)
+    if a.cmd in ("eject", "unmount", "umount"):
+        if bool(a.names) == a.all:
+            ap.error(f"{a.cmd} needs drive names or --all (not both). Bag drives: "
+                     + (", ".join(s["name"] for s in drives()) or "none plugged in"))
+        return cmd_eject(a.names, a.all)
+    if a.cmd == "_hook-mount":
+        need_root(a.cmd)
+        return hook_mount(a.dev)
+    if a.cmd == "_hook-unmount":
+        need_root(a.cmd)
+        return hook_unmount(a.dev)
+    ap.print_help(sys.stderr)
     return 2
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv))
+    except Fail as e:
+        print(f"bag-drive: {e}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:  # keep a failed mount from leaving the unit in a confusing state
         print(f"bag-drive: {e}", file=sys.stderr)
         sys.exit(1)
