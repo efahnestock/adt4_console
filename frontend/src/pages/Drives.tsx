@@ -181,8 +181,8 @@ function DriveRow({machine, drive, onChanged, onMessage}: {machine: string; driv
           Interrupt copy
         </button>
       )}
-      <button className="btn btn-sm" disabled={busy || copying || !drive.managed} onClick={eject}
-        title={copying ? "A copy is writing to this drive: interrupt it or wait" : !drive.managed ? "Mounted by the desktop, not by bag-drive: eject it there" : "Sync, unmount and power the drive down so it is safe to unplug"}>
+      <button className="btn btn-sm" disabled={busy || copying} onClick={eject}
+        title={copying ? "A copy is writing to this drive: interrupt it or wait" : "Sync, unmount and power the drive down so it is safe to unplug"}>
         {busy ? <Spinner label="Ejecting" /> : "Eject"}
       </button>
     </div>

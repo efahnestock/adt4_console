@@ -98,6 +98,11 @@ describe("Drives page", () => {
     expect(document.body.textContent).toContain("safe to unplug");
   });
 
+  it("ejects a drive the desktop mounted", async () => {
+    await mount([drive({managed: false, mountpoint: "/media/swarm/dcist_ssd3"})]);
+    expect(button("Eject")!.disabled).toBe(false);
+  });
+
   it("does not eject while a copy is writing to the drive", async () => {
     useJobs.getState().upsert({id: "drive_copy-1", kind: "drive_copy", title: "copy", state: "running", created: 1});
     await mount([drive({copy_job: "drive_copy-1"})]);

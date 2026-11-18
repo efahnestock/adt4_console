@@ -9,14 +9,15 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if ls /run/bag_drives/*.json >/dev/null 2>&1; then
-    echo "bag drives are still mounted; eject them first:" >&2
+    echo "bag drives are still plugged in; eject them first (bag-drive eject --all):" >&2
     /usr/local/sbin/bag-drive status >&2
     exit 1
 fi
 
 rm -f /etc/udev/rules.d/99-bag-drive.rules /etc/systemd/system/bag-drive@.service \
       /etc/sudoers.d/bag-drive /etc/default/bag-drive \
-      /usr/local/sbin/bag-drive /usr/local/bin/bag-drive
+      /usr/local/sbin/bag-drive /usr/local/bin/bag-drive \
+      /etc/polkit-1/rules.d/50-bag-drive.rules
 rmdir /mnt/bag_drives 2>/dev/null || true
 systemctl daemon-reload
 udevadm control --reload

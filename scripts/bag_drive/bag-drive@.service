@@ -6,5 +6,5 @@ After=dev-%i.device
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/bag-drive mount /dev/%I
-ExecStop=/usr/local/sbin/bag-drive unmount /dev/%I
+ExecStart=/usr/local/sbin/bag-drive _hook-mount /dev/%I
+ExecStop=/usr/local/sbin/bag-drive _hook-unmount /dev/%I

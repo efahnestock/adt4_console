@@ -1,0 +1,18 @@
+// bag-drive: let @USER@ unmount and power down USB drives from the desktop
+// (the file manager's eject button) without an admin password. bag-drive
+// mounts the drives as root, so without this udisks treats them as another
+// user's mounts. Only USB drives, only from an active local session.
+polkit.addRule(function (action, subject) {
+    var ids = [
+        "org.freedesktop.udisks2.filesystem-unmount-others",
+        "org.freedesktop.udisks2.power-off-drive",
+        "org.freedesktop.udisks2.power-off-drive-other-seat",
+        "org.freedesktop.udisks2.eject-media",
+        "org.freedesktop.udisks2.eject-media-other-seat",
+    ];
+    if (ids.indexOf(action.id) >= 0 && subject.user == "@USER@" &&
+        subject.local && subject.active &&
+        action.lookup("drive.removable.bus") == "usb") {
+        return polkit.Result.YES;
+    }
+});

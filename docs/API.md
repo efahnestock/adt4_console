@@ -1772,8 +1772,10 @@ straight onto the drive, so bag data never crosses the radio.
   `slow_link` = a USB 2.0 link (under 5000 Mbit/s): wrong port or cable.
   `copy_job` = the copy job writing to the drive now, else null.
 * `POST /api/drives/eject` `{machine, drive}` → `{ok, message}`. Runs
-  `sudo -n bag-drive eject` (sync, unmount, power down). 409 while a copy to
-  that drive is running; 502 with the helper's message when it fails (drive busy).
+  `sudo -n bag-drive eject` (sync, unmount, power down; also a drive the
+  desktop mounted, `managed: false`). 409 while a copy to that drive is
+  running; 502 with the helper's message when it fails (an unknown drive, or a
+  busy one: the message lists the processes holding it open).
 * `GET /api/drives/bags?machine=&drive=` → `{machine, drive, root, runs: [{name,
   mtime, bytes, dest_bytes, recording, on_drive, bags: [{name, bytes, files,
   metadata, recording, dest_bytes, on_drive}]}]}`, newest first. A bag is a
