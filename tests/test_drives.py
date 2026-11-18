@@ -396,6 +396,84 @@ def test_bag_scan_finds_bags_in_runs(tmp_path):
         bd.parse_bag_scan(255, "", "ssh: connect to host: timed out")
 
 
+def test_bag_scan_finds_runs_nested_in_group_folders(tmp_path):
+    out = tmp_path / "out"
+    old = time.time() - 3600
+
+    def bag(rel, name="recorded_data"):
+        d = out / rel / name
+        d.mkdir(parents=True)
+        (d / f"{name}_0.mcap").write_bytes(b"x" * 100)
+        (d / "metadata.yaml").write_text("rosbag2_bagfile_information: {}")
+        for f in d.iterdir():
+            os.utime(f, (old, old))
+        return d
+
+    # euclid on Nov 18: a launch's output folder inside a group folder, with its
+    # hydra/roman output next to the bag
+    bag("wednesday/top_parking_lot")
+    (out / "wednesday" / "top_parking_lot" / "hydra" / "backend").mkdir(parents=True)
+    bag("wednesday/table_area_middle")
+    bag("trial_a", "euclid")
+    # a top-level run that the flattened nested name would take
+    bag("wednesday_top_parking_lot")
+    # deeper than the search goes, and a bag at the depth limit
+    bag("a/b/c/d")
+    bag("x/y/z")
+    # a bag folder's own subfolders are never searched
+    bag("trial_a/euclid", "nested")
+    scan = _scan(out)
+    by = {r["name"]: r for r in scan["runs"]}
+    assert set(by) == {
+        "wednesday_top_parking_lot",
+        "wednesday_top_parking_lot_2",
+        "wednesday_table_area_middle",
+        "trial_a",
+        "x_y_z",
+    }
+    assert by["wednesday_top_parking_lot"]["path"] == "wednesday_top_parking_lot"
+    assert by["wednesday_top_parking_lot_2"]["path"] == "wednesday/top_parking_lot"
+    assert by["wednesday_table_area_middle"]["path"] == "wednesday/table_area_middle"
+    assert by["x_y_z"]["path"] == "x/y/z"
+    assert by["trial_a"]["path"] == "trial_a"
+    assert [b["name"] for b in by["wednesday_table_area_middle"]["bags"]] == [
+        "recorded_data"
+    ]
+    assert by["wednesday_table_area_middle"]["recording"] is False
+
+    # on the drive a nested run is one flat folder, the run's name
+    drive = tmp_path / "drive" / "euclid"
+    copy = drive / "wednesday_table_area_middle" / "recorded_data"
+    copy.mkdir(parents=True)
+    (copy / "recorded_data_0.mcap").write_bytes(b"x" * 100)
+    (copy / "metadata.yaml").write_text("rosbag2_bagfile_information: {}")
+    there = {r["name"]: r for r in _scan(out, drive)["runs"]}
+    assert there["wednesday_table_area_middle"]["on_drive"] == "copied"
+    assert there["wednesday_top_parking_lot_2"]["on_drive"] == ""
+
+
+def test_parse_bag_scan_checks_run_paths():
+    def parse(path):
+        run = {"name": "a_b", "path": path, "bags": [{"name": "bag"}]}
+        return bd.parse_bag_scan(0, json.dumps({"root": "/r", "runs": [run]}))["runs"]
+
+    assert parse("a/b")[0]["path"] == "a/b"
+    for bad in ("a/../b", "/a", "a//b", "a/b/", "../a", "a/ b", 7):
+        assert parse(bad) == [], bad
+    # an older scan without "path": the run is its own folder
+    old = {"root": "/r", "runs": [{"name": "run", "bags": [{"name": "bag"}]}]}
+    assert bd.parse_bag_scan(0, json.dumps(old))["runs"][0]["path"] == "run"
+
+
+def test_prune_also_removes_emptied_group_folders():
+    root = "/home/swarm/adt4_output"
+    assert bd.prune_command(f"{root}/run") == bd.prune_command(f"{root}/run", root)
+    assert bd.prune_command(f"{root}/wednesday/top", root) == (
+        f"rmdir -- {root}/wednesday/top 2>/dev/null; "
+        f"rmdir -- {root}/wednesday 2>/dev/null; true"
+    )
+
+
 # ------------------------------------------------------------------- routes
 def test_list_drives_per_machine(app):
     client, svc = app
@@ -1079,6 +1157,56 @@ def test_delete_says_what_is_on_the_plugged_drive_and_refuses_a_live_bag(app):
     assert client.post("/api/drives/delete", json={**body, "runs": ["../etc"]}).status_code == 400  # fmt: skip
     assert client.post("/api/drives/delete", json={**body, "runs": ["nope"]}).status_code == 404  # fmt: skip
     assert client.post("/api/drives/delete", json={**body, "runs": []}).status_code == 400  # fmt: skip
+
+
+NESTED = {
+    "name": "wednesday_top_parking_lot",
+    "path": "wednesday/top_parking_lot",
+    "mtime": 1795000000,
+    "bytes": 20 * GB,
+    "recording": False,
+    "on_drive": "",
+    "dest_bytes": 0,
+    "bags": [{"name": "recorded_data", "bytes": 20 * GB, "files": 2, "metadata": True}],
+}
+
+
+def test_a_nested_run_copies_from_its_folder_to_a_flat_one(app):
+    client, svc = app
+    robot = _robot(svc)
+    svc.helpers.scan = {**SCAN, "runs": [NESTED]}
+    body = {"machine": robot, "drive": "dcist_ssd3", "runs": [NESTED["name"]], "remove_source": True}  # fmt: skip
+    job = svc.jobs.get(client.post("/api/drives/copy", json=body).json()["job_id"])
+    deadline = time.time() + 5
+    while job.state != "waiting" and time.time() < deadline:
+        time.sleep(0.01)
+    client.post(f"/api/jobs/{job.id}/confirm", json={"answer": True})
+    job = svc.jobs.wait(job.id)
+    assert job.state == "succeeded", job.to_dict()["log"]
+    root = "/home/swarm/adt4_output"
+    src = f"{root}/wednesday/top_parking_lot/recorded_data"
+    dst = f"/mnt/bag_drives/dcist_ssd3/{robot}/wednesday_top_parking_lot/recorded_data"
+    assert f"{src}/ {dst}/" in svc.streamed[0]
+    assert f"rm -rf -- {src}" in svc.helpers.calls
+    assert (
+        f"rmdir -- {root}/wednesday/top_parking_lot 2>/dev/null; "
+        f"rmdir -- {root}/wednesday 2>/dev/null; true"
+    ) in svc.helpers.calls
+
+
+def test_delete_a_nested_run(app):
+    client, svc = app
+    robot = _robot(svc)
+    svc.helpers.status = {"host": robot, "drives": []}
+    svc.helpers.scan = {**SCAN, "runs": [NESTED]}
+    job = _ask(client, svc, {"machine": robot, "runs": [NESTED["name"]]})
+    client.post(f"/api/jobs/{job.id}/confirm", json={"answer": True, "text": "delete"})
+    job = svc.jobs.wait(job.id)
+    assert job.result["removed"] == ["wednesday_top_parking_lot/recorded_data"]
+    rm = [c for c in svc.helpers.calls if c.startswith("rm -rf")]
+    assert rm == [
+        "rm -rf -- /home/swarm/adt4_output/wednesday/top_parking_lot/recorded_data"
+    ]
 
 
 def test_a_move_leaves_no_empty_run_folder(app):

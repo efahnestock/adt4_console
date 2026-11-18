@@ -51,6 +51,11 @@ def valid_run(name: str | None) -> bool:
     return bool(name) and RUN_RE.match(name) is not None and ".." not in name
 
 
+def valid_run_path(path: str | None) -> bool:
+    """A run folder relative to the output root: one or more run names joined by "/"."""
+    return isinstance(path, str) and all(valid_run(p) for p in path.split("/"))
+
+
 def valid_file(name: str | None) -> bool:
     """A plain file name inside a bag directory (no path separators)."""
     return (
@@ -121,7 +126,9 @@ def eject_command(drive: str) -> str:
 
 # -------------------------------------------------------------------- bags
 # Runs under the output root that hold rosbags.  One JSON object on stdout:
-# {"root": abs path, "runs": [{name, mtime, bytes, recording, on_drive, bags: [...]}]}
+# {"root": abs path, "runs": [{name, path, mtime, bytes, recording, on_drive, bags: [...]}]}
+# "path": the run folder relative to the root; "name" is the same with "/" as
+# "_" (a run nested in group folders), which is also its folder on the drive.
 # "recording": the bag is still being written: a file changed in the last minute
 # and the bag is not closed.  Closed = its metadata.yaml (rosbag2 writes it when
 # the recorder stops) is as new as its newest bag file; for a trial's console
@@ -299,15 +306,8 @@ def closed(d, files, stats):
             return json.load(f).get("state") not in ("starting", "recording", "stopping")
     except (OSError, ValueError, AttributeError):
         return False
-for name in names:
-    run = os.path.join(root, name)
-    if not os.path.isdir(run) or os.path.islink(run):
-        continue
+def scan_run(run, subs, name, path):
     bags = []
-    try:
-        subs = sorted(os.listdir(run))
-    except OSError:
-        continue
     for sub in subs:
         d = os.path.join(run, sub)
         if not os.path.isdir(d) or os.path.islink(d):
@@ -346,12 +346,51 @@ for name in names:
                 bag["on_drive"] = "partial"
         bags.append(bag)
     if bags:
-        runs.append({"name": name, "mtime": os.path.getmtime(run),
+        runs.append({"name": name, "path": path, "mtime": os.path.getmtime(run),
                      "bytes": sum(b["bytes"] for b in bags),
                      "dest_bytes": sum(b["dest_bytes"] for b in bags),
                      "recording": any(b["recording"] for b in bags),
                      "on_drive": state(bags), "bags": bags,
                      "output": run_output(run, subs, name, stops.get(name))})
+    return bool(bags)
+# A run is a folder holding bag folders: directly under the output root
+# (<root>/<run>/<bag>/) or inside group folders, down to MAX_DEPTH levels
+# (<root>/wednesday/top_parking_lot/<bag>/).  A nested run is named by its path
+# with "/" turned into "_" (wednesday_top_parking_lot); "path" is where it is.
+# The search stops at a run: its other folders (hydra, roman, ...) are not
+# searched.
+MAX_DEPTH = 3
+names_taken = set()
+def visit(path):
+    # scan path as a run; the names in it to search further, or None
+    run = os.path.join(root, path)
+    if not os.path.isdir(run) or os.path.islink(run):
+        return None
+    try:
+        subs = sorted(os.listdir(run))
+    except OSError:
+        return None
+    flat = name = path.replace("/", "_")
+    n = 2
+    while name in names_taken:  # a nested run named like a top-level one
+        name = "%s_%d" % (flat, n)
+        n += 1
+    if scan_run(run, subs, name, path):
+        names_taken.add(name)
+        return None
+    return subs
+def deeper(path, subs, depth):
+    if depth >= MAX_DEPTH:
+        return
+    for sub in subs:
+        if not sub.startswith("."):
+            more = visit(path + "/" + sub)
+            if more:
+                deeper(path + "/" + sub, more, depth + 1)
+# every top-level run first, so a nested run never takes one's name
+groups = [(name, subs) for name in names if (subs := visit(name))]
+for name, subs in groups:
+    deeper(name, subs, 1)
 runs.sort(key=lambda r: -r["mtime"])
 print(json.dumps({"root": root, "runs": runs}))
 """
@@ -375,12 +414,15 @@ def parse_bag_scan(rc: int, out: str, err: str = "") -> dict:
     if data.get("error"):
         # no output root yet on this machine: nothing recorded, not a failure
         return {"root": data.get("root", ""), "runs": [], "note": data["error"]}
-    runs = [
-        r
-        for r in data.get("runs") or []
-        if valid_run(r.get("name"))
-        and all(valid_bag(b.get("name")) for b in r.get("bags") or [])
-    ]
+    runs = []
+    for r in data.get("runs") or []:
+        r.setdefault("path", r.get("name"))
+        if (
+            valid_run(r.get("name"))
+            and valid_run_path(r.get("path"))
+            and all(valid_bag(b.get("name")) for b in r.get("bags") or [])
+        ):
+            runs.append(r)
     for r in runs:
         o = r.get("output")
         if o and not (valid_run(o.get("name")) and isinstance(o.get("path"), str)):
@@ -586,11 +628,18 @@ def remove_command(src: str) -> str:
     return f"rm -rf -- {shlex.quote(src.rstrip('/'))}"
 
 
-def prune_command(run_dir: str) -> str:
+def prune_command(run_dir: str, root: str | None = None) -> str:
     """Remove a run folder if nothing is left in it (``rmdir`` refuses a folder
     that still holds anything), so a moved or deleted trial leaves no empty
-    folder behind.  Always exits 0."""
-    return f"rmdir -- {shlex.quote(run_dir.rstrip('/'))} 2>/dev/null; true"
+    folder behind; with ``root``, then each emptied group folder between it and
+    the root (never the root itself).  Always exits 0."""
+    run_dir = run_dir.rstrip("/")
+    dirs = [run_dir]
+    if root:
+        base = root.rstrip("/") + "/"
+        while dirs[-1].startswith(base) and "/" in dirs[-1][len(base) :]:
+            dirs.append(dirs[-1].rsplit("/", 1)[0])
+    return "".join(f"rmdir -- {shlex.quote(d)} 2>/dev/null; " for d in dirs) + "true"
 
 
 # ---------------------------------------------------------- running things
