@@ -570,6 +570,10 @@ def apply_launch_prep(svc, job, plan, files: list[dict], epoch_before: str | Non
         except Exception as e:  # noqa: BLE001 - one file's failure stops the rest
             job.log("error", f"Mission prep {f['name']!r} NOT applied: {e}")
             return False
+        if out.get("nothing_to_do"):
+            job.log("info", f"Mission prep {f['name']!r}: nothing to do on this map ("
+                            + "; ".join(out.get("warnings") or ["no changes"])[:300] + ")")  # fmt: skip
+            continue
         c = out.get("counts") or {}
         job.log("ok", f"Mission prep {f['name']!r} applied as one edit in {out.get('apply_s')} s "
                       f"(map version {out['applied'].get('map_version')}; "

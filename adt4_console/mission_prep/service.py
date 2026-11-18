@@ -120,6 +120,9 @@ class PrepService:
         f, snap, res = self._resolve(f, src)
         if res["problems"]:
             raise PrepError("; ".join(res["problems"]))
+        if not res["ops"]:  # e.g. "restore every removed place" on a fresh map
+            return {**self._report(f, snap, res), "applied": None, "apply_s": 0.0, "ok": True,
+                    "nothing_to_do": True}  # fmt: skip
         t = time.monotonic()
         out = self.edits.apply(
             src.id, res["ops"], stage=False,

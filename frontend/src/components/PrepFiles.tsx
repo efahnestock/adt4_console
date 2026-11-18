@@ -66,6 +66,8 @@ interface CheckResult {
   prior_ok: boolean;
   map: { prior: string | null; version: number | null };
   apply_s?: number;
+  nothing_to_do?: boolean;
+  applied?: { map_version?: number } | null;
 }
 
 /** Parse a picked file; throws a readable error. */
@@ -191,7 +193,9 @@ export function PrepFiles({
     try {
       const r = await postJSON<CheckResult>("api/prep/apply", { file: f });
       setMsg(
-        `${f.name} applied (map version ${r.map.version ?? "?"}${r.apply_s != null ? `, ${r.apply_s} s` : ""})`,
+        r.nothing_to_do
+          ? `${f.name}: nothing to do on this map`
+          : `${f.name} applied (map version ${r.applied?.map_version ?? "?"}${r.apply_s != null ? `, ${r.apply_s} s` : ""})`,
       );
       setLive((l) => l.filter((x) => x.name !== f.name));
       status.reload();

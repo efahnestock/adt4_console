@@ -460,3 +460,18 @@ def test_restore_all_puts_back_every_removed_place():
         [{"do": "restore_places", "places": "all"}], grid_snapshot()
     )
     assert ops == []  # nothing removed: nothing to do
+
+
+def test_a_file_with_nothing_to_do_is_not_an_error(prep_db):
+    from adt4_console.mission_prep.service import PrepService
+
+    src = _Src(prep_db)
+    svc = PrepService(_Maps(src), _Edits(src))
+    out = svc.apply(
+        {
+            "format": FORMAT,
+            "name": "remove obstacles",
+            "intent": [{"do": "restore_places", "places": "all"}],
+        }
+    )
+    assert out["ok"] and out["nothing_to_do"] and svc.status()["applied"] == []
