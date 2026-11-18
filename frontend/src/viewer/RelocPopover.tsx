@@ -2,10 +2,11 @@
 // verdict in one place — hydra_multi's accepted prior-map loop closures (the
 // relocalized rule: at least RELOC_MIN_HYDRA_LCS), fleetlink's ROMAN counter and
 // the robot's roman_lc row, and hydra_multi's last optimization (how long ago,
-// ticking, and how long it took; from its status note).
+// ticking, and how long it took; from its status note).  Meridian RPGO sessions
+// (no hydra_multi) show meridian_rpgo's verdict and inlier counts instead.
 import {useEffect, useState} from "react";
 import {useRobots} from "../stores/robots";
-import {hydraMatches, hydraOptimization, RELOC_MIN_HYDRA_LCS, type RelocContext} from "../lib/frameAlign";
+import {hydraMatches, hydraOptimization, meridianStatus, RELOC_MIN_HYDRA_LCS, type RelocContext} from "../lib/frameAlign";
 import {hydraCountText, hydraOptText} from "../lib/readiness";
 
 export function fmtAgo(s: number): string {
@@ -47,6 +48,14 @@ export function RelocPopover({robot, ctx, onClose}: {robot: string; ctx: RelocCo
       : ctx.hydraMulti === null
         ? "not in the robot's status table"
         : "no status table from the robot";
+  // a Meridian RPGO session: meridian_rpgo in the table, hydra_multi not
+  const meridianOnly = !!ctx.meridian && !ctx.hydraMulti;
+  const mr = meridianStatus(ctx.meridian);
+  const meridianText = mr
+    ? `${mr.state.replace("_", " ")} · ${mr.inliers} / ${mr.candidates} loop closures inliers`
+    : ctx.meridian
+      ? `no inlier count (${ctx.meridian.status ?? "?"}${ctx.meridian.notes ? `: ${ctx.meridian.notes}` : ""})`
+      : "";
   const romanText = reloc ? `${reloc.prior_lcs} prior-map matches seen by fleetlink` : "no ROMAN counter from fleetlink";
   const optText = opt
     ? null
@@ -71,11 +80,23 @@ export function RelocPopover({robot, ctx, onClose}: {robot: string; ctx: RelocCo
         </button>
       </div>
       <dl className="reloc-pop-grid">
-        <dt>Hydra loop closures</dt>
-        <dd data-testid={`reloc-pop-hydra-${robot}`}>
-          {hydraText}
-          <div className="muted">relocalized at {need} accepted</div>
-        </dd>
+        {meridianOnly ? (
+          <>
+            <dt>Meridian RPGO</dt>
+            <dd data-testid={`reloc-pop-meridian-${robot}`}>
+              {meridianText}
+              <div className="muted">meridian_rpgo {ctx.meridian?.status ?? "?"} · relocalized by its own min_num_inliers</div>
+            </dd>
+          </>
+        ) : (
+          <>
+            <dt>Hydra loop closures</dt>
+            <dd data-testid={`reloc-pop-hydra-${robot}`}>
+              {hydraText}
+              <div className="muted">relocalized at {need} accepted</div>
+            </dd>
+          </>
+        )}
         <dt>ROMAN loop closures</dt>
         <dd data-testid={`reloc-pop-roman-${robot}`}>
           {romanText}
@@ -86,21 +107,25 @@ export function RelocPopover({robot, ctx, onClose}: {robot: string; ctx: RelocCo
             </div>
           ) : null}
         </dd>
-        <dt>Last Hydra optimization</dt>
-        <dd data-testid={`reloc-pop-opt-${robot}`}>
-          {opt ? (
-            // Hydra main's note says only how long it took (no "s ago")
-            opt.agoS !== null ? (
-              <>
-                {fmtAgo(opt.agoS + since)} · took {fmtTook(opt.tookS)}
-              </>
-            ) : (
-              <>took {fmtTook(opt.tookS)}</>
-            )
-          ) : (
-            optText
-          )}
-        </dd>
+        {meridianOnly ? null : (
+          <>
+            <dt>Last Hydra optimization</dt>
+            <dd data-testid={`reloc-pop-opt-${robot}`}>
+              {opt ? (
+                // Hydra main's note says only how long it took (no "s ago")
+                opt.agoS !== null ? (
+                  <>
+                    {fmtAgo(opt.agoS + since)} · took {fmtTook(opt.tookS)}
+                  </>
+                ) : (
+                  <>took {fmtTook(opt.tookS)}</>
+                )
+              ) : (
+                optText
+              )}
+            </dd>
+          </>
+        )}
       </dl>
     </div>
   );

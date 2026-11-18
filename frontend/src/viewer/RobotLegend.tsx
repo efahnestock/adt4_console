@@ -61,7 +61,7 @@ export function useDistToPrior(robot: string, pose: Pose | undefined, fa: FrameA
 
 /** The prior map the robots relocalize against (the registered prior source,
  *  "file:prior:<name>", preferring a shown one) and the robot's ROMAN /
- *  hydra_multi monitor rows, for :func:`relocStatus`. */
+ *  hydra_multi / meridian_rpgo monitor rows, for :func:`relocStatus`. */
 export function useRelocContext(robot: string): RelocContext {
   const sources = useViewer(s => s.sources);
   const order = useViewer(s => s.order);
@@ -73,6 +73,7 @@ export function useRelocContext(robot: string): RelocContext {
       prior: id ? priorName(sources[id]?.label || id.slice("file:".length)) : null,
       roman: healthNode(health, robot, "roman_lc"),
       hydraMulti: healthNode(health, robot, "hydra_multi"),
+      meridian: healthNode(health, robot, "meridian_rpgo"),
       robot,
     };
   }, [sources, order, health, robot]);

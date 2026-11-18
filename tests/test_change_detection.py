@@ -791,3 +791,124 @@ def test_the_per_robot_routes_are_unchanged_by_the_fleet_ones(settings):
         assert r["ok"] and [x["cmd"] for x in r["results"]] == ["reset", "start"]
         assert ros.calls == [("euclid", "reset"), ("euclid", "start")]
         assert r["state"] == "paused" and r["relocalized"]["ok"]
+
+
+# --- Meridian RPGO sessions (*_meridian_relocalize): no hydra_multi -------------------
+
+
+def _meridian(verdict, counts="6 / 9", nickname="hamilton/meridian_rpgo"):
+    """A C1 ``health`` table with meridian_rpgo's monitor row (roman_ros2
+    meridian_rpgo_relocalization_node.py status_timer_cb)."""
+    return {
+        "nodes": [
+            {"nickname": "hamilton/roman_lc", "status": "nominal", "notes": "ok"},
+            {
+                "nickname": nickname,
+                "node_name": "/hamilton/meridian_rpgo",
+                "status": "nominal",
+                "notes": f"{verdict}; {counts} inliers, 120 odom keyframes, solves: 7, last solve: 0.31 s",
+            },
+        ]
+    }
+
+
+def test_parse_meridian_verdicts():
+    from adt4_console.routes.change_detection import meridian_status, parse_meridian
+
+    assert meridian_status(_meridian("localized")) == {
+        "state": "localized",
+        "inliers": 6,
+        "candidates": 9,
+    }
+    assert (
+        parse_meridian(
+            "not localized; 0 / 3 inliers, 5 odom keyframes, solves: 1, last solve: N/A"
+        )["state"]
+        == "not_localized"
+    )
+    assert (
+        parse_meridian(
+            "latest solve below min_num_inliers, holding last estimate; 3 / 12 inliers, ..."
+        )["state"]
+        == "holding"
+    )
+    assert (
+        parse_meridian(
+            "no hamilton/odom <- hamilton/base_link TF yet; 0 / 0 inliers, 0 odom keyframes"
+        )["state"]
+        == "no_odom"
+    )
+    # the startup note has no counts
+    assert (
+        parse_meridian(
+            "Meridian RPGO relocalization started (map <- hamilton/odom, live robot id 0)."
+        )
+        is None
+    )
+    assert meridian_status(_hydra("44 / 51")) is None
+
+
+def test_meridian_localized_is_relocalized():
+    fa = {**FA_OK, "child": "hamilton/odom"}
+    r = relocalized(
+        {"frame_align": fa, "reloc": RELOC_ZERO, "health": _meridian("localized")},
+        "hamilton",
+    )
+    assert r["ok"] and r["state"] == "relocalized" and r["source"] == "meridian_rpgo"
+    assert (
+        r["matches"] == 6
+        and "meridian_rpgo 6 / 9" in r["reason"]
+        and r["hydra"] is None
+    )
+    assert r["meridian"]["state"] == "localized"
+    # holding the last estimate is still relocalized, and says so
+    r = relocalized(
+        {"frame_align": fa, "reloc": RELOC_ZERO,
+         "health": _meridian("latest solve below min_num_inliers, holding last estimate", "3 / 12")},
+        "hamilton",
+    )  # fmt: skip
+    assert r["ok"] and "holding the last estimate" in r["reason"]
+    # two big jumps: suspect
+    jumpy = {
+        **RELOC_ZERO,
+        "recent_jumps": [{"dxy": 4, "dyaw": 0}, {"dxy": 9, "dyaw": 0}],
+    }
+    r = relocalized(
+        {"frame_align": fa, "reloc": jumpy, "health": _meridian("localized")},
+        "hamilton",
+    )
+    assert not r["ok"] and r["state"] == "suspect" and r["source"] == "meridian_rpgo"
+    # localized but the transform has not reached fleetlink
+    r = relocalized(
+        {"frame_align": {**fa, "ok": False}, "health": _meridian("localized")},
+        "hamilton",
+    )
+    assert not r["ok"] and r["state"] == "not_relocalized"
+
+
+def test_meridian_not_localized_blocks_even_when_map_odom_moved():
+    r = relocalized(
+        {"frame_align": FA_MOVED, "reloc": {**RELOC_ZERO, "prior_lcs": 4},
+         "health": _meridian("not localized", "2 / 9")},
+        "hamilton",
+    )  # fmt: skip
+    assert (
+        not r["ok"]
+        and r["state"] == "not_relocalized"
+        and r["source"] == "meridian_rpgo"
+    )
+    assert "no consistent prior-map match" in r["reason"]
+    r = relocalized(
+        {"frame_align": FA_OK, "health": _meridian("no hamilton/odom <- hamilton/base_link TF yet", "0 / 0")},
+        "hamilton",
+    )  # fmt: skip
+    assert not r["ok"] and "no odometry" in r["reason"]
+
+
+def test_hydra_multi_count_wins_over_meridian():
+    h = _hydra("44 / 51")
+    h["nodes"] += _meridian("not localized")["nodes"][1:]
+    r = relocalized(
+        {"frame_align": FA_OK, "reloc": RELOC_ZERO, "health": h}, "hamilton"
+    )
+    assert r["ok"] and r["source"] == "hydra_multi"
