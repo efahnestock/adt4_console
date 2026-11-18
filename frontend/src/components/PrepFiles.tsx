@@ -407,7 +407,9 @@ export function PrepFiles({
                     {typeof c === "string"
                       ? c
                       : c.ok
-                        ? `OK on ${c.map.prior ?? "the map"} (version ${c.map.version ?? "?"})${c.same_as_file ? "" : ": re-resolved, the map changed since the file was made"}${c.prior_ok ? "" : " (made for another prior map)"}`
+                        ? c.nothing_to_do
+                          ? `Nothing to do on ${c.map.prior ?? "the map"} right now (already as the file wants it)`
+                          : `OK on ${c.map.prior ?? "the map"} (version ${c.map.version ?? "?"})${c.same_as_file ? "" : ": re-resolved, the map changed since the file was made"}${c.prior_ok ? "" : " (made for another prior map)"}`
                         : `Cannot apply: ${c.problems.join("; ")}`}
                   </div>
                 )}

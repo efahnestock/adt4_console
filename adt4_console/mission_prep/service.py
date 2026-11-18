@@ -104,7 +104,8 @@ class PrepService:
         f, snap, res = self._resolve(f, src)
         out = self._report(f, snap, res)
         out["dry_run"] = None
-        if not res["problems"]:
+        out["nothing_to_do"] = not res["problems"] and not res["ops"]
+        if not res["problems"] and res["ops"]:
             try:
                 dry = self.edits.apply(src.id, res["ops"], dry_run=True,
                                        summary=f"mission prep: {f['name']}")  # fmt: skip
