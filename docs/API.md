@@ -1865,7 +1865,13 @@ attach` on the machine shows it): starting or stopping a trial sends nothing to
 `<trial>/<machine>/` and the recording goes on in `<trial>/<machine>_part2/`
 (then `_part3`, ...), each a rosbag2 directory with its own `trial.json`
 (`part`). The console only uses ssh: one command per machine at start and
-at stop, one `status` per machine every `trial_poll_s` (10 s) while recording.
+at stop, one `status` per machine every `trial_poll_s` (10 s) while recording,
+and one `check-topics` per machine every `trial_topic_recheck_s` (60 s; 0 =
+only at the start). A machine's `topic_check` is `{ok, tries, published,
+topics, missing, checked, tried, recheck_error?}`: `checked` is when the answer
+shown was given; a repeat that gets no answer keeps it and sets
+`recheck_error`. The event log gets `topic_check` / `topics_missing` for the
+first answer and `topics_changed {appeared, gone}` when a repeat differs.
 Nothing recorded crosses the radio, and a machine that loses the radio keeps
 recording.
 

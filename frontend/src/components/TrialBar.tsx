@@ -28,6 +28,7 @@ function machineTitle(m: TrialMachine, now: number): string {
     m.free_bytes != null ? `${fmtBytes(m.free_bytes)} free` : "",
     m.clock_offset_s != null ? `clock ${m.clock_offset_s >= 0 ? "+" : ""}${m.clock_offset_s.toFixed(2)} s vs this console` : "",
     m.topic_check && !m.topic_check.ok ? `topic check: ${m.topic_check.error ?? "failed"}` : "",
+    m.topic_check?.ok && m.topic_check.checked ? `topics checked ${fmtAge(Math.max(0, now - m.topic_check.checked))}${m.topic_check.recheck_error ? ` (the last re-check got no answer: ${m.topic_check.recheck_error})` : ""}` : "",
     ...(m.warnings ?? []),
   ].filter(Boolean).join("\n");
 }
@@ -85,7 +86,7 @@ function MachineChip({m, now, pollS, onRetry, onRemove}: {m: TrialMachine; now: 
       {missing.length > 0 && (
         <span className="trial-pop" role="tooltip" data-testid={`trial-missing-${m.name}`} onClick={e => e.stopPropagation()}>
           <span className="trial-pop-head">
-            {missing.length} of {m.topic_check?.topics ?? "?"} topics on {m.name} had no publisher when the recording started
+            {missing.length} of {m.topic_check?.topics ?? "?"} topics on {m.name} have no publisher{m.topic_check?.checked ? ` (checked ${fmtAge(Math.max(0, now - m.topic_check.checked))})` : ""}
             {pinned && <button className="btn btn-xs" onClick={() => setPinned(false)}>Close</button>}
           </span>
           <span className="trial-pop-list">
