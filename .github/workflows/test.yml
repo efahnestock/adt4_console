@@ -14,10 +14,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          # the fleet topology loader (dcist_launch_system) the console calls
+          # the fleet tooling (dcist_launch_system) the console calls, plus the
+          # files it reads beside its source: the tmux session files and
+          # experiment manifest (launch sessions and their modes) and
+          # network_diagnostics/scripts/topology_merge.py (topology loading)
           repository: MIT-SPARK/Awesome-DCIST-T4
           path: adt4
-          sparse-checkout: dcist_launch_system/src
+          sparse-checkout: |
+            dcist_launch_system/src
+            dcist_launch_system/tmux
+            dcist_launch_system/config_generation
+            network_diagnostics/scripts
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
