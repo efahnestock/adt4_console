@@ -8,7 +8,7 @@
 // Both list the files already applied to the current map and have Reset: undo the
 // applied files (live edits are kept), or reload the prior map (drops every edit).
 import { useRef, useState } from "react";
-import { errorText, postJSON, useApi } from "../lib/api";
+import { errorText, getJSON, postJSON, useApi } from "../lib/api";
 
 export const PREP_FORMAT = "adt4-mission-prep/1";
 
@@ -27,6 +27,15 @@ export interface PrepFile {
     }[];
   };
   [k: string]: unknown;
+}
+
+interface BaseFile {
+  path: string;
+  name: string;
+  summary: string;
+  prior: string | null;
+  counts: Record<string, number>;
+  mtime: number;
 }
 
 interface PrepRecord {
@@ -114,6 +123,30 @@ export function PrepFiles({
   const setPicked = (f: PrepFile[]) =>
     mode === "launch" ? onFiles?.(f) : setLive(f);
   const applied = status.data?.applied ?? [];
+
+  // files on the base station (settings.prep_dir), the usual source
+  const baseFiles = useApi<{ dir: string; files: BaseFile[] }>(
+    "api/prep/files",
+  );
+  const [basePick, setBasePick] = useState("");
+  const addBase = async (path: string) => {
+    if (!path) return;
+    setErr(null);
+    try {
+      const f = parsePrepFile(
+        JSON.stringify(
+          await getJSON<PrepFile>(
+            `api/prep/file?path=${encodeURIComponent(path)}`,
+          ),
+        ),
+        path,
+      );
+      if (!picked.some((o) => o.name === f.name)) setPicked([...picked, f]);
+      setBasePick("");
+    } catch (e) {
+      setErr(errorText(e));
+    }
+  };
 
   const pick = async (list: FileList | null) => {
     if (!list) return;
@@ -225,13 +258,57 @@ export function PrepFiles({
           aria-label="Mission edit files"
           onChange={(e) => void pick(e.target.files)}
         />
+        <select
+          className="input input-sm"
+          aria-label="Edit files on the base station"
+          value={basePick}
+          disabled={busy}
+          onChange={(e) => {
+            setBasePick(e.target.value);
+            void addBase(e.target.value);
+          }}
+          title={
+            baseFiles.data
+              ? `Files in ${baseFiles.data.dir} on the base station`
+              : "Files on the base station"
+          }
+          data-testid={`prep-base-files-${mode}`}
+        >
+          <option value="">
+            {baseFiles.error
+              ? "base station files unavailable"
+              : !baseFiles.data
+                ? "loading files…"
+                : baseFiles.data.files.length
+                  ? `${mode === "launch" ? "Add" : "Load"} a file from the base station (${baseFiles.data.files.length})…`
+                  : `no edit files in ${baseFiles.data.dir}`}
+          </option>
+          {(baseFiles.data?.files ?? []).map((f) => (
+            <option key={f.path} value={f.path}>
+              {f.path}
+              {f.prior ? ` [${f.prior}]` : ""}
+              {f.summary && f.summary !== f.name
+                ? ` · ${f.summary.slice(0, 70)}`
+                : ""}
+            </option>
+          ))}
+        </select>
         <button
           type="button"
-          className="btn btn-sm"
+          className="btn btn-xs"
+          title="Reload the list of files on the base station"
+          onClick={() => baseFiles.reload()}
+        >
+          ↻
+        </button>
+        <button
+          type="button"
+          className="btn btn-xs"
           disabled={busy}
+          title="Upload a file from this computer instead"
           onClick={() => input.current?.click()}
         >
-          {mode === "launch" ? "Add edit file…" : "Load edit file…"}
+          From this computer…
         </button>
         <button
           type="button"

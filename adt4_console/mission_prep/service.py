@@ -278,6 +278,51 @@ class PrepService:
             time.sleep(poll_s)
         return False
 
+    # ------------------------------------------------------------- files on the base
+    MAX_FILES = 300
+    MAX_BYTES = 8 << 20
+
+    def prep_dir(self) -> pathlib.Path:
+        s = getattr(self.maps, "settings", None)
+        d = getattr(s, "prep_dir", None)
+        if not d:
+            root = getattr(s, "output_root", None) or "~/adt4_output"
+            d = str(pathlib.Path(root) / "mission_prep")
+        return pathlib.Path(d).expanduser()
+
+    def list_files(self) -> dict:
+        """The mission-prep files on this machine (``prep_dir``, recursively), newest
+        first: ``{dir, files: [{path (relative), name, summary, prior, counts, mtime}]}``;
+        JSON that is not a mission-prep file is left out."""
+        root = self.prep_dir()
+        out = []
+        if root.is_dir():
+            paths = sorted(
+                root.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+            )
+            for p in paths[: self.MAX_FILES]:
+                try:
+                    if p.stat().st_size > self.MAX_BYTES:
+                        continue
+                    f = validate_file(p.read_text())
+                except (OSError, PrepError):
+                    continue
+                out.append({"path": str(p.relative_to(root)), "name": f["name"],
+                            "summary": f.get("summary") or "", "prior": (f.get("map") or {}).get("prior"),
+                            "counts": (f.get("report") or {}).get("counts") or {},
+                            "mtime": p.stat().st_mtime})  # fmt: skip
+        return {"dir": str(root), "files": out}
+
+    def read_file(self, rel: str) -> dict:
+        """A listed file's content (``rel`` inside ``prep_dir``; nothing outside it)."""
+        root = self.prep_dir().resolve()
+        p = (root / rel).resolve()
+        if root != p and root not in p.parents:
+            raise PrepError("not a file in the mission-prep folder")
+        if p.suffix != ".json" or not p.is_file():
+            raise PrepError(f"no such mission-prep file: {rel}")
+        return validate_file(p.read_text())
+
     # ------------------------------------------------------------- trial logs
     def _trial(self):
         tr = self.trials

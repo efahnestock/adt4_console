@@ -56,6 +56,17 @@ def status(request: Request, src: str | None = None):
     return _call(_svc(request).status, src)
 
 
+@router.get("/files")
+def files(request: Request):
+    """The mission-prep files on the base station (``settings.prep_dir``)."""
+    return _call(_svc(request).list_files)
+
+
+@router.get("/file")
+def file(path: str, request: Request):
+    return _call(_svc(request).read_file, path)
+
+
 @router.post("/check")
 def check(body: FileBody, request: Request):
     return _call(_svc(request).check, body.file, body.src)

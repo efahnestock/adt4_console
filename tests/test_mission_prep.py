@@ -406,3 +406,45 @@ def test_launch_applies_files_after_the_reseed_in_order():
         SimpleNamespace(prep=prep), job, _Plan(), files, "old-epoch", timeout_s=1
     )
     assert prep.applied == [] and "NOT applied" in job.lines[-1][1]
+
+
+def test_files_on_the_base_station_are_listed_and_read_inside_the_folder_only(tmp_path):
+    from types import SimpleNamespace
+
+    from adt4_console.mission_prep.service import PrepService
+
+    d = tmp_path / "mission_prep" / "penn"
+    d.mkdir(parents=True)
+    (d / "m1.json").write_text(json.dumps({"format": FORMAT, "name": "mission1", "summary": "s",
+                                           "intent": [{"do": "delete_objects", "class": "cone"}],
+                                           "report": {"counts": {"delete_node": 3}}}))  # fmt: skip
+    (d / "other.json").write_text('{"not": "a prep file"}')
+    (tmp_path / "secret.json").write_text(
+        json.dumps(
+            {
+                "format": FORMAT,
+                "name": "x",
+                "intent": [{"do": "delete_objects", "class": "a"}],
+            }
+        )
+    )
+    svc = PrepService(
+        SimpleNamespace(
+            settings=SimpleNamespace(prep_dir=None, output_root=str(tmp_path))
+        ),
+        None,
+    )
+    out = svc.list_files()
+    assert out["dir"] == str(tmp_path / "mission_prep")
+    assert [(f["path"], f["name"], f["counts"]) for f in out["files"]] == [
+        ("penn/m1.json", "mission1", {"delete_node": 3})
+    ]
+    assert svc.read_file("penn/m1.json")["name"] == "mission1"
+    for bad in (
+        "../secret.json",
+        "/etc/passwd",
+        "penn/other.json",
+        "penn/missing.json",
+    ):
+        with pytest.raises(PrepError):
+            svc.read_file(bad)
