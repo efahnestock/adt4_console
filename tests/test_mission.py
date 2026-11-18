@@ -1162,7 +1162,8 @@ def test_chat_asks_instead_of_substituting(mission_settings, tmp_path, monkeypat
         NS(chat=NS(completions=NS(create=create))),
         "openai",
     )
-    ctx = {"roster": [{"id": "quad1", "kind": "quad", "start": [0, 0]}],
+    # the mission planner's chat (the frontend's missionMode sends sim_only)
+    ctx = {"roster": [{"id": "quad1", "kind": "quad", "start": [0, 0]}], "sim_only": True,
            "areas": [{"name": "East", "polygon": [[12, 0], [20, 0], [20, 10]], "scope": "mission"}]}  # fmt: skip
     with client:
         r = client.post("/api/chat", json={"message": "quad1 searches the courtyard for a crate", "src": "file:grid",
@@ -1176,6 +1177,40 @@ def test_chat_asks_instead_of_substituting(mission_settings, tmp_path, monkeypat
     assert "Never substitute silently" in system and '"name":"East"' in system
     tool_msg = next(m for m in calls[1]["messages"] if m.get("role") == "tool")
     assert "Do not substitute" in tool_msg["content"]
+
+
+def test_robot_view_chat_ignores_mission_context(
+    mission_settings, tmp_path, monkeypatch
+):
+    """The Robot view chat only sends goals to the real robots. An older client that
+    still attaches the Mission tab's agents and areas (no sim_only, no auto_send) must
+    not get the mission planner's prompt or its propose_mission tool."""
+    from types import SimpleNamespace as NS
+
+    monkeypatch.setenv("ADT4_OPENAI_API_KEY", "sk-test")
+    mission_settings.llm = True
+    mission_settings.llm_usage_path = str(tmp_path / "usage.json")
+    client, svc = make_client(mission_settings)
+    calls = []
+
+    def create(**kw):
+        calls.append(kw)
+        return NS(model="gpt-4.1-mini-2025-04-14", usage=NS(prompt_tokens=10, completion_tokens=5),
+                  choices=[NS(message=NS(content="ok", tool_calls=None))])  # fmt: skip
+
+    svc.chat._client, svc.chat._client_provider = (
+        NS(chat=NS(completions=NS(create=create))),
+        "openai",
+    )
+    ctx = {"roster": [{"id": "quad1", "kind": "quad", "start": [0, 0]}],
+           "areas": [{"name": "East", "polygon": [[12, 0], [20, 0], [20, 10]], "scope": "mission"}]}  # fmt: skip
+    with client:
+        client.post("/api/chat", json={"message": "go to the crate", "src": "file:grid",
+                                       "mission_ctx": ctx})  # fmt: skip
+    system = calls[0]["messages"][0]["content"]
+    assert '"name":"East"' not in system
+    tools = [t["function"]["name"] for t in calls[0].get("tools") or []]
+    assert "propose_mission" not in tools
 
 
 # ------------------------------------------------------- Neo4j (integration)

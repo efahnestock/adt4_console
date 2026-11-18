@@ -558,6 +558,13 @@ class ChatService:
         ``mission_ctx``: ``{roster, areas, mission, planted}`` from the mission
         planner (enables ``propose_mission``)."""
         src = self._default_src(src)
+        if isinstance(mission_ctx, dict) and not (
+            mission_ctx.get("sim_only") or mission_ctx.get("auto_send")
+        ):
+            # the Robot view chat only sends goals to the real robots; the mission planner
+            # has its own chat (sim_only). Older clients send the Mission tab's agents and
+            # open mission with every robot-chat turn: ignore them.
+            mission_ctx = None
         if mission_ctx is not None and self.missions is not None:
             # omniplanner's plan_ground_mission is offered (and prompted) when it can plan here
             ok = self._omniplanner_ok()
