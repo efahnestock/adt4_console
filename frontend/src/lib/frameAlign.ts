@@ -152,6 +152,9 @@ export interface RelocContext {
   prior?: string | null;
   roman?: HealthNode | null;
   hydraMulti?: HealthNode | null;
+  /** meridian_rpgo's row: the *_meridian_relocalize sessions run Meridian RPGO in
+   *  place of hydra_multi */
+  meridian?: HealthNode | null;
   robot?: string;
 }
 
@@ -197,6 +200,34 @@ const HYDRA_OPT_RE = new RegExp(String.raw`last\s+optimization\s+took\s+(${NUM})
 export function hydraOptimization(node: HealthNode | null | undefined): {tookS: number; agoS: number | null} | null {
   const m = node?.notes ? HYDRA_OPT_RE.exec(node.notes) : null;
   return m ? {tookS: Number(m[1]), agoS: m[2] ? Number(m[2]) : null} : null;
+}
+
+/** meridian_rpgo's status note (roman_ros2 meridian_rpgo_relocalization_node.py;
+ *  backend routes/change_detection.py MERIDIAN_RE): "<verdict>; N / M inliers,
+ *  K odom keyframes, solves: S, last solve: X s". */
+const MERIDIAN_RE = /^\s*([^;]*);\s*(\d+)\s*\/\s*(\d+)\s+inliers/i;
+
+export type MeridianState = "localized" | "holding" | "not_localized" | "no_odom" | "unknown";
+
+/** meridian_rpgo's own verdict (it applies its min_num_inliers) and its
+ *  inlier / candidate loop-closure counts; null when the row or its counts are
+ *  missing (backend parse_meridian). "holding": the latest solve fell below
+ *  min_num_inliers and the last estimate is still published. */
+export function meridianStatus(node: HealthNode | null | undefined): {state: MeridianState; inliers: number; candidates: number} | null {
+  const m = node?.notes ? MERIDIAN_RE.exec(node.notes) : null;
+  if (!m) return null;
+  const v = m[1].trim().toLowerCase();
+  const state: MeridianState =
+    v === "localized"
+      ? "localized"
+      : v.startsWith("latest solve below")
+        ? "holding"
+        : v.startsWith("not localized")
+          ? "not_localized"
+          : v.startsWith("no ") && v.endsWith("tf yet")
+            ? "no_odom"
+            : "unknown";
+  return {state, inliers: Number(m[2]), candidates: Number(m[3])};
 }
 
 /** A ``map -> odom`` this far from the initial estimate is an alignment, not
@@ -249,11 +280,16 @@ export function relocStatus(
 ): AlignStatus {
   const base = alignStatus(fa, sinceStateS);
   const hm = hydraMatches(ctx.hydraMulti);
-  if (!fa || fa.parent === fa.child || (!reloc && !hm)) return base;
+  // a hydra_multi count wins; without one, a Meridian RPGO session's verdict decides
+  const mrRaw = hm ? null : meridianStatus(ctx.meridian);
+  const mr = mrRaw && mrRaw.state !== "unknown" ? mrRaw : null;
+  if (!fa || fa.parent === fa.child || (!reloc && !hm && !mr)) return base;
   const need = RELOC_MIN_HYDRA_LCS;
   const enough = !!hm && hm.accepted >= need;
   const priorName = ctx.prior ? `prior map ${ctx.prior}` : "the prior map";
-  const hydraLine = hm
+  const hydraLine = mr
+    ? `meridian_rpgo: ${mr.inliers} / ${mr.candidates} loop closures against ${priorName} are inliers (${mr.state.replace("_", " ")}; it applies its own min_num_inliers)`
+    : hm
     ? `hydra_multi accepted ${hm.accepted} / ${hm.total} inter-robot loop closures against ${priorName} (relocalized at ${need})`
     : ctx.hydraMulti
       ? `hydra_multi reports no loop-closure count (${ctx.hydraMulti.status ?? "?"}${ctx.hydraMulti.notes ? ` — ${ctx.hydraMulti.notes}` : ""})`
@@ -262,6 +298,9 @@ export function relocStatus(
     // matched, but this console has no usable transform yet: say both
     if (hm && enough) {
       return {tone: "ok", text: `relocalized · hydra ${hm.accepted} LCs · drawn in ${fa.child || "odom"}`, title: `${hydraLine}\n${base.title}`};
+    }
+    if (mr && (mr.state === "localized" || mr.state === "holding")) {
+      return {tone: "ok", text: `relocalized · meridian ${mr.inliers} inliers · drawn in ${fa.child || "odom"}`, title: `${hydraLine}\n${base.title}`};
     }
     return base;
   }
@@ -295,6 +334,26 @@ export function relocStatus(
   };
   if (hm && enough) {
     return suspect() ?? {tone: "ok", text: `relocalized · hydra ${hm.accepted} LCs`, title};
+  }
+  if (mr) {
+    if (mr.state === "localized" || mr.state === "holding") {
+      const hold = mr.state === "holding";
+      return (
+        suspect() ?? {
+          tone: "ok",
+          text: `relocalized · meridian ${mr.inliers} inliers${hold ? " · holding" : ""}`,
+          title: hold ? `holding the last estimate: meridian_rpgo's latest solve fell below min_num_inliers\n${title}` : title,
+        }
+      );
+    }
+    if (mr.state === "no_odom") {
+      return {tone: "warn", text: "not relocalized · meridian has no odometry", title: `not relocalized: meridian_rpgo has no odom <- base_link TF yet\n${title}`};
+    }
+    return {
+      tone: "warn",
+      text: mr.inliers > 0 ? `relocalizing · meridian ${mr.inliers}/${mr.candidates} inliers` : "not relocalized · no prior-map match yet",
+      title: `not relocalized: meridian_rpgo has no consistent set of loop closures against ${priorName} yet, so it publishes no ${fa.parent} -> ${fa.child}\n${title}`,
+    };
   }
   if (hm && hm.accepted > 0) {
     return {

@@ -408,6 +408,15 @@ export interface HydraMultiSummary {
   in_table: boolean;
 }
 
+/** meridian_rpgo's verdict and counts (Meridian RPGO sessions; null otherwise). */
+export interface MeridianSummary {
+  state: "localized" | "holding" | "not_localized" | "no_odom" | "unknown";
+  inliers: number | null;
+  candidates: number | null;
+  status: string | null;
+  note: string | null;
+}
+
 export interface Readiness {
   robot: string;
   /** the verdict: localize checklist, made "fail" by no odometry */
@@ -416,6 +425,8 @@ export interface Readiness {
   /** the agent's odom -> base_link pose stamp advancing (null: no state) */
   odometry: ReadinessItem | null;
   hydra_multi: HydraMultiSummary | null;
+  /** absent from older consoles */
+  meridian_rpgo?: MeridianSummary | null;
   broken: {key: string; name: string; state: ReadyState; reason: string}[];
   summary: string;
 }

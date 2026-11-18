@@ -43,6 +43,12 @@ HYDRA_OPT_RE = re.compile(
 # A robot counts as relocalized once hydra_multi has accepted this many inter-robot
 # (prior-map) loop closures for it (frontend lib/frameAlign.ts RELOC_MIN_HYDRA_LCS).
 RELOC_MIN_HYDRA_LCS = 5
+# meridian_rpgo's status note (roman_ros2 meridian_rpgo_relocalization_node.py, the
+# *_meridian_relocalize sessions: Meridian RPGO in place of hydra_multi):
+# "<verdict>; N / M inliers, K odom keyframes, solves: S, last solve: X s", verdict one of
+# "localized", "not localized", "latest solve below min_num_inliers, holding last
+# estimate", "no <odom> <- <base> TF yet" (frontend lib/frameAlign.ts MERIDIAN_RE).
+MERIDIAN_RE = re.compile(r"^\s*([^;]*);\s*(\d+)\s*/\s*(\d+)\s+inliers", re.I)
 
 
 class CmdBody(BaseModel):
@@ -53,9 +59,9 @@ class ClearBody(BaseModel):
     robots: list[str] = []
 
 
-def _hydra_note(health: dict | None) -> str | None:
-    """The note of the hydra_multi row of the robot's ros_system_monitor table
-    (C1 ``health.nodes``); None when the table or the row is missing."""
+def _node_note(health: dict | None, name: str) -> str | None:
+    """The note of the ``name`` row of the robot's ros_system_monitor table (C1
+    ``health.nodes``); None when the table or the row is missing."""
     nodes = (health or {}).get("nodes")
     if not isinstance(nodes, list):
         return None
@@ -63,10 +69,42 @@ def _hydra_note(health: dict | None) -> str | None:
         if not isinstance(n, dict):
             continue
         names = f"{n.get('nickname') or ''} {n.get('node_name') or ''}"
-        if "hydra_multi" not in names:
+        if name not in names:
             continue
         return str(n.get("notes") or n.get("note") or "")
     return None
+
+
+def _hydra_note(health: dict | None) -> str | None:
+    """The note of the hydra_multi row of the robot's status table."""
+    return _node_note(health, "hydra_multi")
+
+
+def parse_meridian(note: str | None) -> dict | None:
+    """``{state, inliers, candidates}`` from a meridian_rpgo status note
+    (:data:`MERIDIAN_RE`); ``state`` is "localized", "holding" (the latest solve
+    fell below min_num_inliers: the last estimate is still published),
+    "not_localized", "no_odom" or "unknown".  None when the note has no counts."""
+    m = MERIDIAN_RE.search(note or "")
+    if not m:
+        return None
+    verdict = m.group(1).strip().lower()
+    if verdict == "localized":
+        state = "localized"
+    elif verdict.startswith("latest solve below"):
+        state = "holding"
+    elif verdict.startswith("not localized"):
+        state = "not_localized"
+    elif verdict.startswith("no ") and verdict.endswith("tf yet"):
+        state = "no_odom"
+    else:
+        state = "unknown"
+    return {"state": state, "inliers": int(m.group(2)), "candidates": int(m.group(3))}
+
+
+def meridian_status(health: dict | None) -> dict | None:
+    """:func:`parse_meridian` of the robot's meridian_rpgo row."""
+    return parse_meridian(_node_note(health, "meridian_rpgo"))
 
 
 def hydra_matches(health: dict | None) -> tuple[int, int] | None:
@@ -143,8 +181,8 @@ def _suspect(reloc: dict | None) -> str | None:
 
 
 def relocalized(state: dict | None, robot: str = "") -> dict:
-    """``{ok, state, reason, source, matches, hydra, roman, optimization}`` from
-    the robot's fleetlink C1 state.
+    """``{ok, state, reason, source, matches, hydra, meridian, roman,
+    optimization}`` from the robot's fleetlink C1 state.
 
     Relocalized (ok) means hydra_multi has accepted at least
     :data:`RELOC_MIN_HYDRA_LCS` inter-robot (prior-map) loop closures for the
@@ -156,13 +194,22 @@ def relocalized(state: dict | None, robot: str = "") -> dict:
     estimate are reported, but they no longer count as relocalized (state
     "aligned" / "unknown", not ok: Start needs an override).  Agents that report
     neither ``reloc`` nor a hydra_multi count (older agents, mapping sessions)
-    keep the transform-only verdict.  ``hydra`` = ``{accepted, total, needed}``
-    or None, ``roman`` = ROMAN prior-map matches seen by fleetlink (or None),
+    keep the transform-only verdict.
+
+    Meridian RPGO sessions (``*_meridian_relocalize``) have no hydra_multi: there
+    the meridian_rpgo row decides (:func:`meridian_status`, which applies its own
+    ``min_num_inliers``): "localized" or "holding" the last estimate with a ``map
+    -> odom`` at fleetlink is relocalized unless suspect, anything else is
+    "not_relocalized".  A hydra_multi count, when there is one, still wins.
+
+    ``hydra`` = ``{accepted, total, needed}`` or None, ``meridian`` =
+    :func:`meridian_status` or None, ``roman`` = ROMAN prior-map matches seen by fleetlink (or None),
     ``optimization`` = :func:`hydra_optimization`.  The console's legend adds a
     distance-to-prior-map check the server cannot do."""
     who = robot or "the robot"
     health = (state or {}).get("health")
     hm = hydra_matches(health)
+    mr = meridian_status(health)
     reloc = (state or {}).get("reloc")
     roman = reloc.get("prior_lcs") if isinstance(reloc, dict) else None
     need = RELOC_MIN_HYDRA_LCS
@@ -177,6 +224,7 @@ def relocalized(state: dict | None, robot: str = "") -> dict:
             "hydra": {"accepted": hm[0], "total": hm[1], "needed": need}
             if hm
             else None,
+            "meridian": mr,
             "roman": roman,
             "optimization": hydra_optimization(health),
         }
@@ -200,6 +248,30 @@ def relocalized(state: dict | None, robot: str = "") -> dict:
         return out(False, "not_relocalized",
                    f"relocalizing: hydra_multi accepted {hm[0]} / {hm[1]} inter-robot loop closures, needs {need}"
                    f"{roman_txt}", "hydra_multi", hm[0])  # fmt: skip
+    if mr and mr["state"] != "unknown":
+        counts = (
+            f"meridian_rpgo {mr['inliers']} / {mr['candidates']} loop closures inliers"
+        )
+        if mr["state"] in ("localized", "holding"):
+            if not fa or not fa.get("ok") or fa.get("parent") == fa.get("child"):
+                return out(False, "not_relocalized",
+                           f"not relocalized here yet: meridian_rpgo is localized ({counts}) but no "
+                           f"{(fa or {}).get('parent') or 'map'} -> odom transform reached fleetlink yet{roman_txt}",
+                           "meridian_rpgo", mr["inliers"])  # fmt: skip
+            sus = _suspect(reloc)
+            if sus:
+                return out(False, "suspect", sus, "meridian_rpgo", mr["inliers"])
+            hold = ("; latest solve below min_num_inliers, holding the last estimate"
+                    if mr["state"] == "holding" else "")  # fmt: skip
+            return out(True, "relocalized", f"relocalized ({counts}){hold}{roman_txt}",
+                       "meridian_rpgo", mr["inliers"])  # fmt: skip
+        if mr["state"] == "no_odom":
+            return out(False, "not_relocalized",
+                       f"not relocalized: meridian_rpgo has no odometry (odom <- base_link TF) yet ({counts})",
+                       "meridian_rpgo", mr["inliers"])  # fmt: skip
+        return out(False, "not_relocalized",
+                   f"not relocalized: no consistent prior-map match yet ({counts}; map -> odom not published)"
+                   f"{roman_txt}", "meridian_rpgo", mr["inliers"])  # fmt: skip
     if not fa:
         return out(
             False, "unknown", f"unknown: {who} reports no frame alignment (older agent)"

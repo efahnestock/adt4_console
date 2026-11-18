@@ -274,3 +274,62 @@ def test_live_service_publishes_readiness_with_the_state(settings):
     assert "readiness" not in st  # the receiver's own state is untouched
     assert live.state("gauss")["readiness"]["state"] == "fail"
     assert live.robot_readiness("gauss")["odometry"]["state"] == "fail"
+
+
+# --- Meridian RPGO sessions: meridian_rpgo in place of hydra_multi ---------------------
+
+
+def _meridian_rows(verdict, counts="6 / 9"):
+    rows = [r for r in _good_rows("") if r["nickname"] != "gauss/hydra_multi"]
+    note = (
+        f"{verdict}; {counts} inliers, 80 odom keyframes, solves: 4, last solve: 0.20 s"
+    )
+    return rows + [_row("gauss/meridian_rpgo", "nominal", note)]
+
+
+def test_meridian_session_relocalized_without_hydra_multi():
+    tr = ReadinessTracker()
+    r = tr.observe(
+        "gauss",
+        _state(_meridian_rows("localized"), t=1.0, fa=FA_OK, reloc={"prior_lcs": 2}),
+        now=0.0,
+    )
+    r = tr.observe(
+        "gauss",
+        _state(_meridian_rows("localized"), t=2.0, fa=FA_OK, reloc={"prior_lcs": 2}),
+        now=1.0,
+    )
+    keys = [i["key"] for i in r["localize"]["items"]]
+    assert "hydra_multi" not in keys and keys[:3] == [
+        "link",
+        "meridian_rpgo",
+        "frame_align",
+    ]
+    m = _item(r["localize"], "meridian_rpgo")
+    assert (
+        m["state"] == "ok"
+        and m["blocking"]
+        and m["reason"] == "Relocalized: 6 / 9 loop closures inliers"
+    )
+    assert r["state"] == "ok" and r["summary"] == "Relocalized"
+    assert (
+        r["meridian_rpgo"]["state"] == "localized"
+        and r["meridian_rpgo"]["inliers"] == 6
+    )
+
+
+def test_meridian_not_localized_blocks():
+    tr = ReadinessTracker()
+    r = tr.observe(
+        "gauss", _state(_meridian_rows("not localized", "1 / 5"), fa=FA_OK), now=0.0
+    )
+    m = _item(r["localize"], "meridian_rpgo")
+    assert m["state"] == "warn" and "1 / 5" in m["reason"]
+    assert any(b["key"] == "meridian_rpgo" for b in r["broken"])
+    # a hydra_multi session has no meridian summary
+    r = tr.observe(
+        "gauss",
+        _state(_good_rows("7 / 9 valid interrobot loop closures"), fa=FA_OK),
+        now=1.0,
+    )
+    assert r["meridian_rpgo"] is None

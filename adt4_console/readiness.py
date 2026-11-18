@@ -12,8 +12,9 @@ age_s, blocking, info}``; ``state`` is ok / warn / fail / unknown, ``reason`` a
 one-line plain-words explanation, ``age_s`` how old the evidence is (None when
 the source carries no time: monitor rows have no stamp).  Blocking items: the
 robot link, hydra_multi's accepted inter-robot loop closures (the console's
-relocalized rule: :data:`RELOC_MIN_HYDRA_LCS`), ``map -> odom`` present and the
-placement not suspect.  Shown, never blocking (``info``): roman_lc inter-robot
+relocalized rule: :data:`RELOC_MIN_HYDRA_LCS`) -- or, in Meridian RPGO sessions
+(no hydra_multi), meridian_rpgo's own localized verdict --, ``map -> odom``
+present and the placement not suspect.  Shown, never blocking (``info``): roman_lc inter-robot
 loop closures (NO_HB between reports), tf_network (map -> robot TF),
 relocalization_monitor (GPS-based: "TF map->gps not available" indoors or
 without a GPS alignment), roman_map, gps / ntrip.
@@ -40,6 +41,7 @@ from .routes.change_detection import (
     RELOC_MIN_HYDRA_LCS,
     _suspect,
     parse_hydra_optimization,
+    parse_meridian,
 )
 
 STATE_STALE_S = 10.0  # no C1 state for this long: the link is down
@@ -305,6 +307,55 @@ def hydra_multi_summary(robot: str, state: dict, mem: _Memory, now: float) -> di
     }
 
 
+def meridian_summary(robot: str, state: dict) -> dict | None:
+    """meridian_rpgo's verdict and counts (``parse_meridian`` + its row), or None
+    when the robot runs no meridian_rpgo (a Hydra-Multi session)."""
+    row = find_row((state or {}).get("health"), robot, "meridian_rpgo")
+    if row is None:
+        return None
+    return {**(parse_meridian(_note(row)) or {"state": "unknown", "inliers": None, "candidates": None}),
+            "status": _label(row), "note": _note(row)}  # fmt: skip
+
+
+def _meridian_item(row: dict) -> dict:
+    """The blocking relocalization item of a Meridian RPGO session: meridian_rpgo
+    applies its own min_num_inliers, the console trusts its verdict."""
+    name, src = "Meridian RPGO relocalization", "status table: meridian_rpgo"
+    mr = parse_meridian(_note(row))
+    if mr is None:
+        return _item(
+            "meridian_rpgo",
+            name,
+            "warn",
+            f"meridian_rpgo gives no inlier count ({_row_txt(row)})",
+            src,
+        )
+    counts = f"{mr['inliers']} / {mr['candidates']} loop closures inliers"
+    if mr["state"] == "localized":
+        return _item("meridian_rpgo", name, "ok", f"Relocalized: {counts}", src)
+    if mr["state"] == "holding":
+        return _item("meridian_rpgo", name, "ok",
+                     f"Relocalized, holding the last estimate: the latest solve fell below min_num_inliers ({counts})",
+                     src)  # fmt: skip
+    if mr["state"] == "no_odom":
+        return _item(
+            "meridian_rpgo",
+            name,
+            "warn",
+            f"meridian_rpgo has no odometry TF yet ({counts})",
+            src,
+        )
+    if mr["state"] == "not_localized":
+        return _item(
+            "meridian_rpgo",
+            name,
+            "warn",
+            f"No consistent prior-map match yet: {counts}",
+            src,
+        )
+    return _item("meridian_rpgo", name, "warn", f"meridian_rpgo {_row_txt(row)}", src)
+
+
 def _localize_items(
     robot: str, state: dict, mem: _Memory, now: float, hm: dict
 ) -> list[dict]:
@@ -313,7 +364,10 @@ def _localize_items(
     items = []
     name = "hydra_multi loop closures"
     src = "status table: hydra_multi"
-    if hm["accepted"] is not None:
+    meridian = find_row(health, robot, "meridian_rpgo")
+    if meridian is not None and hm["accepted"] is None and not hm["in_table"]:
+        items.append(_meridian_item(meridian))
+    elif hm["accepted"] is not None:
         acc, tot = hm["accepted"], hm["total"]
         if acc >= need:
             st, reason = (
@@ -406,7 +460,7 @@ def _localize_items(
 def compute_readiness(robot: str, state: dict | None, mem: _Memory, now: float) -> dict:
     if not isinstance(state, dict):
         return {"robot": robot, "state": "unknown", "localize": _checklist([], no_data=True), "odometry": None,
-                "hydra_multi": None, "broken": [], "summary": f"No state from {robot}"}  # fmt: skip
+                "hydra_multi": None, "meridian_rpgo": None, "broken": [], "summary": f"No state from {robot}"}  # fmt: skip
     hm = hydra_multi_summary(robot, state, mem, now)
     link = _link_item(mem, now)
     odom = _odom_item(robot, state, mem, now, link["state"] == "ok")
@@ -433,5 +487,6 @@ def compute_readiness(robot: str, state: dict | None, mem: _Memory, now: float) 
                     }
                 )
     verdict = "fail" if odom["state"] == "fail" else loc["state"]
-    return {"robot": robot, "state": verdict, "localize": loc, "odometry": odom, "hydra_multi": hm, "broken": broken,
+    return {"robot": robot, "state": verdict, "localize": loc, "odometry": odom, "hydra_multi": hm,
+            "meridian_rpgo": meridian_summary(robot, state), "broken": broken,
             "summary": broken[0]["reason"] if broken else "Relocalized"}  # fmt: skip

@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {healthNode, hydraMatches, hydraOptimization, isBigJump, movedFromInitial, priorName, RELOC_MIN_HYDRA_LCS, relocStatus} from "../src/lib/frameAlign";
+import {healthNode, hydraMatches, hydraOptimization, isBigJump, meridianStatus, movedFromInitial, priorName, RELOC_MIN_HYDRA_LCS, relocStatus} from "../src/lib/frameAlign";
 import type {FrameAlign, Reloc} from "../src/types";
 
 const FA: FrameAlign = {parent: "map", child: "hamilton/odom", T: [10, 5, 0, 1, 0, 0, 0], stamp: 100, ok: true, reason: "", age_s: 0.5};
@@ -166,5 +166,49 @@ describe("relocalization status", () => {
     expect(isBigJump({dxy: 3.1, dyaw: 0})).toBe(true);
     expect(isBigJump({dxy: 0, dyaw: -31})).toBe(true);
     expect(isBigJump({dxy: 2.9, dyaw: 29})).toBe(false);
+  });
+});
+
+// Meridian RPGO sessions (*_meridian_relocalize): meridian_rpgo in place of hydra_multi
+const meridian = (verdict: string, counts = "6 / 9") => ({
+  nickname: "hamilton/meridian_rpgo",
+  status: "nominal",
+  notes: `${verdict}; ${counts} inliers, 120 odom keyframes, solves: 7, last solve: 0.31 s`,
+});
+
+describe("relocalization status with Meridian RPGO", () => {
+  it("parses meridian_rpgo's verdicts", () => {
+    expect(meridianStatus(meridian("localized"))).toEqual({state: "localized", inliers: 6, candidates: 9});
+    expect(meridianStatus(meridian("latest solve below min_num_inliers, holding last estimate", "3 / 12"))?.state).toBe("holding");
+    expect(meridianStatus(meridian("not localized", "0 / 3"))?.state).toBe("not_localized");
+    expect(meridianStatus(meridian("no hamilton/odom <- hamilton/base_link TF yet", "0 / 0"))?.state).toBe("no_odom");
+    expect(meridianStatus({notes: "Meridian RPGO relocalization started (map <- hamilton/odom, live robot id 0)."})).toBeNull();
+  });
+  it("is green when meridian_rpgo says localized (no hydra_multi count needed)", () => {
+    const s = relocStatus(FA, reloc(), 1.2, 2, {meridian: meridian("localized"), hydraMulti: null});
+    expect(s.tone).toBe("ok");
+    expect(s.text).toBe("relocalized · meridian 6 inliers");
+    expect(s.title).toMatch(/meridian_rpgo: 6 \/ 9 loop closures against the prior map are inliers/);
+    expect(s.title).not.toMatch(/hydra_multi/);
+  });
+  it("stays green while holding the last estimate, and says so", () => {
+    const s = relocStatus(FA, reloc(), 1.2, 2, {meridian: meridian("latest solve below min_num_inliers, holding last estimate", "3 / 12")});
+    expect(s.tone).toBe("ok");
+    expect(s.text).toBe("relocalized · meridian 3 inliers · holding");
+  });
+  it("is still suspect outside the prior map", () => {
+    expect(relocStatus(FA, reloc(), 40, 2, {meridian: meridian("localized")}).tone).toBe("err");
+  });
+  it("is amber while not localized, even with ROMAN matches and a moved map -> odom", () => {
+    const s = relocStatus(FA, reloc(), 1.2, 2, {meridian: meridian("not localized", "2 / 9")});
+    expect(s.tone).toBe("warn");
+    expect(s.text).toBe("relocalizing · meridian 2/9 inliers");
+    expect(relocStatus(FA, reloc(), 1.2, 2, {meridian: meridian("not localized", "0 / 0")}).text).toBe("not relocalized · no prior-map match yet");
+    expect(relocStatus(FA, reloc(), 1.2, 2, {meridian: meridian("no hamilton/odom <- hamilton/base_link TF yet", "0 / 0")}).text).toBe(
+      "not relocalized · meridian has no odometry",
+    );
+  });
+  it("lets a hydra_multi count win", () => {
+    expect(relocStatus(FA, reloc(), 1.2, 2, {hydraMulti: hydra("6 / 8"), meridian: meridian("not localized")}).text).toBe("relocalized · hydra 6 LCs");
   });
 });
