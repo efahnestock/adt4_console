@@ -8,6 +8,7 @@
 // Mission tab (AreaTools.tsx). While a launch is active the edits are staged and
 // published with a typed confirm.
 import {useEffect, useMemo, useState} from "react";
+import {PrepFiles} from "../components/PrepFiles";
 import {Badge, Segmented, Spinner, Toggle} from "../components/ui";
 import {withToken} from "../lib/auth";
 import {useFeature} from "../lib/features";
@@ -424,6 +425,10 @@ export function MapEditPanel() {
           <Snapshots />
         </>
       )}
+      <details className="map-edit-prep" data-testid="map-edit-prep">
+        <summary className="small">Mission edit files</summary>
+        <PrepFiles mode="live" />
+      </details>
     </section>
   );
 }

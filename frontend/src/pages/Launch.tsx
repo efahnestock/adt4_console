@@ -12,6 +12,7 @@ import type {ActiveLaunch, ConsoleConfig, LaunchDefaults, LaunchPlan, MapEntry, 
 import {Badge, Card, Dot, Empty, ErrorBox, Field, FuzzyPicker, Loading, PageHeader, Segmented, Spinner, Toggle} from "../components/ui";
 import {fmtAgo} from "../lib/fuzzy";
 import {jobIdOf} from "./Fleet";
+import {PrepFiles, type PrepFile} from "../components/PrepFiles";
 
 type Mode = "mapping" | "relocalize";
 
@@ -49,6 +50,8 @@ export function LaunchPage() {
   const [bsSession, setBsSession] = useState("");
   const [experiment, setExperiment] = useState(defaultExperiment("mapping"));
   const [record, setRecord] = useState(false);
+  // mission-prep edit files, applied after the base station reloads the prior map
+  const [prepFiles, setPrepFiles] = useState<PrepFile[]>([]);
   const [linkNet, setLinkNet] = useState(""); // "" = topology default
   const [linkMode, setLinkMode] = useState(""); // "" = topology default
   const [prior, setPrior] = useState<string>(preset ? `${preset.source}\u0000${preset.prior}` : ""); // "machine\u0000path"
@@ -197,6 +200,7 @@ export function LaunchPage() {
       bs_session: baseStation ? bsSession || null : null,
       link_network: linkNet || null,
       link_mode: linkMode || null,
+      prep: prepFiles,
     };
   };
 
@@ -529,6 +533,10 @@ export function LaunchPage() {
               }
             }} />}
           </Field>
+          <div className="field">
+            <span className="field-label">Mission edit files (optional)</span>
+            <PrepFiles mode="launch" files={prepFiles} onFiles={setPrepFiles} />
+          </div>
         </Card>
       </div>
 

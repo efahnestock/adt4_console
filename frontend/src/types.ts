@@ -717,6 +717,8 @@ export interface LaunchPlan {
   link_network?: string | null;
   /** "router" | "fleetlink" for this launch; null = the topology default */
   link_mode?: string | null;
+  /** mission-prep edit files (adt4-mission-prep/1), applied in order after the base station's reseed */
+  prep?: unknown[];
   /** run the pre-launch checks (default true); a NO-GO asks to confirm each issue */
   preflight?: boolean;
 }
