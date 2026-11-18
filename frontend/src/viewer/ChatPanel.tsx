@@ -456,7 +456,10 @@ export function ChatPanel({missionMode = false}: {missionMode?: boolean} = {}) {
       const auto = !missionMode && useAutoSend.getState().on;
       const engineNow = useEngines.getState().engine;
       const autoFleet = auto ? autoSendRobots(engineNow) : null;
-      const withMission = auto || missionMode || (ms.chatOn && (ms.roster.length > 0 || !!ms.current));
+      // the Robot view chat only sends goals to the real robots: the mission planner (its
+      // agents, areas, open mission) is a separate piece with its own chat (missionMode);
+      // auto-send still plans for the robots that are online now
+      const withMission = auto || missionMode;
       const body = {
         message,
         robot: planRobot ?? undefined,
