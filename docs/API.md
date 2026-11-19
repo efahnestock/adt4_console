@@ -1777,10 +1777,16 @@ straight onto the drive, so bag data never crosses the radio.
   running; 502 with the helper's message when it fails (an unknown drive, or a
   busy one: the message lists the processes holding it open).
 * `GET /api/drives/bags?machine=&drive=` → `{machine, drive, root, runs: [{name,
-  mtime, bytes, dest_bytes, recording, on_drive, bags: [{name, bytes, files,
+  path, mtime, bytes, dest_bytes, recording, on_drive, bags: [{name, bytes, files,
   metadata, recording, dest_bytes, on_drive}]}]}`, newest first. A bag is a
   directory with `*.mcap` / `*.db3` files directly inside a run of the output
-  root (`drives.BAG_SCAN`: the one place that decides what a bag is).
+  root (`drives.BAG_SCAN`: the one place that decides what a bag is). A run
+  is a folder directly under the root, or one nested in group folders up to 3
+  levels down (`<root>/wednesday/top_parking_lot/<bag>/`). `path` is the run
+  folder relative to the root; `name` is `path` with `/` as `_`
+  (`wednesday_top_parking_lot`; `_2`, `_3` appended if a top-level run
+  already has that name) and is the name the copy, delete and drive layout use.
+  The search does not go into a run's other folders.
   A trial's `console` folder (with its `trial.json`) is listed the same way.
   `recording` = a file changed in the last minute and the bag is not closed
   (closed: `metadata.yaml` as new as the newest bag file; for a `console`

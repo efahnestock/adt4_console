@@ -251,7 +251,7 @@ def copy(body: CopyBody, request: Request):
         before = 0  # bytes of the bags finished so far
         for run_name, bag in bags:
             label = f"{run_name}/{bag['name']}"
-            src = f"{root}/{run_name}/{bag['name']}"
+            src = f"{root}/{by_name[run_name]['path']}/{bag['name']}"
             dst = bd.dest_dir(write_dir, name, run_name, bag["name"])
             size = bag["bytes"]
             item = {"run": run_name, "bag": bag["name"], "dest": dst, "bytes": size}
@@ -368,7 +368,7 @@ def copy(body: CopyBody, request: Request):
             )
             if answer:
                 for item in on_drive:
-                    src = f"{root}/{item['run']}/{item['bag']}"
+                    src = f"{root}/{by_name[item['run']]['path']}/{item['bag']}"
                     rc, out, err = bd.run_cmd(svc, m, bd.remove_command(src), 120)
                     if rc != 0:
                         job.log(
@@ -378,7 +378,12 @@ def copy(body: CopyBody, request: Request):
                     result["removed"].append(f"{item['run']}/{item['bag']}")
                     job.log("ok", f"deleted {src}")
                 for run_name in dict.fromkeys(i["run"] for i in on_drive):
-                    bd.run_cmd(svc, m, bd.prune_command(f"{root}/{run_name}"), 30)
+                    bd.run_cmd(
+                        svc,
+                        m,
+                        bd.prune_command(f"{root}/{by_name[run_name]['path']}", root),
+                        30,
+                    )
             else:
                 job.log("info", "Bags left on the robot.")
         job.log("ok", f"Done. Eject {body.drive} before unplugging it.")
@@ -531,15 +536,21 @@ def delete(body: DeleteBody, request: Request):
             if now and now.get("recording"):
                 job.log("error", f"{label}: is being recorded now, not deleted")
                 return False
-            rc, out, err = bd.run_cmd(svc, m, bd.remove_command(f"{root}/{label}"), 300)
+            src = f"{root}/{by_name[run_name]['path']}/{bag['name']}"
+            rc, out, err = bd.run_cmd(svc, m, bd.remove_command(src), 300)
             if rc != 0:
                 job.log("error", f"could not delete {label}: {(err or out)[-200:]}")
                 return False
             result["removed"].append(label)
             result["bytes"] += bag["bytes"]
-            job.log("ok", f"deleted {root}/{label}")
+            job.log("ok", f"deleted {src}")
         for run_name in runs:
-            bd.run_cmd(svc, m, bd.prune_command(f"{root}/{run_name}"), 30)
+            bd.run_cmd(
+                svc,
+                m,
+                bd.prune_command(f"{root}/{by_name[run_name]['path']}", root),
+                30,
+            )
         job.log("ok", f"Done: {bd.human(result['bytes'])} freed on {name}.")
         return result
 
