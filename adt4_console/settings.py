@@ -17,6 +17,9 @@ class Settings:
     topology: str | None = None  # None -> fleet_helpers default topology.yaml
     network: str | None = None  # None -> detect_network()
     output_root: str = "~/adt4_output"
+    # mission-prep edit files the Launch window / map editor list (searched recursively);
+    # None -> <output_root>/mission_prep
+    prep_dir: str | None = None
     neo4j: dict[str, str] = field(default_factory=dict)  # name -> uri
     prior_neo4j: str | None = None
     # the target maps picked in the viewer are loaded into (map_loader); None: the first

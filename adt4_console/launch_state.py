@@ -127,6 +127,7 @@ REMEMBERED_FIELDS = (
     "link_mode",
     "sessions",  # platform -> robot session
     "base_only",  # launched only the base station
+    "prep",  # mission-prep edit files (applied after the base station's reseed)
 )
 # kept from the previous launch when a base-station-only launch is remembered,
 # so switching back to robots + base starts from the robots last launched
@@ -179,6 +180,19 @@ class LaunchMemory:
             if entry is None and self._data.get("last"):
                 entry = by.get(self._data["last"])
             return json.loads(json.dumps(entry)) if entry else None
+
+    def clear_field(self, field: str) -> int:
+        """Drop ``field`` from every remembered launch (a reset of the mission-prep
+        files must not be undone by the next relaunch); the number changed."""
+        n = 0
+        with self._lock:
+            for entry in self._data["by_base"].values():
+                if entry.get(field):
+                    entry[field] = [] if isinstance(entry[field], list) else None
+                    n += 1
+            if n:
+                self._save()
+        return n
 
     def _save(self) -> None:
         if self.path is None:
