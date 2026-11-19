@@ -58,6 +58,9 @@ class Settings:
         default_factory=lambda: os.environ.get("ADT4_REC_CMD")
     )
     trial_poll_s: float = 10.0
+    # how often a recording machine is asked again which of its topics have a
+    # publisher (the stack may be restarted mid-trial); 0: only at the start
+    trial_topic_recheck_s: float = 60.0
     # browser terminals on fleet machines (a shell for anyone who can reach the console)
     terminal: bool = False
     static_dir: pathlib.Path = STATIC_DIR
