@@ -17,6 +17,9 @@ class Settings:
     topology: str | None = None  # None -> fleet_helpers default topology.yaml
     network: str | None = None  # None -> detect_network()
     output_root: str = "~/adt4_output"
+    # mission-prep edit files the Launch window / map editor list (searched recursively);
+    # None -> <output_root>/mission_prep
+    prep_dir: str | None = None
     neo4j: dict[str, str] = field(default_factory=dict)  # name -> uri
     prior_neo4j: str | None = None
     # the target maps picked in the viewer are loaded into (map_loader); None: the first
@@ -55,6 +58,9 @@ class Settings:
         default_factory=lambda: os.environ.get("ADT4_REC_CMD")
     )
     trial_poll_s: float = 10.0
+    # how often a recording machine is asked again which of its topics have a
+    # publisher (the stack may be restarted mid-trial); 0: only at the start
+    trial_topic_recheck_s: float = 60.0
     # browser terminals on fleet machines (a shell for anyone who can reach the console)
     terminal: bool = False
     static_dir: pathlib.Path = STATIC_DIR

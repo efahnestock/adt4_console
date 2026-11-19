@@ -47,6 +47,9 @@ class LaunchPlanBody(BaseModel):
     link_mode: str | None = None
     # pre-launch checks; a NO-GO asks to confirm each issue (fleet.preflight)
     preflight: bool = True
+    # mission-prep edit files (adt4-mission-prep/1), applied in order as separate map
+    # edits once the base station has reseeded Neo4j with the prior
+    prep: list[dict] = []
 
 
 def _with_link_mode(topo: dict, mode: str | None) -> dict:
@@ -80,6 +83,7 @@ def _plan(
             raise HTTPException(400, str(e)) from None
     fields = body.model_dump()
     fields.pop("save_first", None)
+    fields.pop("prep", None)
     if body.base_only and body.robots_only:
         raise HTTPException(400, "Pick either base station only or robots only")
     if body.base_only:
@@ -437,6 +441,7 @@ def launch(body: LaunchPlanBody, request: Request):
             _validate(plan, fleet.runtime_config, svc.settings.output_root, fleet.topo)
     except LaunchError as e:
         raise HTTPException(400, str(e)) from None
+    prep_files = _prep_files(body)
     # the next launch (a relaunch after Stop & save) starts from these choices,
     # prior map included; a robots-only relaunch keeps the full launch's robots
     # and base station session
@@ -449,6 +454,8 @@ def launch(body: LaunchPlanBody, request: Request):
             ",".join(plan.robots), plan.experiment, plan.sessions or plan.session,
             body.save_first, plan.base_station,
         )  # fmt: skip
+
+    epoch_before = _map_epoch(svc) if prep_files else None
 
     def run(job):
         cb = JobLaunchCallbacks(job, fleet.zenohd_state)
@@ -493,6 +500,8 @@ def launch(body: LaunchPlanBody, request: Request):
                 attach_prior(svc, plan, job)
             except Exception as e:  # noqa: BLE001 - the launch itself succeeded
                 job.log("warn", f"could not register the prior map in the viewer: {e}")
+            if prep_files:
+                apply_launch_prep(svc, job, plan, prep_files, epoch_before)
         return ok
 
     if body.robots_only:
@@ -503,6 +512,76 @@ def launch(body: LaunchPlanBody, request: Request):
         title = f"Launch {plan.experiment}: base station {plan.base_station} only"
     job = svc.jobs.start("launch", title, run)
     return {"job_id": job.id}
+
+
+def _prep_files(body: LaunchPlanBody) -> list[dict]:
+    """The launch's mission-prep files, validated up front (a 400, not a failed
+    job); a robots-only relaunch never touches the map, so it applies none."""
+    if not body.prep or body.robots_only:
+        return []
+    from ..mission_prep.core import PrepError, validate_file
+
+    try:
+        return [validate_file(f) for f in body.prep]
+    except PrepError as e:
+        raise HTTPException(400, f"mission-prep file: {e}") from None
+
+
+def _map_epoch(svc) -> str | None:
+    prep = getattr(svc, "prep", None)
+    try:
+        return prep.map_state().get("epoch") if prep is not None else None
+    except Exception:  # noqa: BLE001 - Neo4j down before the launch: any epoch is new
+        return None
+
+
+PREP_SEED_TIMEOUT_S = 180.0
+
+
+def apply_launch_prep(svc, job, plan, files: list[dict], epoch_before: str | None,
+                      timeout_s: float = PREP_SEED_TIMEOUT_S) -> bool:  # fmt: skip
+    """After a launch with a prior: wait for the base station's reseed (a new
+    ``_MapState.epoch``), then apply each file as its own map edit.  A failure is
+    logged; the launch stays up (the files can be loaded from the map editor)."""
+    prep = getattr(svc, "prep", None)
+    if prep is None:
+        job.log(
+            "error", "mission-prep files not applied: this console has no map editing"
+        )
+        return False
+    names = ", ".join(f["name"] for f in files)
+    if plan.prior_path and plan.bs_session:
+        job.log(
+            "heading",
+            f"Mission prep: waiting for the base station to load the prior map ({names}) ...",
+        )
+        if not prep.wait_for_seed(
+            epoch_before, timeout_s=timeout_s, log_fn=lambda m: job.log("info", m)
+        ):
+            job.log("error", f"Mission prep NOT applied: the map was not reloaded within {timeout_s:.0f} s. "
+                             "Load the files from the map editor (Load edit file) once the map is up.")  # fmt: skip
+            return False
+    else:
+        job.log("heading", f"Mission prep on the current map ({names}) ...")
+    ok = True
+    for f in files:
+        try:
+            out = prep.apply(f, via="launch")
+        except Exception as e:  # noqa: BLE001 - one file's failure stops the rest
+            job.log("error", f"Mission prep {f['name']!r} NOT applied: {e}")
+            return False
+        if out.get("nothing_to_do"):
+            job.log("info", f"Mission prep {f['name']!r}: nothing to do on this map ("
+                            + "; ".join(out.get("warnings") or ["no changes"])[:300] + ")")  # fmt: skip
+            continue
+        c = out.get("counts") or {}
+        job.log("ok", f"Mission prep {f['name']!r} applied as one edit in {out.get('apply_s')} s "
+                      f"(map version {out['applied'].get('map_version')}; "
+                      + ", ".join(f"{k} {v}" for k, v in c.items()) + ")")  # fmt: skip
+        if not out.get("same_as_file"):
+            job.log("warn", f"{f['name']!r}: the map changed since the file was made; it was re-resolved "
+                            "against the live map")  # fmt: skip
+    return ok
 
 
 class _AutoStop:

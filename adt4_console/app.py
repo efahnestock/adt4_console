@@ -222,6 +222,9 @@ def build_services(
     svc.edits = EditService(settings, graph, hub, jobs,
                             launch_state=lambda: svc.launch_state.get() if svc.launch_state else None)  # fmt: skip
     chat.edits = svc.edits
+    from .mission_prep.service import PrepService
+
+    svc.prep = PrepService(svc.maps, svc.edits, graph, hub, svc.launch_memory)
     from .sget import SgetService
 
     # plan repair's scene edits (heracles_agents SGET), used while its writer runs
@@ -233,6 +236,7 @@ def build_services(
 
     svc.trials = TrialService(settings, fleet, lambda: svc.helpers, hub)
     svc.trials.context = lambda: trial_context(svc)
+    svc.prep.trials = svc.trials
     svc.trials.jobs = jobs  # to log the question a job confirmation answers
     try:
         svc.trials.restore()  # a trial still recording when the console last exited
@@ -274,6 +278,10 @@ def trial_context(svc) -> dict:
     put("map", live_map)
     put("missions", lambda: svc.missions.list()[:30] if svc.missions else [])
     put("ros", lambda: bool(svc.settings.ros))
+    # mission-prep edit files on the map (each copied into the recording trial)
+    put(
+        "prep", lambda: svc.prep.trial_context() if getattr(svc, "prep", None) else None
+    )
     return out
 
 
@@ -542,6 +550,7 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
         pick_result,
         plan,
         planner_state,
+        prep,
         quad,
         sam3,
         scene_repair,
@@ -553,7 +562,7 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
 
     for mod in (fleet, launch, jobs, network, maps, graph, plan, live, chat, sam3, teleop, terminal,
                 geo, mission, quad, edit, change_detection, scene_repair, manipulation, pick_result,
-                planner_state, drives, trials, ws):  # fmt: skip
+                planner_state, drives, trials, prep, ws):  # fmt: skip
         app.include_router(mod.router)
     app.include_router(live.robots_router)
 

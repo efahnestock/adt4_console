@@ -1777,10 +1777,16 @@ straight onto the drive, so bag data never crosses the radio.
   running; 502 with the helper's message when it fails (an unknown drive, or a
   busy one: the message lists the processes holding it open).
 * `GET /api/drives/bags?machine=&drive=` → `{machine, drive, root, runs: [{name,
-  mtime, bytes, dest_bytes, recording, on_drive, bags: [{name, bytes, files,
+  path, mtime, bytes, dest_bytes, recording, on_drive, bags: [{name, bytes, files,
   metadata, recording, dest_bytes, on_drive}]}]}`, newest first. A bag is a
   directory with `*.mcap` / `*.db3` files directly inside a run of the output
-  root (`drives.BAG_SCAN`: the one place that decides what a bag is).
+  root (`drives.BAG_SCAN`: the one place that decides what a bag is). A run
+  is a folder directly under the root, or one nested in group folders up to 3
+  levels down (`<root>/wednesday/top_parking_lot/<bag>/`). `path` is the run
+  folder relative to the root; `name` is `path` with `/` as `_`
+  (`wednesday_top_parking_lot`; `_2`, `_3` appended if a top-level run
+  already has that name) and is the name the copy, delete and drive layout use.
+  The search does not go into a run's other folders.
   A trial's `console` folder (with its `trial.json`) is listed the same way.
   `recording` = a file changed in the last minute and the bag is not closed
   (closed: `metadata.yaml` as new as the newest bag file; for a `console`
@@ -1865,7 +1871,13 @@ attach` on the machine shows it): starting or stopping a trial sends nothing to
 `<trial>/<machine>/` and the recording goes on in `<trial>/<machine>_part2/`
 (then `_part3`, ...), each a rosbag2 directory with its own `trial.json`
 (`part`). The console only uses ssh: one command per machine at start and
-at stop, one `status` per machine every `trial_poll_s` (10 s) while recording.
+at stop, one `status` per machine every `trial_poll_s` (10 s) while recording,
+and one `check-topics` per machine every `trial_topic_recheck_s` (60 s; 0 =
+only at the start). A machine's `topic_check` is `{ok, tries, published,
+topics, missing, checked, tried, recheck_error?}`: `checked` is when the answer
+shown was given; a repeat that gets no answer keeps it and sets
+`recheck_error`. The event log gets `topic_check` / `topics_missing` for the
+first answer and `topics_changed {appeared, gone}` when a repeat differs.
 Nothing recorded crosses the radio, and a machine that loses the radio keeps
 recording.
 

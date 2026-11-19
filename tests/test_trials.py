@@ -426,10 +426,12 @@ def test_topic_check_is_retried_until_the_machine_answers(rig):
         "published": 18,
         "topics": 19,
         "missing": ["/x/fix"],
+        "checked": rig.now[0],
+        "tried": rig.now[0],
     }
     assert rig.fake.verbs(ip).count("check-topics") == 3
     rig.now[0] += 10
-    rig.t.poll_once()  # done: not asked again
+    rig.t.poll_once()  # done: not asked again until the next minute's repeat
     assert rig.fake.verbs(ip).count("check-topics") == 3
     assert rig.fake.verbs(rig.ip["euclid"]).count("check-topics") == 1
     kinds = [
@@ -941,3 +943,58 @@ def test_a_stray_recorder_is_stopped_from_the_console(rig):
     assert r.status_code == 409 and rig.fake.rec.get(rig.ip["gauss"])
     rig.fake.unreachable.add(rig.ip["euclid"])
     rig.c.post("/api/trials/stop")
+
+
+def test_the_topic_check_is_repeated_and_follows_a_restarted_stack(rig):
+    rig.fake.missing_topics = ["/x/lidar", "/x/fix"]
+    a = start(rig, machines=["euclid"]).json()["active"]
+    ip = rig.ip["euclid"]
+    tc = a["machines"]["euclid"]["topic_check"]
+    assert tc["missing"] == ["/x/lidar", "/x/fix"] and tc["checked"] == rig.now[0]
+    rig.now[0] += 30
+    rig.t.poll_once()  # not yet: one check a minute
+    assert rig.fake.verbs(ip).count("check-topics") == 1
+    # the stack is restarted and the lidar comes up
+    rig.fake.missing_topics = ["/x/fix"]
+    rig.now[0] += 31
+    rig.t.poll_once()
+    tc = rig.c.get("/api/trials").json()["active"]["machines"]["euclid"]["topic_check"]
+    assert tc["ok"] and tc["missing"] == ["/x/fix"] and tc["published"] == 18
+    assert tc["checked"] == rig.now[0]
+    assert rig.fake.verbs(ip).count("check-topics") == 2
+    # a repeat with the same answer adds nothing to the log
+    rig.now[0] += 61
+    rig.t.poll_once()
+    ev = [e for e in events(rig, a["trial_id"]) if e["type"].startswith("topic")]
+    assert [e["type"] for e in ev] == [
+        "topic_check",
+        "topics_missing",
+        "topics_changed",
+    ]
+    assert ev[-1]["appeared"] == ["/x/lidar"] and ev[-1]["gone"] == []
+    # a repeat that gets no answer keeps the last one, and waits an interval
+    good = rig.now[0]
+    real = rig.fake.ssh_cmd
+
+    def no_check(user, addr, cmd, timeout=5):
+        if " check-topics" in cmd:
+            rig.fake.calls.append((addr, ["check-topics"]))
+            return 255, "", "ssh: connect to host: Connection timed out"
+        return real(user, addr, cmd, timeout)
+
+    rig.fake.ssh_cmd = no_check
+    rig.now[0] += 61
+    rig.t.poll_once()
+    rig.t.poll_once()
+    tc = rig.c.get("/api/trials").json()["active"]["machines"]["euclid"]["topic_check"]
+    assert tc["ok"] and tc["missing"] == ["/x/fix"] and tc["checked"] == good
+    assert "timed out" in tc["recheck_error"] and tc["tried"] == rig.now[0]
+    assert rig.fake.verbs(ip).count("check-topics") == 4
+
+
+def test_the_topic_recheck_can_be_switched_off(rig):
+    rig.t.settings.trial_topic_recheck_s = 0
+    start(rig, machines=["euclid"])
+    rig.now[0] += 600
+    rig.t.poll_once()
+    assert rig.fake.verbs(rig.ip["euclid"]).count("check-topics") == 1

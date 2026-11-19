@@ -106,7 +106,7 @@ describe("TrialBar", () => {
     // the topics nobody publishes: one per line in a panel on the chip, which a click pins open
     const pop = $("trial-missing-hamilton")!;
     expect([...pop.querySelectorAll(".trial-pop-list .mono")].map(e => e.textContent)).toEqual(["/h/fix", "/h/rtcm"]);
-    expect(pop.textContent).toContain("2 of 20 topics on hamilton had no publisher");
+    expect(pop.textContent).toContain("2 of 20 topics on hamilton have no publisher");
     expect($("trial-missing-euclid")).toBeNull();
     await act(async () => $("trial-machine-hamilton")!.click());
     expect($("trial-machine-hamilton")!.className).toContain("trial-chip-pinned");

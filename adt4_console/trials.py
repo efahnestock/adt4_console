@@ -808,8 +808,14 @@ class TrialService:
             run()
         return self.payload()
 
+    def _recheck_s(self) -> float:
+        return float(getattr(self.settings, "trial_topic_recheck_s", 60.0) or 0.0)
+
     def _check_topics(self, trial: dict, machines: list[dict]) -> None:
-        """A few seconds in: which requested topics have no publisher."""
+        """Which requested topics have no publisher: a few seconds in, and
+        again every ``trial_topic_recheck_s`` (topics come and go when a
+        stack is restarted).  A repeat that gets no answer keeps the last
+        answer, with its age; the event log gets the changes only."""
         with self.lock:
             rec = [
                 m
@@ -822,12 +828,18 @@ class TrialService:
             return reply
 
         for name, reply in self._parallel(one, rec).items():
+            now = round(self.clock(), 3)
             with self.lock:
-                tries = (trial["machines"][name].get("topic_check") or {}).get(
-                    "tries", 0
-                ) + 1
+                prev = dict(trial["machines"][name].get("topic_check") or {})
+                tries = prev.get("tries", 0) + 1
             if not isinstance(reply, dict) or not reply.get("ok"):
                 err = reply.get("error") if isinstance(reply, dict) else str(reply)
+                if prev.get("ok"):
+                    # a repeat without an answer: the last answer stays, the
+                    # next repeat is one interval away
+                    self._set(trial, name, topic_check={
+                        **prev, "tried": now, "recheck_error": err})  # fmt: skip
+                    continue
                 left = CHECK_TRIES - tries
                 self._set(trial, name, topic_check={
                     "ok": False, "tries": tries, "error": err,
@@ -844,7 +856,17 @@ class TrialService:
             missing = reply.get("missing") or []
             self._set(trial, name, topic_check={
                 "ok": True, "tries": tries, "published": reply.get("published"),
-                "topics": reply.get("topics"), "missing": missing})  # fmt: skip
+                "topics": reply.get("topics"), "missing": missing,
+                "checked": now, "tried": now})  # fmt: skip
+            if prev.get("ok"):
+                before = prev.get("missing") or []
+                appeared = [t for t in before if t not in missing]
+                gone = [t for t in missing if t not in before]
+                if appeared or gone:
+                    self.event("topics_changed", trial, machine=name, appeared=appeared,
+                               gone=gone, published=reply.get("published"),
+                               topics=reply.get("topics"))  # fmt: skip
+                continue
             self.event("topic_check", trial, machine=name, published=reply.get("published"),
                        topics=reply.get("topics"), tries=tries)  # fmt: skip
             if missing:
@@ -940,8 +962,10 @@ class TrialService:
     def _retry_topic_checks(self, trial: dict, machines: dict) -> None:
         """The topic check must have run on every recording machine: one that
         failed (no answer) is tried again each poll, CHECK_TRIES times in all;
-        one that never ran (console restarted) runs now."""
+        one that never ran (console restarted) runs now; one that answered is
+        asked again every ``trial_topic_recheck_s``."""
         now = self.clock()
+        every = self._recheck_s()
         with self.lock:
             if trial["state"] != RECORDING:
                 return
@@ -958,7 +982,13 @@ class TrialService:
                     and not tc.get("ok")
                     and tc.get("tries", 0) < CHECK_TRIES
                 )
-                if never or again:
+                stale = (
+                    tc is not None
+                    and bool(tc.get("ok"))
+                    and every > 0
+                    and now - (tc.get("tried") or tc.get("checked") or 0) >= every
+                )
+                if never or again or stale:
                     todo.append(machines[name])
         if todo:
             self._check_topics(trial, todo)

@@ -22,7 +22,9 @@ export interface TrialMachine {
   last_seen?: number | null;
   warnings?: string[];
   clock_offset_s?: number | null;
-  topic_check?: {ok: boolean; tries?: number; retrying?: boolean; published?: number; topics?: number; missing?: string[]; error?: string} | null;
+  topic_check?: {ok: boolean; tries?: number; retrying?: boolean; published?: number; topics?: number; missing?: string[]; error?: string;
+    /** console clock (unix s) of the answer shown, and of the last try; the check is repeated while recording */
+    checked?: number; tried?: number; recheck_error?: string | null} | null;
 }
 
 export interface Trial {
